@@ -38,6 +38,18 @@ $node->safe_psql('postgres',
 my $historyfile = "${TestLib::log_path}/010_psql_history.txt";
 $ENV{PSQL_HISTORY} = $historyfile;
 
+# Another pitfall for developers is that they might have a ~/.inputrc
+# file that changes readline's behavior enough to affect this test.
+# So ignore any such file.
+$ENV{INPUTRC} = '/dev/null';
+
+# Unset $TERM so that readline/libedit won't use any terminal-dependent
+# escape sequences; that leads to way too many cross-version variations
+# in the output.
+delete $ENV{TERM};
+# Some versions of readline inspect LS_COLORS, so for luck unset that too.
+delete $ENV{LS_COLORS};
+
 # fire up an interactive psql session
 my $in  = '';
 my $out = '';
