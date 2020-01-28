@@ -329,6 +329,8 @@ typedef struct JsObject
 			hash_destroy((jso)->val.json_hash); \
 	} while (0)
 
+static int	report_json_context(JsonLexContext *lex);
+
 /* semantic action functions for json_object_keys */
 static void okeys_object_field_start(void *state, char *fname, bool isnull);
 static void okeys_array_start(void *state);
@@ -485,6 +487,37 @@ static void transform_string_values_array_element_start(void *state, bool isnull
 static void transform_string_values_scalar(void *state, char *token, JsonTokenType tokentype);
 
 /*
+ * pg_parse_json_or_ereport
+ *
+ * This fuction is like pg_parse_json, except that it does not return a
+ * JsonParseErrorType. Instead, in case of any failure, this function will
+ * ereport(ERROR).
+ */
+void
+pg_parse_json_or_ereport(JsonLexContext *lex, JsonSemAction *sem)
+{
+	JsonParseErrorType	result;
+
+	result = pg_parse_json(lex, sem);
+	if (result != JSON_SUCCESS)
+		json_ereport_error(result, lex);
+}
+
+/*
+ * makeJsonLexContext
+ *
+ * This is like makeJsonLexContextCstringLen, but it accepts a text value
+ * directly.
+ */
+JsonLexContext *
+makeJsonLexContext(text *json, bool need_escapes)
+{
+	return makeJsonLexContextCstringLen(VARDATA_ANY(json),
+										VARSIZE_ANY_EXHDR(json),
+										need_escapes);
+}
+
+/*
  * SQL function json_object_keys
  *
  * Returns the set of keys for the object argument.
@@ -573,6 +606,99 @@ jsonb_object_keys(PG_FUNCTION_ARGS)
 	SRF_RETURN_DONE(funcctx);
 }
 
+/*
+ * Report a JSON error.
+ */
+void
+json_ereport_error(JsonParseErrorType error, JsonLexContext *lex)
+{
+	if (error == JSON_UNICODE_HIGH_ESCAPE ||
+		error == JSON_UNICODE_CODE_POINT_ZERO)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNTRANSLATABLE_CHARACTER),
+				 errmsg("unsupported Unicode escape sequence"),
+				 errdetail("%s", json_errdetail(error, lex)),
+				 report_json_context(lex)));
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid input syntax for type %s", "json"),
+				 errdetail("%s", json_errdetail(error, lex)),
+				 report_json_context(lex)));
+}
+
+/*
+ * Report a CONTEXT line for bogus JSON input.
+ *
+ * lex->token_terminator must be set to identify the spot where we detected
+ * the error.  Note that lex->token_start might be NULL, in case we recognized
+ * error at EOF.
+ *
+ * The return value isn't meaningful, but we make it non-void so that this
+ * can be invoked inside ereport().
+ */
+static int
+report_json_context(JsonLexContext *lex)
+{
+	const char *context_start;
+	const char *context_end;
+	const char *line_start;
+	int			line_number;
+	char	   *ctxt;
+	int			ctxtlen;
+	const char *prefix;
+	const char *suffix;
+
+	/* Choose boundaries for the part of the input we will display */
+	context_start = lex->input;
+	context_end = lex->token_terminator;
+	line_start = context_start;
+	line_number = 1;
+	for (;;)
+	{
+		/* Always advance over newlines */
+		if (context_start < context_end && *context_start == '\n')
+		{
+			context_start++;
+			line_start = context_start;
+			line_number++;
+			continue;
+		}
+		/* Otherwise, done as soon as we are close enough to context_end */
+		if (context_end - context_start < 50)
+			break;
+		/* Advance to next multibyte character */
+		if (IS_HIGHBIT_SET(*context_start))
+			context_start += pg_mblen(context_start);
+		else
+			context_start++;
+	}
+
+	/*
+	 * We add "..." to indicate that the excerpt doesn't start at the
+	 * beginning of the line ... but if we're within 3 characters of the
+	 * beginning of the line, we might as well just show the whole line.
+	 */
+	if (context_start - line_start <= 3)
+		context_start = line_start;
+
+	/* Get a null-terminated copy of the data to present */
+	ctxtlen = context_end - context_start;
+	ctxt = palloc(ctxtlen + 1);
+	memcpy(ctxt, context_start, ctxtlen);
+	ctxt[ctxtlen] = '\0';
+
+	/*
+	 * Show the context, prefixing "..." if not starting at start of line, and
+	 * suffixing "..." if not ending at end of line.
+	 */
+	prefix = (context_start > line_start) ? "..." : "";
+	suffix = (lex->token_type != JSON_TOKEN_END && context_end - lex->input < lex->input_length && *context_end != '\n' && *context_end != '\r') ? "..." : "";
+
+	return errcontext("JSON data, line %d: %s%s%s",
+					  line_number, prefix, ctxt, suffix);
+}
+
 
 Datum
 json_object_keys(PG_FUNCTION_ARGS)
@@ -606,7 +732,7 @@ json_object_keys(PG_FUNCTION_ARGS)
 		sem->object_field_start = okeys_object_field_start;
 		/* remainder are all NULL, courtesy of palloc0 above */
 
-		pg_parse_json(lex, sem);
+		pg_parse_json_or_ereport(lex, sem);
 		/* keys are now in state->result */
 
 		pfree(lex->strval->data);
@@ -1000,7 +1126,7 @@ get_worker(text *json,
 		sem->array_element_end = get_array_element_end;
 	}
 
-	pg_parse_json(lex, sem);
+	pg_parse_json_or_ereport(lex, sem);
 
 	return state->tresult;
 }
@@ -1148,7 +1274,12 @@ get_array_start(void *state)
 			_state->path_indexes[lex_level] != INT_MIN)
 		{
 			/* Negative subscript -- convert to positive-wise subscript */
-			int			nelements = json_count_array_elements(_state->lex);
+			JsonParseErrorType error;
+			int			nelements;
+
+			error = json_count_array_elements(_state->lex, &nelements);
+			if (error != JSON_SUCCESS)
+				json_ereport_error(error, _state->lex);
 
 			if (-_state->path_indexes[lex_level] <= nelements)
 				_state->path_indexes[lex_level] += nelements;
@@ -1548,7 +1679,7 @@ json_array_length(PG_FUNCTION_ARGS)
 	sem->scalar = alen_scalar;
 	sem->array_element_start = alen_array_element_start;
 
-	pg_parse_json(lex, sem);
+	pg_parse_json_or_ereport(lex, sem);
 
 	PG_RETURN_INT32(state->count);
 }
@@ -1814,7 +1945,7 @@ each_worker(FunctionCallInfo fcinfo, bool as_text)
 										   "json_each temporary cxt",
 										   ALLOCSET_DEFAULT_SIZES);
 
-	pg_parse_json(lex, sem);
+	pg_parse_json_or_ereport(lex, sem);
 
 	MemoryContextDelete(state->tmp_cxt);
 
@@ -2113,7 +2244,7 @@ elements_worker(FunctionCallInfo fcinfo, const char *funcname, bool as_text)
 										   "json_array_elements temporary cxt",
 										   ALLOCSET_DEFAULT_SIZES);
 
-	pg_parse_json(lex, sem);
+	pg_parse_json_or_ereport(lex, sem);
 
 	MemoryContextDelete(state->tmp_cxt);
 
@@ -2485,7 +2616,7 @@ populate_array_json(PopulateArrayContext *ctx, char *json, int len)
 	sem.array_element_end = populate_array_element_end;
 	sem.scalar = populate_array_scalar;
 
-	pg_parse_json(state.lex, &sem);
+	pg_parse_json_or_ereport(state.lex, &sem);
 
 	/* number of dimensions should be already known */
 	Assert(ctx->ndims > 0 && ctx->dims);
@@ -3342,7 +3473,7 @@ get_json_object_as_hash(char *json, int len, const char *funcname)
 	sem->object_field_start = hash_object_field_start;
 	sem->object_field_end = hash_object_field_end;
 
-	pg_parse_json(lex, sem);
+	pg_parse_json_or_ereport(lex, sem);
 
 	return tab;
 }
@@ -3641,7 +3772,7 @@ populate_recordset_worker(FunctionCallInfo fcinfo, const char *funcname,
 
 		state->lex = lex;
 
-		pg_parse_json(lex, sem);
+		pg_parse_json_or_ereport(lex, sem);
 	}
 	else
 	{
@@ -3971,7 +4102,7 @@ json_strip_nulls(PG_FUNCTION_ARGS)
 	sem->array_element_start = sn_array_element_start;
 	sem->object_field_start = sn_object_field_start;
 
-	pg_parse_json(lex, sem);
+	pg_parse_json_or_ereport(lex, sem);
 
 	PG_RETURN_TEXT_P(cstring_to_text_with_len(state->strval->data,
 											  state->strval->len));
@@ -5110,7 +5241,7 @@ iterate_json_values(text *json, uint32 flags, void *action_state,
 	sem->scalar = iterate_values_scalar;
 	sem->object_field_start = iterate_values_object_field_start;
 
-	pg_parse_json(lex, sem);
+	pg_parse_json_or_ereport(lex, sem);
 }
 
 /*
@@ -5230,7 +5361,7 @@ transform_json_string_values(text *json, void *action_state,
 	sem->array_element_start = transform_string_values_array_element_start;
 	sem->object_field_start = transform_string_values_object_field_start;
 
-	pg_parse_json(lex, sem);
+	pg_parse_json_or_ereport(lex, sem);
 
 	return cstring_to_text_with_len(state->strval->data, state->strval->len);
 }
