@@ -5129,6 +5129,11 @@
   proname => 'pg_stat_get_mod_since_analyze', provolatile => 's',
   proparallel => 'r', prorettype => 'int8', proargtypes => 'oid',
   prosrc => 'pg_stat_get_mod_since_analyze' },
+{ oid => '8872',
+  descr => 'statistics: number of tuples inserted since last vacuum',
+  proname => 'pg_stat_get_ins_since_vacuum', provolatile => 's',
+  proparallel => 'r', prorettype => 'int8', proargtypes => 'oid',
+  prosrc => 'pg_stat_get_ins_since_vacuum' },
 { oid => '1934', descr => 'statistics: number of blocks fetched',
   proname => 'pg_stat_get_blocks_fetched', provolatile => 's',
   proparallel => 'r', prorettype => 'int8', proargtypes => 'oid',
@@ -8730,6 +8735,9 @@
   proname => 'gtsvector_consistent', prorettype => 'bool',
   proargtypes => 'internal gtsvector int4 oid internal',
   prosrc => 'gtsvector_consistent_oldsig' },
+{ oid => '3434', descr => 'GiST tsvector support',
+  proname => 'gtsvector_options', prorettype => 'void', proisstrict => 'f',
+  proargtypes => 'internal', prosrc => 'gtsvector_options' },
 
 { oid => '3656', descr => 'GIN tsvector support',
   proname => 'gin_extract_tsvector', prorettype => 'internal',
@@ -10619,6 +10627,15 @@
   prorettype => 'void', proargtypes => 'int4 int4 cstring internal int4',
   prosrc => 'shift_jis_2004_to_euc_jis_2004',
   probin => '$libdir/euc2004_sjis2004' },
+
+{ oid => '8387',
+  descr => 'restriction selectivity for generic matching operators',
+  proname => 'matchingsel', provolatile => 's', prorettype => 'float8',
+  proargtypes => 'internal oid internal int4', prosrc => 'matchingsel' },
+{ oid => '8388', descr => 'join selectivity for generic matching operators',
+  proname => 'matchingjoinsel', provolatile => 's', prorettype => 'float8',
+  proargtypes => 'internal oid internal int2 internal',
+  prosrc => 'matchingjoinsel' },
 
 # replication/origin.h
 { oid => '6003', descr => 'create a replication origin',

@@ -17,12 +17,6 @@ PG_FUNCTION_INFO_V1(lquery_in);
 PG_FUNCTION_INFO_V1(lquery_out);
 
 
-#define UNCHAR ereport(ERROR, \
-					   (errcode(ERRCODE_SYNTAX_ERROR), \
-						errmsg("syntax error at position %d", \
-						pos)));
-
-
 typedef struct
 {
 	char	   *start;
@@ -47,7 +41,12 @@ ltree_in(PG_FUNCTION_ARGS)
 	ltree	   *result;
 	ltree_level *curlevel;
 	int			charlen;
-	int			pos = 0;
+	int			pos = 1;		/* character position for error messages */
+
+#define UNCHAR ereport(ERROR, \
+					   errcode(ERRCODE_SYNTAX_ERROR), \
+					   errmsg("ltree syntax error at character %d", \
+							  pos))
 
 	ptr = buf;
 	while (*ptr)
@@ -58,11 +57,11 @@ ltree_in(PG_FUNCTION_ARGS)
 		ptr += charlen;
 	}
 
-	if (num + 1 > MaxAllocSize / sizeof(nodeitem))
+	if (num + 1 > LTREE_MAX_LEVELS)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("number of levels (%d) exceeds the maximum allowed (%d)",
-						num + 1, (int) (MaxAllocSize / sizeof(nodeitem)))));
+				 errmsg("number of ltree labels (%d) exceeds the maximum allowed (%d)",
+						num + 1, LTREE_MAX_LEVELS)));
 	list = lptr = (nodeitem *) palloc(sizeof(nodeitem) * (num + 1));
 	ptr = buf;
 	while (*ptr)
@@ -85,13 +84,13 @@ ltree_in(PG_FUNCTION_ARGS)
 			if (charlen == 1 && t_iseq(ptr, '.'))
 			{
 				lptr->len = ptr - lptr->start;
-				if (lptr->wlen > 255)
+				if (lptr->wlen > LTREE_LABEL_MAX_CHARS)
 					ereport(ERROR,
 							(errcode(ERRCODE_NAME_TOO_LONG),
-							 errmsg("name of level is too long"),
-							 errdetail("Name length is %d, must "
-									   "be < 256, in position %d.",
-									   lptr->wlen, pos)));
+							 errmsg("label string is too long"),
+							 errdetail("Label length is %d, must be at most %d, at character %d.",
+									   lptr->wlen, LTREE_LABEL_MAX_CHARS,
+									   pos)));
 
 				totallen += MAXALIGN(lptr->len + LEVEL_HDRSIZE);
 				lptr++;
@@ -112,13 +111,12 @@ ltree_in(PG_FUNCTION_ARGS)
 	if (state == LTPRS_WAITDELIM)
 	{
 		lptr->len = ptr - lptr->start;
-		if (lptr->wlen > 255)
+		if (lptr->wlen > LTREE_LABEL_MAX_CHARS)
 			ereport(ERROR,
 					(errcode(ERRCODE_NAME_TOO_LONG),
-					 errmsg("name of level is too long"),
-					 errdetail("Name length is %d, must "
-							   "be < 256, in position %d.",
-							   lptr->wlen, pos)));
+					 errmsg("label string is too long"),
+					 errdetail("Label length is %d, must be at most %d, at character %d.",
+							   lptr->wlen, LTREE_LABEL_MAX_CHARS, pos)));
 
 		totallen += MAXALIGN(lptr->len + LEVEL_HDRSIZE);
 		lptr++;
@@ -126,8 +124,8 @@ ltree_in(PG_FUNCTION_ARGS)
 	else if (!(state == LTPRS_WAITNAME && lptr == list))
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("syntax error"),
-				 errdetail("Unexpected end of line.")));
+				 errmsg("ltree syntax error"),
+				 errdetail("Unexpected end of input.")));
 
 	result = (ltree *) palloc0(LTREE_HDRSIZE + totallen);
 	SET_VARSIZE(result, LTREE_HDRSIZE + totallen);
@@ -144,6 +142,8 @@ ltree_in(PG_FUNCTION_ARGS)
 
 	pfree(list);
 	PG_RETURN_POINTER(result);
+
+#undef UNCHAR
 }
 
 Datum
@@ -208,7 +208,12 @@ lquery_in(PG_FUNCTION_ARGS)
 	bool		hasnot = false;
 	bool		wasbad = false;
 	int			charlen;
-	int			pos = 0;
+	int			pos = 1;		/* character position for error messages */
+
+#define UNCHAR ereport(ERROR, \
+					   errcode(ERRCODE_SYNTAX_ERROR), \
+					   errmsg("lquery syntax error at character %d", \
+							  pos))
 
 	ptr = buf;
 	while (*ptr)
@@ -227,11 +232,11 @@ lquery_in(PG_FUNCTION_ARGS)
 	}
 
 	num++;
-	if (num > MaxAllocSize / ITEMSIZE)
+	if (num > LQUERY_MAX_LEVELS)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("number of levels (%d) exceeds the maximum allowed (%d)",
-						num, (int) (MaxAllocSize / ITEMSIZE))));
+				 errmsg("number of lquery items (%d) exceeds the maximum allowed (%d)",
+						num, LQUERY_MAX_LEVELS)));
 	curqlevel = tmpql = (lquery_level *) palloc0(ITEMSIZE * num);
 	ptr = buf;
 	while (*ptr)
@@ -302,15 +307,32 @@ lquery_in(PG_FUNCTION_ARGS)
 					((lptr->flag & LVAR_SUBLEXEME) ? 1 : 0) -
 					((lptr->flag & LVAR_INCASE) ? 1 : 0) -
 					((lptr->flag & LVAR_ANYEND) ? 1 : 0);
-				if (lptr->wlen > 255)
+				if (lptr->wlen > LTREE_LABEL_MAX_CHARS)
 					ereport(ERROR,
 							(errcode(ERRCODE_NAME_TOO_LONG),
-							 errmsg("name of level is too long"),
-							 errdetail("Name length is %d, must "
-									   "be < 256, in position %d.",
-									   lptr->wlen, pos)));
+							 errmsg("label string is too long"),
+							 errdetail("Label length is %d, must be at most %d, at character %d.",
+									   lptr->wlen, LTREE_LABEL_MAX_CHARS,
+									   pos)));
 
 				state = LQPRS_WAITVAR;
+			}
+			else if (charlen == 1 && t_iseq(ptr, '{'))
+			{
+				lptr->len = ptr - lptr->start -
+					((lptr->flag & LVAR_SUBLEXEME) ? 1 : 0) -
+					((lptr->flag & LVAR_INCASE) ? 1 : 0) -
+					((lptr->flag & LVAR_ANYEND) ? 1 : 0);
+				if (lptr->wlen > LTREE_LABEL_MAX_CHARS)
+					ereport(ERROR,
+							(errcode(ERRCODE_NAME_TOO_LONG),
+							 errmsg("label string is too long"),
+							 errdetail("Label length is %d, must be at most %d, at character %d.",
+									   lptr->wlen, LTREE_LABEL_MAX_CHARS,
+									   pos)));
+
+				curqlevel->flag |= LQL_COUNT;
+				state = LQPRS_WAITFNUM;
 			}
 			else if (charlen == 1 && t_iseq(ptr, '.'))
 			{
@@ -318,13 +340,13 @@ lquery_in(PG_FUNCTION_ARGS)
 					((lptr->flag & LVAR_SUBLEXEME) ? 1 : 0) -
 					((lptr->flag & LVAR_INCASE) ? 1 : 0) -
 					((lptr->flag & LVAR_ANYEND) ? 1 : 0);
-				if (lptr->wlen > 255)
+				if (lptr->wlen > LTREE_LABEL_MAX_CHARS)
 					ereport(ERROR,
 							(errcode(ERRCODE_NAME_TOO_LONG),
-							 errmsg("name of level is too long"),
-							 errdetail("Name length is %d, must "
-									   "be < 256, in position %d.",
-									   lptr->wlen, pos)));
+							 errmsg("label string is too long"),
+							 errdetail("Label length is %d, must be at most %d, at character %d.",
+									   lptr->wlen, LTREE_LABEL_MAX_CHARS,
+									   pos)));
 
 				state = LQPRS_WAITLEVEL;
 				curqlevel = NEXTLEV(curqlevel);
@@ -343,8 +365,9 @@ lquery_in(PG_FUNCTION_ARGS)
 				state = LQPRS_WAITFNUM;
 			else if (charlen == 1 && t_iseq(ptr, '.'))
 			{
+				/* We only get here for '*', so these are correct defaults */
 				curqlevel->low = 0;
-				curqlevel->high = 0xffff;
+				curqlevel->high = LTREE_MAX_LEVELS;
 				curqlevel = NEXTLEV(curqlevel);
 				state = LQPRS_WAITLEVEL;
 			}
@@ -357,7 +380,16 @@ lquery_in(PG_FUNCTION_ARGS)
 				state = LQPRS_WAITSNUM;
 			else if (t_isdigit(ptr))
 			{
-				curqlevel->low = atoi(ptr);
+				int			low = atoi(ptr);
+
+				if (low < 0 || low > LTREE_MAX_LEVELS)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("lquery syntax error"),
+							 errdetail("Low limit (%d) exceeds the maximum allowed (%d), at character %d.",
+									   low, LTREE_MAX_LEVELS, pos)));
+
+				curqlevel->low = (uint16) low;
 				state = LQPRS_WAITND;
 			}
 			else
@@ -367,12 +399,27 @@ lquery_in(PG_FUNCTION_ARGS)
 		{
 			if (t_isdigit(ptr))
 			{
-				curqlevel->high = atoi(ptr);
+				int			high = atoi(ptr);
+
+				if (high < 0 || high > LTREE_MAX_LEVELS)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("lquery syntax error"),
+							 errdetail("High limit (%d) exceeds the maximum allowed (%d), at character %d.",
+									   high, LTREE_MAX_LEVELS, pos)));
+				else if (curqlevel->low > high)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("lquery syntax error"),
+							 errdetail("Low limit (%d) is greater than high limit (%d), at character %d.",
+									   curqlevel->low, high, pos)));
+
+				curqlevel->high = (uint16) high;
 				state = LQPRS_WAITCLOSE;
 			}
 			else if (charlen == 1 && t_iseq(ptr, '}'))
 			{
-				curqlevel->high = 0xffff;
+				curqlevel->high = LTREE_MAX_LEVELS;
 				state = LQPRS_WAITEND;
 			}
 			else
@@ -422,8 +469,8 @@ lquery_in(PG_FUNCTION_ARGS)
 		if (lptr->start == ptr)
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("syntax error"),
-					 errdetail("Unexpected end of line.")));
+					 errmsg("lquery syntax error"),
+					 errdetail("Unexpected end of input.")));
 
 		lptr->len = ptr - lptr->start -
 			((lptr->flag & LVAR_SUBLEXEME) ? 1 : 0) -
@@ -432,24 +479,23 @@ lquery_in(PG_FUNCTION_ARGS)
 		if (lptr->len == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("syntax error"),
-					 errdetail("Unexpected end of line.")));
+					 errmsg("lquery syntax error"),
+					 errdetail("Unexpected end of input.")));
 
-		if (lptr->wlen > 255)
+		if (lptr->wlen > LTREE_LABEL_MAX_CHARS)
 			ereport(ERROR,
 					(errcode(ERRCODE_NAME_TOO_LONG),
-					 errmsg("name of level is too long"),
-					 errdetail("Name length is %d, must "
-							   "be < 256, in position %d.",
-							   lptr->wlen, pos)));
+					 errmsg("label string is too long"),
+					 errdetail("Label length is %d, must be at most %d, at character %d.",
+							   lptr->wlen, LTREE_LABEL_MAX_CHARS, pos)));
 	}
 	else if (state == LQPRS_WAITOPEN)
-		curqlevel->high = 0xffff;
+		curqlevel->high = LTREE_MAX_LEVELS;
 	else if (state != LQPRS_WAITEND)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("syntax error"),
-				 errdetail("Unexpected end of line.")));
+				 errmsg("lquery syntax error"),
+				 errdetail("Unexpected end of input.")));
 
 	curqlevel = tmpql;
 	totallen = LQUERY_HDRSIZE;
@@ -465,13 +511,6 @@ lquery_in(PG_FUNCTION_ARGS)
 				lptr++;
 			}
 		}
-		else if (curqlevel->low > curqlevel->high)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("syntax error"),
-					 errdetail("Low limit(%d) is greater than upper(%d).",
-							   curqlevel->low, curqlevel->high)));
-
 		curqlevel = NEXTLEV(curqlevel);
 	}
 
@@ -504,18 +543,29 @@ lquery_in(PG_FUNCTION_ARGS)
 			}
 			pfree(GETVAR(curqlevel));
 			if (cur->numvar > 1 || cur->flag != 0)
+			{
+				/* Not a simple match */
 				wasbad = true;
+			}
 			else if (wasbad == false)
+			{
+				/* count leading simple matches */
 				(result->firstgood)++;
+			}
 		}
 		else
+		{
+			/* '*', so this isn't a simple match */
 			wasbad = true;
+		}
 		curqlevel = NEXTLEV(curqlevel);
 		cur = LQL_NEXT(cur);
 	}
 
 	pfree(tmpql);
 	PG_RETURN_POINTER(result);
+
+#undef UNCHAR
 }
 
 Datum
@@ -535,7 +585,11 @@ lquery_out(PG_FUNCTION_ARGS)
 	{
 		totallen++;
 		if (curqlevel->numvar)
+		{
 			totallen += 1 + (curqlevel->numvar * 4) + curqlevel->totallen;
+			if (curqlevel->flag & LQL_COUNT)
+				totallen += 2 * 11 + 3;
+		}
 		else
 			totallen += 2 * 11 + 4;
 		curqlevel = LQL_NEXT(curqlevel);
@@ -587,26 +641,37 @@ lquery_out(PG_FUNCTION_ARGS)
 		}
 		else
 		{
+			*ptr = '*';
+			ptr++;
+		}
+
+		if ((curqlevel->flag & LQL_COUNT) || curqlevel->numvar == 0)
+		{
 			if (curqlevel->low == curqlevel->high)
 			{
-				sprintf(ptr, "*{%d}", curqlevel->low);
+				sprintf(ptr, "{%d}", curqlevel->low);
 			}
 			else if (curqlevel->low == 0)
 			{
-				if (curqlevel->high == 0xffff)
+				if (curqlevel->high == LTREE_MAX_LEVELS)
 				{
-					*ptr = '*';
-					*(ptr + 1) = '\0';
+					if (curqlevel->numvar == 0)
+					{
+						/* This is default for '*', so print nothing */
+						*ptr = '\0';
+					}
+					else
+						sprintf(ptr, "{,}");
 				}
 				else
-					sprintf(ptr, "*{,%d}", curqlevel->high);
+					sprintf(ptr, "{,%d}", curqlevel->high);
 			}
-			else if (curqlevel->high == 0xffff)
+			else if (curqlevel->high == LTREE_MAX_LEVELS)
 			{
-				sprintf(ptr, "*{%d,}", curqlevel->low);
+				sprintf(ptr, "{%d,}", curqlevel->low);
 			}
 			else
-				sprintf(ptr, "*{%d,%d}", curqlevel->low, curqlevel->high);
+				sprintf(ptr, "{%d,%d}", curqlevel->low, curqlevel->high);
 			ptr = strchr(ptr, '\0');
 		}
 

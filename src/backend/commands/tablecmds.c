@@ -5343,12 +5343,14 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 					ereport(ERROR,
 							(errcode(ERRCODE_CHECK_VIOLATION),
 							 errmsg("updated partition constraint for default partition \"%s\" would be violated by some row",
-									RelationGetRelationName(oldrel))));
+									RelationGetRelationName(oldrel)),
+							 errtable(oldrel)));
 				else
 					ereport(ERROR,
 							(errcode(ERRCODE_CHECK_VIOLATION),
 							 errmsg("partition constraint of relation \"%s\" is violated by some row",
-									RelationGetRelationName(oldrel))));
+									RelationGetRelationName(oldrel)),
+							 errtable(oldrel)));
 			}
 
 			/* Write the tuple out to the new relation */
@@ -6083,7 +6085,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 
 	ReleaseSysCache(typeTuple);
 
-	InsertPgAttributeTuple(attrdesc, &attribute, NULL);
+	InsertPgAttributeTuple(attrdesc, &attribute, (Datum) 0, NULL);
 
 	table_close(attrdesc, RowExclusiveLock);
 

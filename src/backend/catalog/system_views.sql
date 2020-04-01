@@ -573,6 +573,7 @@ CREATE VIEW pg_stat_all_tables AS
             pg_stat_get_live_tuples(C.oid) AS n_live_tup,
             pg_stat_get_dead_tuples(C.oid) AS n_dead_tup,
             pg_stat_get_mod_since_analyze(C.oid) AS n_mod_since_analyze,
+            pg_stat_get_ins_since_vacuum(C.oid) AS n_ins_since_vacuum,
             pg_stat_get_last_vacuum_time(C.oid) as last_vacuum,
             pg_stat_get_last_autovacuum_time(C.oid) as last_autovacuum,
             pg_stat_get_last_analyze_time(C.oid) as last_analyze,
@@ -1070,7 +1071,7 @@ CREATE VIEW pg_stat_progress_basebackup AS
                       WHEN 4 THEN 'waiting for wal archiving to finish'
                       WHEN 5 THEN 'transferring wal files'
                       END AS phase,
-	S.param2 AS backup_total,
+	CASE S.param2 WHEN -1 THEN NULL ELSE S.param2 END AS backup_total,
 	S.param3 AS backup_streamed,
 	S.param4 AS tablespaces_total,
 	S.param5 AS tablespaces_streamed

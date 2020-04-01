@@ -3682,6 +3682,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 
 	switch (w)
 	{
+		case WAIT_EVENT_BACKUP_WAIT_WAL_ARCHIVE:
+			event_name = "BackupWaitWalArchive";
+			break;
 		case WAIT_EVENT_BGWORKER_SHUTDOWN:
 			event_name = "BgWorkerShutdown";
 			break;
@@ -3781,6 +3784,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_PROMOTE:
 			event_name = "Promote";
 			break;
+		case WAIT_EVENT_RECOVERY_PAUSE:
+			event_name = "RecoveryPause";
+			break;
 		case WAIT_EVENT_REPLICATION_ORIGIN_DROP:
 			event_name = "ReplicationOriginDrop";
 			break;
@@ -3823,6 +3829,9 @@ pgstat_get_wait_timeout(WaitEventTimeout w)
 			break;
 		case WAIT_EVENT_RECOVERY_RETRIEVE_RETRY_INTERVAL:
 			event_name = "RecoveryRetrieveRetryInterval";
+			break;
+		case WAIT_EVENT_VACUUM_DELAY:
+			event_name = "VacuumDelay";
 			break;
 			/* no default case, so that compiler will warn */
 	}
@@ -4692,6 +4701,7 @@ pgstat_get_tab_entry(PgStat_StatDBEntry *dbentry, Oid tableoid, bool create)
 		result->n_live_tuples = 0;
 		result->n_dead_tuples = 0;
 		result->changes_since_analyze = 0;
+		result->inserts_since_vacuum = 0;
 		result->blocks_fetched = 0;
 		result->blocks_hit = 0;
 		result->vacuum_timestamp = 0;
@@ -5822,6 +5832,7 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->n_live_tuples = tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples = tabmsg->t_counts.t_delta_dead_tuples;
 			tabentry->changes_since_analyze = tabmsg->t_counts.t_changed_tuples;
+			tabentry->inserts_since_vacuum = tabmsg->t_counts.t_tuples_inserted;
 			tabentry->blocks_fetched = tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit = tabmsg->t_counts.t_blocks_hit;
 
@@ -5851,10 +5862,12 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			{
 				tabentry->n_live_tuples = 0;
 				tabentry->n_dead_tuples = 0;
+				tabentry->inserts_since_vacuum = 0;
 			}
 			tabentry->n_live_tuples += tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples += tabmsg->t_counts.t_delta_dead_tuples;
 			tabentry->changes_since_analyze += tabmsg->t_counts.t_changed_tuples;
+			tabentry->inserts_since_vacuum += tabmsg->t_counts.t_tuples_inserted;
 			tabentry->blocks_fetched += tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit += tabmsg->t_counts.t_blocks_hit;
 		}
@@ -6088,6 +6101,18 @@ pgstat_recv_vacuum(PgStat_MsgVacuum *msg, int len)
 
 	tabentry->n_live_tuples = msg->m_live_tuples;
 	tabentry->n_dead_tuples = msg->m_dead_tuples;
+
+	/*
+	 * It is quite possible that a non-aggressive VACUUM ended up skipping
+	 * various pages, however, we'll zero the insert counter here regardless.
+	 * It's currently used only to track when we need to perform an
+	 * "insert" autovacuum, which are mainly intended to freeze newly inserted
+	 * tuples.  Zeroing this may just mean we'll not try to vacuum the table
+	 * again until enough tuples have been inserted to trigger another insert
+	 * autovacuum.  An anti-wraparound autovacuum will catch any persistent
+	 * stragglers.
+	 */
+	tabentry->inserts_since_vacuum = 0;
 
 	if (msg->m_autovacuum)
 	{
