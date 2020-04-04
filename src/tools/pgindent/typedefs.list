@@ -2643,6 +2643,7 @@ WalSndCtlData
 WalSndSendDataCallback
 WalSndState
 WalTimeSample
+WalUsage
 WalWriteMethod
 Walfile
 WindowAgg
@@ -3118,6 +3119,7 @@ pgssHashKey
 pgssJumbleState
 pgssLocationLen
 pgssSharedState
+pgssStoreKind
 pgssVersion
 pgstat_page
 pgstattuple_type
