@@ -188,11 +188,8 @@ InstrStartParallelQuery(void)
 void
 InstrEndParallelQuery(BufferUsage *bufusage, WalUsage *walusage)
 {
-	if (bufusage)
-	{
-		memset(bufusage, 0, sizeof(BufferUsage));
-		BufferUsageAccumDiff(bufusage, &pgBufferUsage, &save_pgBufferUsage);
-	}
+	memset(bufusage, 0, sizeof(BufferUsage));
+	BufferUsageAccumDiff(bufusage, &pgBufferUsage, &save_pgBufferUsage);
 	memset(walusage, 0, sizeof(WalUsage));
 	WalUsageAccumDiff(walusage, &pgWalUsage, &save_pgWalUsage);
 }
@@ -201,8 +198,7 @@ InstrEndParallelQuery(BufferUsage *bufusage, WalUsage *walusage)
 void
 InstrAccumParallelQuery(BufferUsage *bufusage, WalUsage *walusage)
 {
-	if (bufusage)
-		BufferUsageAdd(&pgBufferUsage, bufusage);
+	BufferUsageAdd(&pgBufferUsage, bufusage);
 	WalUsageAdd(&pgWalUsage, walusage);
 }
 
@@ -252,7 +248,7 @@ WalUsageAdd(WalUsage *dst, WalUsage *add)
 {
 	dst->wal_bytes += add->wal_bytes;
 	dst->wal_records += add->wal_records;
-	dst->wal_num_fpw += add->wal_num_fpw;
+	dst->wal_fpw += add->wal_fpw;
 }
 
 void
@@ -260,5 +256,5 @@ WalUsageAccumDiff(WalUsage *dst, const WalUsage *add, const WalUsage *sub)
 {
 	dst->wal_bytes += add->wal_bytes - sub->wal_bytes;
 	dst->wal_records += add->wal_records - sub->wal_records;
-	dst->wal_num_fpw += add->wal_num_fpw - sub->wal_num_fpw;
+	dst->wal_fpw += add->wal_fpw - sub->wal_fpw;
 }

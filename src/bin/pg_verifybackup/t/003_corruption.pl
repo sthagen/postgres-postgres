@@ -1,4 +1,4 @@
-# Verify that various forms of corruption are detected by pg_validatebackup.
+# Verify that various forms of corruption are detected by pg_verifybackup.
 
 use strict;
 use warnings;
@@ -16,6 +16,9 @@ $master->start;
 # Include a user-defined tablespace in the hopes of detecting problems in that
 # area.
 my $source_ts_path = TestLib::perl2host(TestLib::tempdir_short());
+my $source_ts_prefix = $source_ts_path;
+$source_ts_prefix =~ s!(^[A-Z]:/[^/]*)/.*!$1!;
+
 $master->safe_psql('postgres', <<EOM);
 CREATE TABLE x1 (a int);
 INSERT INTO x1 VALUES (111);
@@ -102,22 +105,26 @@ for my $scenario (@scenario)
 		skip "unix-style permissions not supported on Windows", 4
 			if $scenario->{'skip_on_windows'} && $windows_os;
 
-		# Take a backup and check that it validates OK.
+		# Take a backup and check that it verifies OK.
 		my $backup_path = $master->backup_dir . '/' . $name;
 		my $backup_ts_path = TestLib::perl2host(TestLib::tempdir_short());
+		# The tablespace map parameter confuses Msys2, which tries to mangle
+		# it. Tell it not to.
+		# See https://www.msys2.org/wiki/Porting/#filesystem-namespaces
+		local $ENV{MSYS2_ARG_CONV_EXCL} = $source_ts_prefix;
 		$master->command_ok(['pg_basebackup', '-D', $backup_path, '--no-sync',
 							'-T', "${source_ts_path}=${backup_ts_path}"],
 							"base backup ok");
-		command_ok(['pg_validatebackup', $backup_path ],
-				   "intact backup validated");
+		command_ok(['pg_verifybackup', $backup_path ],
+				   "intact backup verified");
 
 		# Mutilate the backup in some way.
 		$scenario->{'mutilate'}->($backup_path);
 
-		# Now check that the backup no longer validates.
-		command_fails_like(['pg_validatebackup', $backup_path ],
+		# Now check that the backup no longer verifies.
+		command_fails_like(['pg_verifybackup', $backup_path ],
 						   $scenario->{'fails_like'},
-						   "corrupt backup fails validation: $name");
+						   "corrupt backup fails verification: $name");
 
 		# Run cleanup hook, if provided.
 		$scenario->{'cleanup'}->($backup_path)
@@ -179,7 +186,14 @@ sub mutilate_missing_tablespace
 	my $pathname = "$backup_path/pg_tblspc/$tsoid";
 	if ($windows_os)
 	{
-		rmdir($pathname) || die "$pathname: $!";
+		# rmdir works on some windows setups, unlink on others.
+		# Instead of trying to implement precise rules, just try one and then
+		# the other.
+		unless (rmdir($pathname))
+		{
+			my $err = $!;
+			unlink($pathname) || die "$pathname: rmdir: $err, unlink: $!";
+		}
 	}
 	else
 	{

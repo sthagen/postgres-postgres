@@ -44,6 +44,7 @@
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/partition.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_attrdef.h"
@@ -348,7 +349,7 @@ ScanPgRelation(Oid targetRelId, bool indexOK, bool force_non_historic)
 	 * The caller might need a tuple that's newer than the one the historic
 	 * snapshot; currently the only case requiring to do so is looking up the
 	 * relfilenode of non mapped system relations during decoding. That
-	 * snapshot cant't change in the midst of a relcache build, so there's no
+	 * snapshot can't change in the midst of a relcache build, so there's no
 	 * need to register the snapshot.
 	 */
 	if (force_non_historic)
@@ -5314,6 +5315,20 @@ GetRelationPublicationActions(Relation relation)
 
 	/* Fetch the publication membership info. */
 	puboids = GetRelationPublications(RelationGetRelid(relation));
+	if (relation->rd_rel->relispartition)
+	{
+		/* Add publications that the ancestors are in too. */
+		List   *ancestors = get_partition_ancestors(RelationGetRelid(relation));
+		ListCell *lc;
+
+		foreach(lc, ancestors)
+		{
+			Oid		ancestor = lfirst_oid(lc);
+
+			puboids = list_concat_unique_oid(puboids,
+											 GetRelationPublications(ancestor));
+		}
+	}
 	puboids = list_concat_unique_oid(puboids, GetAllTablesPublications());
 
 	foreach(lc, puboids)

@@ -595,7 +595,7 @@ StartReplication(StartReplicationCmd *cmd)
 
 	if (cmd->slotname)
 	{
-		ReplicationSlotAcquire(cmd->slotname, true);
+		(void) ReplicationSlotAcquire(cmd->slotname, SAB_Error);
 		if (SlotIsLogical(MyReplicationSlot))
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -1132,7 +1132,7 @@ StartLogicalReplication(StartReplicationCmd *cmd)
 
 	Assert(!MyReplicationSlot);
 
-	ReplicationSlotAcquire(cmd->slotname, true);
+	(void) ReplicationSlotAcquire(cmd->slotname, SAB_Error);
 
 	/*
 	 * Force a disconnect, so that the decoding code doesn't need to care
@@ -1428,8 +1428,10 @@ WalSndWaitForWal(XLogRecPtr loc)
 		/*
 		 * We only send regular messages to the client for full decoded
 		 * transactions, but a synchronous replication and walsender shutdown
-		 * possibly are waiting for a later location. So we send pings
-		 * containing the flush location every now and then.
+		 * possibly are waiting for a later location. So, before sleeping, we
+		 * send a ping containing the flush location. If the receiver is
+		 * otherwise idle, this keepalive will trigger a reply. Processing the
+		 * reply will update these MyWalSnd locations.
 		 */
 		if (MyWalSnd->flush < sentPtr &&
 			MyWalSnd->write < sentPtr &&
@@ -2314,29 +2316,22 @@ WalSndLoop(WalSndSendDataCallback send_data)
 		WalSndKeepaliveIfNecessary();
 
 		/*
-		 * We don't block if not caught up, unless there is unsent data
-		 * pending in which case we'd better block until the socket is
-		 * write-ready.  This test is only needed for the case where the
-		 * send_data callback handled a subset of the available data but then
-		 * pq_flush_if_writable flushed it all --- we should immediately try
-		 * to send more.
+		 * Block if we have unsent data.  Let WalSndWaitForWal() handle any
+		 * other blocking; idle receivers need its additional actions.
 		 */
-		if ((WalSndCaughtUp && !streamingDoneSending) || pq_is_send_pending())
+		if (pq_is_send_pending())
 		{
 			long		sleeptime;
 			int			wakeEvents;
 
 			wakeEvents = WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT |
-				WL_SOCKET_READABLE;
+				WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE;
 
 			/*
 			 * Use fresh timestamp, not last_processing, to reduce the chance
 			 * of reaching wal_sender_timeout before sending a keepalive.
 			 */
 			sleeptime = WalSndComputeSleeptime(GetCurrentTimestamp());
-
-			if (pq_is_send_pending())
-				wakeEvents |= WL_SOCKET_WRITEABLE;
 
 			/* Sleep until something happens or we time out */
 			(void) WaitLatchOrSocket(MyLatch, wakeEvents,
@@ -2380,14 +2375,16 @@ InitWalSenderSlot(void)
 			 * Found a free slot. Reserve it for us.
 			 */
 			walsnd->pid = MyProcPid;
+			walsnd->state = WALSNDSTATE_STARTUP;
 			walsnd->sentPtr = InvalidXLogRecPtr;
+			walsnd->needreload = false;
 			walsnd->write = InvalidXLogRecPtr;
 			walsnd->flush = InvalidXLogRecPtr;
 			walsnd->apply = InvalidXLogRecPtr;
 			walsnd->writeLag = -1;
 			walsnd->flushLag = -1;
 			walsnd->applyLag = -1;
-			walsnd->state = WALSNDSTATE_STARTUP;
+			walsnd->sync_standby_priority = 0;
 			walsnd->latch = &MyProc->procLatch;
 			walsnd->replyTime = 0;
 			walsnd->spillTxns = 0;
@@ -2949,7 +2946,7 @@ GetStandbyFlushRecPtr(void)
 	 * has streamed, but hasn't been replayed yet.
 	 */
 
-	receivePtr = GetWalRcvWriteRecPtr(NULL, &receiveTLI);
+	receivePtr = GetWalRcvFlushRecPtr(NULL, &receiveTLI);
 	replayPtr = GetXLogReplayRecPtr(&replayTLI);
 
 	ThisTimeLineID = replayTLI;
@@ -3240,7 +3237,8 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 	Tuplestorestate *tupstore;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
-	List	   *sync_standbys;
+	SyncRepStandbyData *sync_standbys;
+	int			num_standbys;
 	int			i;
 
 	/* check to see if caller supports us returning a tuplestore */
@@ -3268,11 +3266,10 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 	MemoryContextSwitchTo(oldcontext);
 
 	/*
-	 * Get the currently active synchronous standbys.
+	 * Get the currently active synchronous standbys.  This could be out of
+	 * date before we're done, but we'll use the data anyway.
 	 */
-	LWLockAcquire(SyncRepLock, LW_SHARED);
-	sync_standbys = SyncRepGetSyncStandbys(NULL);
-	LWLockRelease(SyncRepLock);
+	num_standbys = SyncRepGetCandidateStandbys(&sync_standbys);
 
 	for (i = 0; i < max_wal_senders; i++)
 	{
@@ -3291,9 +3288,12 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 		int64		spillTxns;
 		int64		spillCount;
 		int64		spillBytes;
+		bool		is_sync_standby;
 		Datum		values[PG_STAT_GET_WAL_SENDERS_COLS];
 		bool		nulls[PG_STAT_GET_WAL_SENDERS_COLS];
+		int			j;
 
+		/* Collect data from shared memory */
 		SpinLockAcquire(&walsnd->mutex);
 		if (walsnd->pid == 0)
 		{
@@ -3315,6 +3315,22 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 		spillCount = walsnd->spillCount;
 		spillBytes = walsnd->spillBytes;
 		SpinLockRelease(&walsnd->mutex);
+
+		/*
+		 * Detect whether walsender is/was considered synchronous.  We can
+		 * provide some protection against stale data by checking the PID
+		 * along with walsnd_index.
+		 */
+		is_sync_standby = false;
+		for (j = 0; j < num_standbys; j++)
+		{
+			if (sync_standbys[j].walsnd_index == i &&
+				sync_standbys[j].pid == pid)
+			{
+				is_sync_standby = true;
+				break;
+			}
+		}
 
 		memset(nulls, 0, sizeof(nulls));
 		values[0] = Int32GetDatum(pid);
@@ -3385,7 +3401,7 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 			 */
 			if (priority == 0)
 				values[10] = CStringGetTextDatum("async");
-			else if (list_member_int(sync_standbys, i))
+			else if (is_sync_standby)
 				values[10] = SyncRepConfig->syncrep_method == SYNC_REP_PRIORITY ?
 					CStringGetTextDatum("sync") : CStringGetTextDatum("quorum");
 			else
