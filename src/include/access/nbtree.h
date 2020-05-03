@@ -888,7 +888,7 @@ typedef BTScanPosData *BTScanPos;
 		(scanpos).buf = InvalidBuffer; \
 		(scanpos).lsn = InvalidXLogRecPtr; \
 		(scanpos).nextTupleOffset = 0; \
-	} while (0);
+	} while (0)
 
 /* We need one of these for each equality-type SK_SEARCHARRAY scan key */
 typedef struct BTArrayKeyInfo
@@ -1080,7 +1080,8 @@ extern void _bt_delitems_vacuum(Relation rel, Buffer buf,
 extern void _bt_delitems_delete(Relation rel, Buffer buf,
 								OffsetNumber *deletable, int ndeletable,
 								Relation heapRel);
-extern int	_bt_pagedel(Relation rel, Buffer buf);
+extern uint32 _bt_pagedel(Relation rel, Buffer leafbuf,
+						  TransactionId *oldestBtpoXact);
 
 /*
  * prototypes for functions in nbtsearch.c
