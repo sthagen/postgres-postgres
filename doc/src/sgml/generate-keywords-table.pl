@@ -56,6 +56,11 @@ print <<END;
  <title><acronym>SQL</acronym> Key Words</title>
 
  <tgroup cols="5">
+  <colspec colname="col1" colwidth="5*"/>
+  <colspec colname="col2" colwidth="3*"/>
+  <colspec colname="col3" colwidth="2*"/>
+  <colspec colname="col4" colwidth="2*"/>
+  <colspec colname="col5" colwidth="2*"/>
   <thead>
    <row>
     <entry>Key Word</entry>
