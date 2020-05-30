@@ -12,6 +12,7 @@
 <xsl:param name="ulink.footnotes" select="1"></xsl:param>
 <xsl:param name="use.extensions" select="1"></xsl:param>
 <xsl:param name="variablelist.as.blocks" select="1"></xsl:param>
+<xsl:param name="orderedlist.label.width">1.5em</xsl:param>
 
 <xsl:attribute-set name="monospace.verbatim.properties"
                    use-attribute-sets="verbatim.properties monospace.properties">
@@ -72,6 +73,16 @@
 <xsl:template match="entry[@role='func_table_entry']/para">
   <fo:block margin-left="4em" text-align="left">
     <xsl:if test="self::para[@role='func_signature']">
+      <xsl:attribute name="text-indent">-3.5em</xsl:attribute>
+    </xsl:if>
+    <xsl:apply-templates/>
+  </fo:block>
+</xsl:template>
+
+<!-- formatting for entries in tables of catalog/view columns -->
+<xsl:template match="entry[@role='catalog_table_entry']/para">
+  <fo:block margin-left="4em" text-align="left">
+    <xsl:if test="self::para[@role='column_definition']">
       <xsl:attribute name="text-indent">-3.5em</xsl:attribute>
     </xsl:if>
     <xsl:apply-templates/>

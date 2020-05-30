@@ -4121,8 +4121,8 @@ ALTER INDEX measurement_city_id_logdate_key
       <listitem>
        <para>
         Some operations require a stronger lock when using declarative
-        partitioning than when using table inheritance.  For example, adding
-        or removing a partition to or from a partitioned table requires taking
+        partitioning than when using table inheritance.  For example,
+        removing a partition from a partitioned table requires taking
         an <literal>ACCESS EXCLUSIVE</literal> lock on the parent table,
         whereas a <literal>SHARE UPDATE EXCLUSIVE</literal> lock is enough
         in the case of regular inheritance.
@@ -4537,7 +4537,7 @@ SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
 SET enable_partition_pruning = off;
 EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
                                     QUERY PLAN
------------------------------------------------------------------------------------
+-------------------------------------------------------------------&zwsp;----------------
  Aggregate  (cost=188.76..188.77 rows=1 width=8)
    -&gt;  Append  (cost=0.00..181.05 rows=3085 width=0)
          -&gt;  Seq Scan on measurement_y2006m02  (cost=0.00..33.12 rows=617 width=0)
@@ -4562,7 +4562,7 @@ EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
 SET enable_partition_pruning = on;
 EXPLAIN SELECT count(*) FROM measurement WHERE logdate &gt;= DATE '2008-01-01';
                                     QUERY PLAN
------------------------------------------------------------------------------------
+-------------------------------------------------------------------&zwsp;----------------
  Aggregate  (cost=37.75..37.76 rows=1 width=8)
    -&gt;  Seq Scan on measurement_y2008m01  (cost=0.00..33.12 rows=617 width=0)
          Filter: (logdate &gt;= '2008-01-01'::date)
