@@ -367,8 +367,7 @@ static bool CopyReadLine(CopyState cstate);
 static bool CopyReadLineText(CopyState cstate);
 static int	CopyReadAttributesText(CopyState cstate);
 static int	CopyReadAttributesCSV(CopyState cstate);
-static Datum CopyReadBinaryAttribute(CopyState cstate,
-									 int column_no, FmgrInfo *flinfo,
+static Datum CopyReadBinaryAttribute(CopyState cstate, FmgrInfo *flinfo,
 									 Oid typioparam, int32 typmod,
 									 bool *isnull);
 static void CopyAttributeOutText(CopyState cstate, char *string);
@@ -2304,11 +2303,7 @@ CopyFromErrorCallback(void *arg)
 /*
  * Make sure we don't print an unreasonable amount of COPY data in a message.
  *
- * It would seem a lot easier to just use the sprintf "precision" limit to
- * truncate the string.  However, some versions of glibc have a bug/misfeature
- * that vsnprintf will always fail (return -1) if it is asked to truncate
- * a string that contains invalid byte sequences for the current encoding.
- * So, do our own truncation.  We return a pstrdup'd copy of the input.
+ * Returns a pstrdup'd copy of the input.
  */
 static char *
 limit_printout_length(const char *str)
@@ -3776,7 +3771,6 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 					 errmsg("row field count is %d, expected %d",
 							(int) fld_count, attr_count)));
 
-		i = 0;
 		foreach(cur, cstate->attnumlist)
 		{
 			int			attnum = lfirst_int(cur);
@@ -3784,9 +3778,7 @@ NextCopyFrom(CopyState cstate, ExprContext *econtext,
 			Form_pg_attribute att = TupleDescAttr(tupDesc, m);
 
 			cstate->cur_attname = NameStr(att->attname);
-			i++;
 			values[m] = CopyReadBinaryAttribute(cstate,
-												i,
 												&in_functions[m],
 												typioparams[m],
 												att->atttypmod,
@@ -4714,8 +4706,7 @@ endfield:
  * Read a binary attribute
  */
 static Datum
-CopyReadBinaryAttribute(CopyState cstate,
-						int column_no, FmgrInfo *flinfo,
+CopyReadBinaryAttribute(CopyState cstate, FmgrInfo *flinfo,
 						Oid typioparam, int32 typmod,
 						bool *isnull)
 {

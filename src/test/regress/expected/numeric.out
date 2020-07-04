@@ -2315,3 +2315,63 @@ FROM (VALUES (0::numeric, 0::numeric),
 
 SELECT lcm(9999 * (10::numeric)^131068 + (10::numeric^131068 - 1), 2); -- overflow
 ERROR:  value overflows numeric format
+--
+-- Tests for factorial
+--
+SELECT 4!;
+ ?column? 
+----------
+       24
+(1 row)
+
+SELECT !!3;
+ ?column? 
+----------
+        6
+(1 row)
+
+SELECT factorial(15);
+   factorial   
+---------------
+ 1307674368000
+(1 row)
+
+SELECT 100000!;
+ERROR:  value overflows numeric format
+SELECT 0!;
+ ?column? 
+----------
+        1
+(1 row)
+
+SELECT -4!;
+ERROR:  factorial of a negative number is undefined
+SELECT factorial(-4);
+ERROR:  factorial of a negative number is undefined
+--
+-- Tests for pg_lsn()
+--
+SELECT pg_lsn(23783416::numeric);
+  pg_lsn   
+-----------
+ 0/16AE7F8
+(1 row)
+
+SELECT pg_lsn(0::numeric);
+ pg_lsn 
+--------
+ 0/0
+(1 row)
+
+SELECT pg_lsn(18446744073709551615::numeric);
+      pg_lsn       
+-------------------
+ FFFFFFFF/FFFFFFFF
+(1 row)
+
+SELECT pg_lsn(-1::numeric);
+ERROR:  pg_lsn out of range
+SELECT pg_lsn(18446744073709551616::numeric);
+ERROR:  pg_lsn out of range
+SELECT pg_lsn('NaN'::numeric);
+ERROR:  cannot convert NaN to pg_lsn
