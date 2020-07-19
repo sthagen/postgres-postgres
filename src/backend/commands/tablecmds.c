@@ -328,7 +328,8 @@ static void AlterSeqNamespaces(Relation classRel, Relation rel,
 							   LOCKMODE lockmode);
 static ObjectAddress ATExecAlterConstraint(Relation rel, AlterTableCmd *cmd,
 										   bool recurse, bool recursing, LOCKMODE lockmode);
-static ObjectAddress ATExecValidateConstraint(Relation rel, char *constrName,
+static ObjectAddress ATExecValidateConstraint(List **wqueue,
+											  Relation rel, char *constrName,
 											  bool recurse, bool recursing, LOCKMODE lockmode);
 static int	transformColumnNameList(Oid relId, List *colList,
 									int16 *attnums, Oid *atttypids);
@@ -342,7 +343,6 @@ static Oid	transformFkeyCheckAttrs(Relation pkrel,
 static void checkFkeyPermissions(Relation rel, int16 *attnums, int natts);
 static CoercionPathType findFkeyCast(Oid targetTypeId, Oid sourceTypeId,
 									 Oid *funcid);
-static void validateCheckConstraint(Relation rel, HeapTuple constrtup);
 static void validateForeignKeyConstraint(char *conname,
 										 Relation rel, Relation pkrel,
 										 Oid pkindOid, Oid constraintOid);
@@ -3676,7 +3676,7 @@ AlterTableInternal(Oid relid, List *cmds, bool recurse)
  * and does not travel through this section of code and cannot be combined with
  * any of the subcommands given here.
  *
- * Note that Hot Standby only knows about AccessExclusiveLocks on the master
+ * Note that Hot Standby only knows about AccessExclusiveLocks on the primary
  * so any changes that might affect SELECTs running on standbys need to use
  * AccessExclusiveLocks even if you think a lesser lock would do, unless you
  * have a solution for that also.
@@ -4500,13 +4500,13 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			address = ATExecAlterConstraint(rel, cmd, false, false, lockmode);
 			break;
 		case AT_ValidateConstraint: /* VALIDATE CONSTRAINT */
-			address = ATExecValidateConstraint(rel, cmd->name, false, false,
-											   lockmode);
+			address = ATExecValidateConstraint(wqueue, rel, cmd->name, false,
+											   false, lockmode);
 			break;
 		case AT_ValidateConstraintRecurse:	/* VALIDATE CONSTRAINT with
 											 * recursion */
-			address = ATExecValidateConstraint(rel, cmd->name, true, false,
-											   lockmode);
+			address = ATExecValidateConstraint(wqueue, rel, cmd->name, true,
+											   false, lockmode);
 			break;
 		case AT_DropConstraint: /* DROP CONSTRAINT */
 			ATExecDropConstraint(rel, cmd->name, cmd->behavior,
@@ -4709,7 +4709,7 @@ ATParseTransformCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 					 -1);
 	atstmt->relation->inh = recurse;
 	atstmt->cmds = list_make1(cmd);
-	atstmt->relkind = OBJECT_TABLE; /* needn't be picky here */
+	atstmt->objtype = OBJECT_TABLE; /* needn't be picky here */
 	atstmt->missing_ok = false;
 
 	/* Transform the AlterTableStmt */
@@ -9727,8 +9727,8 @@ ATExecAlterConstraint(Relation rel, AlterTableCmd *cmd,
  * was already validated, InvalidObjectAddress is returned.
  */
 static ObjectAddress
-ATExecValidateConstraint(Relation rel, char *constrName, bool recurse,
-						 bool recursing, LOCKMODE lockmode)
+ATExecValidateConstraint(List **wqueue, Relation rel, char *constrName,
+						 bool recurse, bool recursing, LOCKMODE lockmode)
 {
 	Relation	conrel;
 	SysScanDesc scan;
@@ -9774,27 +9774,31 @@ ATExecValidateConstraint(Relation rel, char *constrName, bool recurse,
 
 	if (!con->convalidated)
 	{
+		AlteredTableInfo *tab;
 		HeapTuple	copyTuple;
 		Form_pg_constraint copy_con;
 
 		if (con->contype == CONSTRAINT_FOREIGN)
 		{
-			Relation	refrel;
+			NewConstraint *newcon;
+			Constraint *fkconstraint;
 
-			/*
-			 * Triggers are already in place on both tables, so a concurrent
-			 * write that alters the result here is not possible. Normally we
-			 * can run a query here to do the validation, which would only
-			 * require AccessShareLock. In some cases, it is possible that we
-			 * might need to fire triggers to perform the check, so we take a
-			 * lock at RowShareLock level just in case.
-			 */
-			refrel = table_open(con->confrelid, RowShareLock);
+			/* Queue validation for phase 3 */
+			fkconstraint = makeNode(Constraint);
+			/* for now this is all we need */
+			fkconstraint->conname = constrName;
 
-			validateForeignKeyConstraint(constrName, rel, refrel,
-										 con->conindid,
-										 con->oid);
-			table_close(refrel, NoLock);
+			newcon = (NewConstraint *) palloc0(sizeof(NewConstraint));
+			newcon->name = constrName;
+			newcon->contype = CONSTR_FOREIGN;
+			newcon->refrelid = con->confrelid;
+			newcon->refindid = con->conindid;
+			newcon->conid = con->oid;
+			newcon->qual = (Node *) fkconstraint;
+
+			/* Find or create work queue entry for this table */
+			tab = ATGetQueueEntry(wqueue, rel);
+			tab->constraints = lappend(tab->constraints, newcon);
 
 			/*
 			 * We disallow creating invalid foreign keys to or from
@@ -9805,6 +9809,10 @@ ATExecValidateConstraint(Relation rel, char *constrName, bool recurse,
 		{
 			List	   *children = NIL;
 			ListCell   *child;
+			NewConstraint *newcon;
+			bool		isnull;
+			Datum		val;
+			char	   *conbin;
 
 			/*
 			 * If we're recursing, the parent has already done this, so skip
@@ -9844,12 +9852,30 @@ ATExecValidateConstraint(Relation rel, char *constrName, bool recurse,
 				/* find_all_inheritors already got lock */
 				childrel = table_open(childoid, NoLock);
 
-				ATExecValidateConstraint(childrel, constrName, false,
+				ATExecValidateConstraint(wqueue, childrel, constrName, false,
 										 true, lockmode);
 				table_close(childrel, NoLock);
 			}
 
-			validateCheckConstraint(rel, tuple);
+			/* Queue validation for phase 3 */
+			newcon = (NewConstraint *) palloc0(sizeof(NewConstraint));
+			newcon->name = constrName;
+			newcon->contype = CONSTR_CHECK;
+			newcon->refrelid = InvalidOid;
+			newcon->refindid = InvalidOid;
+			newcon->conid = con->oid;
+
+			val = SysCacheGetAttr(CONSTROID, tuple,
+								  Anum_pg_constraint_conbin, &isnull);
+			if (isnull)
+				elog(ERROR, "null conbin for constraint %u", con->oid);
+
+			conbin = TextDatumGetCString(val);
+			newcon->qual = (Node *) stringToNode(conbin);
+
+			/* Find or create work queue entry for this table */
+			tab = ATGetQueueEntry(wqueue, rel);
+			tab->constraints = lappend(tab->constraints, newcon);
 
 			/*
 			 * Invalidate relcache so that others see the new validated
@@ -10221,87 +10247,6 @@ checkFkeyPermissions(Relation rel, int16 *attnums, int natts)
 			aclcheck_error(aclresult, get_relkind_objtype(rel->rd_rel->relkind),
 						   RelationGetRelationName(rel));
 	}
-}
-
-/*
- * Scan the existing rows in a table to verify they meet a proposed
- * CHECK constraint.
- *
- * The caller must have opened and locked the relation appropriately.
- */
-static void
-validateCheckConstraint(Relation rel, HeapTuple constrtup)
-{
-	EState	   *estate;
-	Datum		val;
-	char	   *conbin;
-	Expr	   *origexpr;
-	ExprState  *exprstate;
-	TableScanDesc scan;
-	ExprContext *econtext;
-	MemoryContext oldcxt;
-	TupleTableSlot *slot;
-	Form_pg_constraint constrForm;
-	bool		isnull;
-	Snapshot	snapshot;
-
-	/*
-	 * VALIDATE CONSTRAINT is a no-op for foreign tables and partitioned
-	 * tables.
-	 */
-	if (rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE ||
-		rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		return;
-
-	constrForm = (Form_pg_constraint) GETSTRUCT(constrtup);
-
-	estate = CreateExecutorState();
-
-	/*
-	 * XXX this tuple doesn't really come from a syscache, but this doesn't
-	 * matter to SysCacheGetAttr, because it only wants to be able to fetch
-	 * the tupdesc
-	 */
-	val = SysCacheGetAttr(CONSTROID, constrtup, Anum_pg_constraint_conbin,
-						  &isnull);
-	if (isnull)
-		elog(ERROR, "null conbin for constraint %u",
-			 constrForm->oid);
-	conbin = TextDatumGetCString(val);
-	origexpr = (Expr *) stringToNode(conbin);
-	exprstate = ExecPrepareExpr(origexpr, estate);
-
-	econtext = GetPerTupleExprContext(estate);
-	slot = table_slot_create(rel, NULL);
-	econtext->ecxt_scantuple = slot;
-
-	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = table_beginscan(rel, snapshot, 0, NULL);
-
-	/*
-	 * Switch to per-tuple memory context and reset it for each tuple
-	 * produced, so we don't leak memory.
-	 */
-	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-
-	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-	{
-		if (!ExecCheck(exprstate, econtext))
-			ereport(ERROR,
-					(errcode(ERRCODE_CHECK_VIOLATION),
-					 errmsg("check constraint \"%s\" of relation \"%s\" is violated by some row",
-							NameStr(constrForm->conname),
-							RelationGetRelationName(rel)),
-					 errtableconstraint(rel, NameStr(constrForm->conname))));
-
-		ResetExprContext(econtext);
-	}
-
-	MemoryContextSwitchTo(oldcxt);
-	table_endscan(scan);
-	UnregisterSnapshot(snapshot);
-	ExecDropSingleTupleTableSlot(slot);
-	FreeExecutorState(estate);
 }
 
 /*
@@ -11001,8 +10946,8 @@ ATPrepAlterColumnType(List **wqueue,
 		tab->relkind == RELKIND_FOREIGN_TABLE)
 	{
 		/*
-		 * For composite types, do this check now.  Tables will check it later
-		 * when the table is being rewritten.
+		 * For composite types and foreign tables, do this check now.  Regular
+		 * tables will check it later when the table is being rewritten.
 		 */
 		find_composite_type_dependencies(rel->rd_rel->reltype, rel, NULL);
 	}
@@ -11359,7 +11304,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 					{
 						/* Not expecting any other direct dependencies... */
 						elog(ERROR, "unexpected object depending on column: %s",
-							 getObjectDescription(&foundObject));
+							 getObjectDescription(&foundObject, false));
 					}
 					break;
 				}
@@ -11375,7 +11320,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("cannot alter type of a column used by a view or rule"),
 						 errdetail("%s depends on column \"%s\"",
-								   getObjectDescription(&foundObject),
+								   getObjectDescription(&foundObject, false),
 								   colName)));
 				break;
 
@@ -11394,7 +11339,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("cannot alter type of a column used in a trigger definition"),
 						 errdetail("%s depends on column \"%s\"",
-								   getObjectDescription(&foundObject),
+								   getObjectDescription(&foundObject, false),
 								   colName)));
 				break;
 
@@ -11412,7 +11357,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("cannot alter type of a column used in a policy definition"),
 						 errdetail("%s depends on column \"%s\"",
-								   getObjectDescription(&foundObject),
+								   getObjectDescription(&foundObject, false),
 								   colName)));
 				break;
 
@@ -11473,7 +11418,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 				 * a column.
 				 */
 				elog(ERROR, "unexpected object depending on column: %s",
-					 getObjectDescription(&foundObject));
+					 getObjectDescription(&foundObject, false));
 				break;
 
 				/*
@@ -11529,7 +11474,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 			  foundDep->refobjsubid != 0)
 			)
 			elog(ERROR, "found unexpected dependency for column: %s",
-				 getObjectDescription(&foundObject));
+				 getObjectDescription(&foundObject, false));
 
 		CatalogTupleDelete(depRel, &depTup->t_self);
 	}
@@ -12564,8 +12509,7 @@ ATExecChangeOwner(Oid relationOid, Oid newOwnerId, bool recursing, LOCKMODE lock
 		/*
 		 * Also change the ownership of the table's row type, if it has one
 		 */
-		if (tuple_class->relkind != RELKIND_INDEX &&
-			tuple_class->relkind != RELKIND_PARTITIONED_INDEX)
+		if (OidIsValid(tuple_class->reltype))
 			AlterTypeOwnerInternal(tuple_class->reltype, newOwnerId);
 
 		/*
@@ -15009,9 +14953,10 @@ AlterTableNamespaceInternal(Relation rel, Oid oldNspOid, Oid nspOid,
 	AlterRelationNamespaceInternal(classRel, RelationGetRelid(rel), oldNspOid,
 								   nspOid, true, objsMoved);
 
-	/* Fix the table's row type too */
-	AlterTypeNamespaceInternal(rel->rd_rel->reltype,
-							   nspOid, false, false, objsMoved);
+	/* Fix the table's row type too, if it has one */
+	if (OidIsValid(rel->rd_rel->reltype))
+		AlterTypeNamespaceInternal(rel->rd_rel->reltype,
+								   nspOid, false, false, objsMoved);
 
 	/* Fix other dependent stuff */
 	if (rel->rd_rel->relkind == RELKIND_RELATION ||
@@ -15206,11 +15151,11 @@ AlterSeqNamespaces(Relation classRel, Relation rel,
 									   true, objsMoved);
 
 		/*
-		 * Sequences have entries in pg_type. We need to be careful to move
-		 * them to the new namespace, too.
+		 * Sequences used to have entries in pg_type, but no longer do.  If we
+		 * ever re-instate that, we'll need to move the pg_type entry to the
+		 * new namespace, too (using AlterTypeNamespaceInternal).
 		 */
-		AlterTypeNamespaceInternal(RelationGetForm(seqRel)->reltype,
-								   newNspOid, false, false, objsMoved);
+		Assert(RelationGetForm(seqRel)->reltype == InvalidOid);
 
 		/* Now we can close it.  Keep the lock till end of transaction. */
 		relation_close(seqRel, NoLock);
@@ -15594,7 +15539,7 @@ RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid, Oid oldrelid,
 		reltype = ((AlterObjectSchemaStmt *) stmt)->objectType;
 
 	else if (IsA(stmt, AlterTableStmt))
-		reltype = ((AlterTableStmt *) stmt)->relkind;
+		reltype = ((AlterTableStmt *) stmt)->objtype;
 	else
 	{
 		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(stmt));

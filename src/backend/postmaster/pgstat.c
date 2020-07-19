@@ -2989,7 +2989,7 @@ pgstat_bestart(void)
 		MemSet(&lbeentry.st_clientaddr, 0, sizeof(lbeentry.st_clientaddr));
 
 #ifdef USE_SSL
-	if (MyProcPort && MyProcPort->ssl != NULL)
+	if (MyProcPort && MyProcPort->ssl_in_use)
 	{
 		lbeentry.st_ssl = true;
 		lsslstatus.ssl_bits = be_tls_get_cipher_bits(MyProcPort);
@@ -6681,7 +6681,7 @@ pgstat_clip_activity(const char *raw_activity)
  *
  * Determine index of entry for a SLRU with a given name. If there's no exact
  * match, returns index of the last "other" entry used for SLRUs defined in
- * external proejcts.
+ * external projects.
  */
 int
 pgstat_slru_index(const char *name)

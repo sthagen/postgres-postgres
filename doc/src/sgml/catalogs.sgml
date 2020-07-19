@@ -1895,7 +1895,8 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       </para>
       <para>
        The OID of the data type that corresponds to this table's row type,
-       if any (zero for indexes, which have no <structname>pg_type</structname> entry)
+       if any (zero for indexes, sequences, and toast tables, which have
+       no <structname>pg_type</structname> entry)
       </para></entry>
      </row>
 
@@ -7471,7 +7472,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        (references <link linkend="catalog-pg-database"><structname>pg_database</structname></link>.<structfield>oid</structfield>)
       </para>
       <para>
-       OID of the database which the subscription resides in
+       OID of the database that the subscription resides in
       </para></entry>
      </row>
 
@@ -7499,7 +7500,17 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        <structfield>subenabled</structfield> <type>bool</type>
       </para>
       <para>
-       If true, the subscription is enabled and should be replicating.
+       If true, the subscription is enabled and should be replicating
+      </para></entry>
+     </row>
+
+    <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>subbinary</structfield> <type>bool</type>
+      </para>
+      <para>
+       If true, the subscription will request that the publisher send data
+       in binary format
       </para></entry>
      </row>
 
@@ -7517,8 +7528,8 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        <structfield>subslotname</structfield> <type>name</type>
       </para>
       <para>
-       Name of the replication slot in the upstream database. Also used
-       for local replication origin name.
+       Name of the replication slot in the upstream database (also used
+       for the local replication origin name)
       </para></entry>
      </row>
 
@@ -7527,8 +7538,8 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        <structfield>subsynccommit</structfield> <type>text</type>
       </para>
       <para>
-       Contains the value of the <varname>synchronous_commit</varname>
-       setting for the subscription workers.
+       The <varname>synchronous_commit</varname>
+       setting for the subscription's workers to use
       </para></entry>
      </row>
 
@@ -7537,8 +7548,8 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        <structfield>subpublications</structfield> <type>text[]</type>
       </para>
       <para>
-       Array of subscribed publication names. These reference the
-       publications on the publisher server. For more on publications
+       Array of subscribed publication names. These reference
+       publications defined in the upstream database. For more on publications
        see <xref linkend="logical-replication-publication"/>.
       </para></entry>
      </row>
@@ -11275,10 +11286,13 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
 
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
-       <structfield>min_safe_lsn</structfield> <type>pg_lsn</type>
+       <structfield>safe_wal_size</structfield> <type>int8</type>
       </para>
       <para>
-       The minimum LSN currently available for walsenders.
+       The number of bytes that can be written to WAL such that this slot
+       is not in danger of getting in state "lost".  It is NULL for lost
+       slots, as well as if <varname>max_slot_wal_keep_size</varname>
+       is <literal>-1</literal>.
       </para></entry>
      </row>
     </tbody>
