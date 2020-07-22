@@ -107,7 +107,7 @@ extern bool reachedConsistency;
 extern int	wal_segment_size;
 extern int	min_wal_size_mb;
 extern int	max_wal_size_mb;
-extern int	wal_keep_segments;
+extern int	wal_keep_size_mb;
 extern int	max_slot_wal_keep_size_mb;
 extern int	XLOGbuffers;
 extern int	XLogArchiveTimeout;
@@ -237,6 +237,7 @@ extern bool XLOG_DEBUG;
  */
 #define XLOG_INCLUDE_ORIGIN		0x01	/* include the replication origin */
 #define XLOG_MARK_UNIMPORTANT	0x02	/* record not important for durability */
+#define XLOG_INCLUDE_XID		0x04	/* include XID of top-level xact */
 
 
 /* Checkpoint statistics */
@@ -272,7 +273,7 @@ typedef enum WALAvailability
 	WALAVAIL_INVALID_LSN,		/* parameter error */
 	WALAVAIL_RESERVED,			/* WAL segment is within max_wal_size */
 	WALAVAIL_EXTENDED,			/* WAL segment is reserved by a slot or
-								 * wal_keep_segments */
+								 * wal_keep_size */
 	WALAVAIL_UNRESERVED,		/* no longer reserved, but not removed yet */
 	WALAVAIL_REMOVED			/* WAL segment has been removed */
 } WALAvailability;
