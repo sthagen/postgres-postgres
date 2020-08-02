@@ -1007,16 +1007,6 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"hashagg_avoid_disk_plan", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Causes the planner to avoid hashed aggregation plans that are expected to use the disk."),
-			NULL,
-			GUC_EXPLAIN
-		},
-		&hashagg_avoid_disk_plan,
-		false,
-		NULL, NULL, NULL
-	},
-	{
 		{"enable_material", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of materialization."),
 			NULL,
@@ -2238,6 +2228,17 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&ReservedBackends,
 		3, 0, MAX_BACKENDS,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"min_dynamic_shared_memory", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Amount of dynamic shared memory reserved at startup."),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&min_dynamic_shared_memory,
+		0, 0, (int) Min((size_t) INT_MAX, SIZE_MAX / (1024 * 1024)),
 		NULL, NULL, NULL
 	},
 
@@ -3549,6 +3550,17 @@ static struct config_real ConfigureNamesReal[] =
 		},
 		&Geqo_seed,
 		0.0, 0.0, 1.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"hash_mem_multiplier", PGC_USERSET, RESOURCES_MEM,
+			gettext_noop("Multiple of work_mem to use for hash tables."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&hash_mem_multiplier,
+		1.0, 1.0, 1000.0,
 		NULL, NULL, NULL
 	},
 

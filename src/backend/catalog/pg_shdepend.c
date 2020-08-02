@@ -785,6 +785,13 @@ checkSharedDependencies(Oid classId, Oid objectId,
 	return true;
 }
 
+
+/*
+ * Cap the maximum amount of bytes allocated for copyTemplateDependencies()
+ * slots.
+ */
+#define MAX_PGSHDEPEND_INSERT_BYTES 65535
+
 /*
  * copyTemplateDependencies
  *
@@ -799,13 +806,22 @@ copyTemplateDependencies(Oid templateDbId, Oid newDbId)
 	ScanKeyData key[1];
 	SysScanDesc scan;
 	HeapTuple	tup;
+	int			slotCount;
 	CatalogIndexState indstate;
-	Datum		values[Natts_pg_shdepend];
-	bool		nulls[Natts_pg_shdepend];
-	bool		replace[Natts_pg_shdepend];
+	TupleTableSlot **slot;
+	int			nslots,
+				max_slots;
+	bool		slot_init = true;
 
 	sdepRel = table_open(SharedDependRelationId, RowExclusiveLock);
 	sdepDesc = RelationGetDescr(sdepRel);
+
+	/*
+	 * Allocate the slots to use, but delay initialization until we know that
+	 * they will be used.
+	 */
+	max_slots = MAX_PGSHDEPEND_INSERT_BYTES / sizeof(FormData_pg_shdepend);
+	slot = palloc(sizeof(TupleTableSlot *) * max_slots);
 
 	indstate = CatalogOpenIndexes(sdepRel);
 
@@ -818,14 +834,6 @@ copyTemplateDependencies(Oid templateDbId, Oid newDbId)
 	scan = systable_beginscan(sdepRel, SharedDependDependerIndexId, true,
 							  NULL, 1, key);
 
-	/* Set up to copy the tuples except for inserting newDbId */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-	memset(replace, false, sizeof(replace));
-
-	replace[Anum_pg_shdepend_dbid - 1] = true;
-	values[Anum_pg_shdepend_dbid - 1] = ObjectIdGetDatum(newDbId);
-
 	/*
 	 * Copy the entries of the original database, changing the database Id to
 	 * that of the new database.  Note that because we are not copying rows
@@ -833,20 +841,52 @@ copyTemplateDependencies(Oid templateDbId, Oid newDbId)
 	 * copy the ownership dependency of the template database itself; this is
 	 * what we want.
 	 */
+	slotCount = 0;
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
-		HeapTuple	newtup;
+		Form_pg_shdepend shdep;
 
-		newtup = heap_modify_tuple(tup, sdepDesc, values, nulls, replace);
-		CatalogTupleInsertWithInfo(sdepRel, newtup, indstate);
+		if (slot_init)
+			slot[slotCount] = MakeSingleTupleTableSlot(sdepDesc, &TTSOpsHeapTuple);
 
-		heap_freetuple(newtup);
+		ExecClearTuple(slot[slotCount]);
+
+		shdep = (Form_pg_shdepend) GETSTRUCT(tup);
+
+		slot[slotCount]->tts_values[Anum_pg_shdepend_dbid] = ObjectIdGetDatum(newDbId);
+		slot[slotCount]->tts_values[Anum_pg_shdepend_classid] = shdep->classid;
+		slot[slotCount]->tts_values[Anum_pg_shdepend_objid] = shdep->objid;
+		slot[slotCount]->tts_values[Anum_pg_shdepend_objsubid] = shdep->objsubid;
+		slot[slotCount]->tts_values[Anum_pg_shdepend_refclassid] = shdep->refclassid;
+		slot[slotCount]->tts_values[Anum_pg_shdepend_refobjid] = shdep->refobjid;
+		slot[slotCount]->tts_values[Anum_pg_shdepend_deptype] = shdep->deptype;
+
+		ExecStoreVirtualTuple(slot[slotCount]);
+		slotCount++;
+
+		/* If slots are full, insert a batch of tuples */
+		if (slotCount == max_slots)
+		{
+			CatalogTuplesMultiInsertWithInfo(sdepRel, slot, slotCount, indstate);
+			slotCount = 0;
+			slot_init = false;
+		}
 	}
+
+	/* Insert any tuples left in the buffer */
+	if (slotCount > 0)
+		CatalogTuplesMultiInsertWithInfo(sdepRel, slot, slotCount, indstate);
 
 	systable_endscan(scan);
 
 	CatalogCloseIndexes(indstate);
 	table_close(sdepRel, RowExclusiveLock);
+
+	/* Drop only the number of slots used */
+	nslots = slot_init ? slotCount : max_slots;
+	for (int i = 0; i < nslots; i++)
+		ExecDropSingleTupleTableSlot(slot[i]);
+	pfree(slot);
 }
 
 /*
