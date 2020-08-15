@@ -1535,7 +1535,7 @@ DefineIndex(Oid relationId,
 	StartTransactionCommand();
 
 	/* We should now definitely not be advertising any xmin. */
-	Assert(MyPgXact->xmin == InvalidTransactionId);
+	Assert(MyProc->xmin == InvalidTransactionId);
 
 	/*
 	 * The index is now valid in the sense that it contains all currently
@@ -2246,7 +2246,7 @@ ChooseRelationName(const char *name1, const char *name2,
 	char		modlabel[NAMEDATALEN];
 
 	/* try the unmodified label first */
-	StrNCpy(modlabel, label, sizeof(modlabel));
+	strlcpy(modlabel, label, sizeof(modlabel));
 
 	for (;;)
 	{

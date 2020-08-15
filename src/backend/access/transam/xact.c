@@ -83,6 +83,19 @@ bool		XactDeferrable;
 int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
 
 /*
+ * CheckXidAlive is a xid value pointing to a possibly ongoing (sub)
+ * transaction.  Currently, it is used in logical decoding.  It's possible
+ * that such transactions can get aborted while the decoding is ongoing in
+ * which case we skip decoding that particular transaction.  To ensure that we
+ * check whether the CheckXidAlive is aborted after fetching the tuple from
+ * system tables.  We also ensure that during logical decoding we never
+ * directly access the tableam or heap APIs because we are checking for the
+ * concurrent aborts only in systable_* APIs.
+ */
+TransactionId CheckXidAlive = InvalidTransactionId;
+bool		bsysscan = false;
+
+/*
  * When running as a parallel worker, we place only a single
  * TransactionStateData on the parallel worker's state stack, and the XID
  * reflected there will be that of the *innermost* currently-active
@@ -2680,6 +2693,9 @@ AbortTransaction(void)
 	/* Forget about any active REINDEX. */
 	ResetReindexState(s->nestingLevel);
 
+	/* Reset logical streaming state. */
+	ResetLogicalStreamingState();
+
 	/* If in parallel mode, clean up workers and exit parallel mode. */
 	if (IsInParallelMode())
 	{
@@ -4982,6 +4998,9 @@ AbortSubTransaction(void)
 	/* Forget about any active REINDEX. */
 	ResetReindexState(s->nestingLevel);
 
+	/* Reset logical streaming state. */
+	ResetLogicalStreamingState();
+
 	/* Exit from parallel mode, if necessary. */
 	if (IsInParallelMode())
 	{
@@ -5772,7 +5791,7 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 
 	max_xid = TransactionIdLatest(xid, parsed->nsubxacts, parsed->subxacts);
 
-	/* Make sure nextFullXid is beyond any XID mentioned in the record. */
+	/* Make sure nextXid is beyond any XID mentioned in the record. */
 	AdvanceNextFullTransactionIdPastXid(max_xid);
 
 	Assert(((parsed->xinfo & XACT_XINFO_HAS_ORIGIN) == 0) ==
@@ -5912,7 +5931,7 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid)
 
 	Assert(TransactionIdIsValid(xid));
 
-	/* Make sure nextFullXid is beyond any XID mentioned in the record. */
+	/* Make sure nextXid is beyond any XID mentioned in the record. */
 	max_xid = TransactionIdLatest(xid,
 								  parsed->nsubxacts,
 								  parsed->subxacts);

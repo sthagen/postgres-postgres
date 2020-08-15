@@ -1299,6 +1299,16 @@ heap_getnext(TableScanDesc sscan, ScanDirection direction)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg_internal("only heap AM is supported")));
 
+	/*
+	 * We don't expect direct calls to heap_getnext with valid CheckXidAlive
+	 * for catalog or regular tables.  See detailed comments in xact.c where
+	 * these variables are declared.  Normally we have such a check at tableam
+	 * level API but this is called from many places so we need to ensure it
+	 * here.
+	 */
+	if (unlikely(TransactionIdIsValid(CheckXidAlive) && !bsysscan))
+		elog(ERROR, "unexpected heap_getnext call during logical decoding");
+
 	/* Note: no locking manipulations needed */
 
 	if (scan->rs_base.rs_flags & SO_ALLOW_PAGEMODE)
@@ -1507,6 +1517,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		at_chain_start;
 	bool		valid;
 	bool		skip;
+	GlobalVisState *vistest = NULL;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
 	if (all_dead)
@@ -1517,7 +1528,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	at_chain_start = first_call;
 	skip = !first_call;
 
-	Assert(TransactionIdIsValid(RecentGlobalXmin));
+	/* XXX: we should assert that a snapshot is pushed or registered */
+	Assert(TransactionIdIsValid(RecentXmin));
 	Assert(BufferGetBlockNumber(buffer) == blkno);
 
 	/* Scan through possible multiple members of HOT-chain */
@@ -1606,9 +1618,14 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 * Note: if you change the criterion here for what is "dead", fix the
 		 * planner's get_actual_variable_range() function to match.
 		 */
-		if (all_dead && *all_dead &&
-			!HeapTupleIsSurelyDead(heapTuple, RecentGlobalXmin))
-			*all_dead = false;
+		if (all_dead && *all_dead)
+		{
+			if (!vistest)
+				vistest = GlobalVisTestFor(relation);
+
+			if (!HeapTupleIsSurelyDead(heapTuple, vistest))
+				*all_dead = false;
+		}
 
 		/*
 		 * Check to see if HOT chain continues past this tuple; if so fetch
@@ -1956,6 +1973,9 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		{
 			xlrec.flags |= XLH_INSERT_CONTAINS_NEW_TUPLE;
 			bufflags |= REGBUF_KEEP_DATA;
+
+			if (IsToastRelation(relation))
+				xlrec.flags |= XLH_INSERT_ON_TOAST_RELATION;
 		}
 
 		XLogBeginInsert();

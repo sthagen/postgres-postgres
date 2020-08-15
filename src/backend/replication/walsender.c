@@ -151,7 +151,7 @@ static XLogRecPtr sendTimeLineValidUpto = InvalidXLogRecPtr;
  * How far have we sent WAL already? This is also advertised in
  * MyWalSnd->sentPtr.  (Actually, this is the next WAL location to send.)
  */
-static XLogRecPtr sentPtr = 0;
+static XLogRecPtr sentPtr = InvalidXLogRecPtr;
 
 /* Buffers for constructing outgoing messages and processing reply messages. */
 static StringInfoData output_message;
@@ -1451,10 +1451,7 @@ WalSndWaitForWal(XLogRecPtr loc)
 		if (MyWalSnd->flush < sentPtr &&
 			MyWalSnd->write < sentPtr &&
 			!waiting_for_ping_response)
-		{
 			WalSndKeepalive(false);
-			waiting_for_ping_response = true;
-		}
 
 		/* check whether we're done */
 		if (loc <= RecentFlushPtr)
@@ -1967,7 +1964,7 @@ PhysicalReplicationSlotNewXmin(TransactionId feedbackXmin, TransactionId feedbac
 	ReplicationSlot *slot = MyReplicationSlot;
 
 	SpinLockAcquire(&slot->mutex);
-	MyPgXact->xmin = InvalidTransactionId;
+	MyProc->xmin = InvalidTransactionId;
 
 	/*
 	 * For physical replication we don't need the interlock provided by xmin
@@ -2096,7 +2093,7 @@ ProcessStandbyHSFeedbackMessage(void)
 	if (!TransactionIdIsNormal(feedbackXmin)
 		&& !TransactionIdIsNormal(feedbackCatalogXmin))
 	{
-		MyPgXact->xmin = InvalidTransactionId;
+		MyProc->xmin = InvalidTransactionId;
 		if (MyReplicationSlot != NULL)
 			PhysicalReplicationSlotNewXmin(feedbackXmin, feedbackCatalogXmin);
 		return;
@@ -2116,9 +2113,10 @@ ProcessStandbyHSFeedbackMessage(void)
 
 	/*
 	 * Set the WalSender's xmin equal to the standby's requested xmin, so that
-	 * the xmin will be taken into account by GetOldestXmin.  This will hold
-	 * back the removal of dead rows and thereby prevent the generation of
-	 * cleanup conflicts on the standby server.
+	 * the xmin will be taken into account by GetSnapshotData() /
+	 * ComputeXidHorizons().  This will hold back the removal of dead rows and
+	 * thereby prevent the generation of cleanup conflicts on the standby
+	 * server.
 	 *
 	 * There is a small window for a race condition here: although we just
 	 * checked that feedbackXmin precedes nextXid, the nextXid could have
@@ -2131,13 +2129,13 @@ ProcessStandbyHSFeedbackMessage(void)
 	 * own xmin would prevent nextXid from advancing so far.
 	 *
 	 * We don't bother taking the ProcArrayLock here.  Setting the xmin field
-	 * is assumed atomic, and there's no real need to prevent a concurrent
-	 * GetOldestXmin.  (If we're moving our xmin forward, this is obviously
-	 * safe, and if we're moving it backwards, well, the data is at risk
-	 * already since a VACUUM could have just finished calling GetOldestXmin.)
+	 * is assumed atomic, and there's no real need to prevent concurrent
+	 * horizon determinations.  (If we're moving our xmin forward, this is
+	 * obviously safe, and if we're moving it backwards, well, the data is at
+	 * risk already since a VACUUM could already have determined the horizon.)
 	 *
 	 * If we're using a replication slot we reserve the xmin via that,
-	 * otherwise via the walsender's PGXACT entry. We can only track the
+	 * otherwise via the walsender's PGPROC entry. We can only track the
 	 * catalog xmin separately when using a slot, so we store the least of the
 	 * two provided when not using a slot.
 	 *
@@ -2150,9 +2148,9 @@ ProcessStandbyHSFeedbackMessage(void)
 	{
 		if (TransactionIdIsNormal(feedbackCatalogXmin)
 			&& TransactionIdPrecedes(feedbackCatalogXmin, feedbackXmin))
-			MyPgXact->xmin = feedbackCatalogXmin;
+			MyProc->xmin = feedbackCatalogXmin;
 		else
-			MyPgXact->xmin = feedbackXmin;
+			MyProc->xmin = feedbackXmin;
 	}
 }
 
@@ -2932,10 +2930,7 @@ WalSndDone(WalSndSendDataCallback send_data)
 		proc_exit(0);
 	}
 	if (!waiting_for_ping_response)
-	{
 		WalSndKeepalive(true);
-		waiting_for_ping_response = true;
-	}
 }
 
 /*
@@ -3432,10 +3427,13 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 }
 
 /*
-  * This function is used to send a keepalive message to standby.
-  * If requestReply is set, sets a flag in the message requesting the standby
-  * to send a message back to us, for heartbeat purposes.
-  */
+ * Send a keepalive message to standby.
+ *
+ * If requestReply is set, the message requests the other party to send
+ * a message back to us, for heartbeat purposes.  We also set a flag to
+ * let nearby code that we're waiting for that response, to avoid
+ * repeated requests.
+ */
 static void
 WalSndKeepalive(bool requestReply)
 {
@@ -3450,6 +3448,10 @@ WalSndKeepalive(bool requestReply)
 
 	/* ... and send it wrapped in CopyData */
 	pq_putmessage_noblock('d', output_message.data, output_message.len);
+
+	/* Set local flag */
+	if (requestReply)
+		waiting_for_ping_response = true;
 }
 
 /*
@@ -3480,7 +3482,6 @@ WalSndKeepaliveIfNecessary(void)
 	if (last_processing >= ping_time)
 	{
 		WalSndKeepalive(true);
-		waiting_for_ping_response = true;
 
 		/* Try to flush pending output to the client */
 		if (pq_flush_if_writable() != 0)
