@@ -1786,6 +1786,7 @@ typedef enum AlterTableType
 	AT_AddColumnRecurse,		/* internal to commands/tablecmds.c */
 	AT_AddColumnToView,			/* implicitly via CREATE OR REPLACE VIEW */
 	AT_ColumnDefault,			/* alter column default */
+	AT_CookedColumnDefault,		/* add a pre-cooked column default */
 	AT_DropNotNull,				/* alter column drop not null */
 	AT_SetNotNull,				/* alter column set not null */
 	AT_DropExpression,			/* alter column drop expression */
@@ -3351,6 +3352,8 @@ typedef struct ConstraintsSetStmt
 /* Reindex options */
 #define REINDEXOPT_VERBOSE (1 << 0) /* print progress info */
 #define REINDEXOPT_REPORT_PROGRESS (1 << 1) /* report pgstat progress */
+#define REINDEXOPT_MISSING_OK (1 << 2)	/* skip missing relations */
+#define REINDEXOPT_CONCURRENTLY (1 << 3)	/* concurrent mode */
 
 typedef enum ReindexObjectType
 {
@@ -3369,7 +3372,6 @@ typedef struct ReindexStmt
 	RangeVar   *relation;		/* Table or index to reindex */
 	const char *name;			/* name of database to reindex */
 	int			options;		/* Reindex options flags */
-	bool		concurrent;		/* reindex concurrently? */
 } ReindexStmt;
 
 /* ----------------------

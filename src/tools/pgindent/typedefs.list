@@ -111,6 +111,7 @@ Append
 AppendPath
 AppendRelInfo
 AppendState
+ApplySubXactData
 Archive
 ArchiveEntryPtrType
 ArchiveFormat
@@ -1514,6 +1515,7 @@ PGEventResultCopy
 PGEventResultCreate
 PGEventResultDestroy
 PGFInfoFunction
+PGFileType
 PGFunction
 PGLZ_HistEntry
 PGLZ_Strategy
@@ -2036,6 +2038,7 @@ RegProcedure
 Regis
 RegisNode
 RegisteredBgWorker
+ReindexErrorInfo
 ReindexObjectType
 ReindexStmt
 ReindexType
@@ -2370,6 +2373,7 @@ StopList
 StopWorkersData
 StrategyNumber
 StreamCtl
+StreamXidHash
 StringInfo
 StringInfoData
 StripnullState
@@ -2380,6 +2384,7 @@ SubPlanState
 SubTransactionId
 SubXactCallback
 SubXactCallbackItem
+SubXactInfo
 SubXactEvent
 SubplanResultRelHashElem
 SubqueryScan

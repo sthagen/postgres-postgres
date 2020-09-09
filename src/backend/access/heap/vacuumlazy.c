@@ -208,7 +208,8 @@ typedef struct LVShared
 	 * live tuples in the index vacuum case or the new live tuples in the
 	 * index cleanup case.
 	 *
-	 * estimated_count is true if reltuples is an estimated value.
+	 * estimated_count is true if reltuples is an estimated value.  (Note that
+	 * reltuples could be -1 in this case, indicating we have no idea.)
 	 */
 	double		reltuples;
 	bool		estimated_count;
@@ -316,6 +317,7 @@ typedef struct LVRelStats
 	/* Used for error callback */
 	char	   *indname;
 	BlockNumber blkno;			/* used only for heap operations */
+	OffsetNumber offnum;		/* used only for heap operations */
 	VacErrPhase phase;
 } LVRelStats;
 
@@ -323,6 +325,7 @@ typedef struct LVRelStats
 typedef struct LVSavedErrInfo
 {
 	BlockNumber blkno;
+	OffsetNumber offnum;
 	VacErrPhase phase;
 } LVSavedErrInfo;
 
@@ -341,7 +344,8 @@ static void lazy_scan_heap(Relation onerel, VacuumParams *params,
 						   LVRelStats *vacrelstats, Relation *Irel, int nindexes,
 						   bool aggressive);
 static void lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats);
-static bool lazy_check_needs_freeze(Buffer buf, bool *hastup);
+static bool lazy_check_needs_freeze(Buffer buf, bool *hastup,
+									LVRelStats *vacrelstats);
 static void lazy_vacuum_all_indexes(Relation onerel, Relation *Irel,
 									IndexBulkDeleteResult **stats,
 									LVRelStats *vacrelstats, LVParallelState *lps,
@@ -364,6 +368,7 @@ static void lazy_record_dead_tuple(LVDeadTuples *dead_tuples,
 static bool lazy_tid_reaped(ItemPointer itemptr, void *state);
 static int	vac_cmp_itemptr(const void *left, const void *right);
 static bool heap_page_is_all_visible(Relation rel, Buffer buf,
+									 LVRelStats *vacrelstats,
 									 TransactionId *visibility_cutoff_xid, bool *all_frozen);
 static void lazy_parallel_vacuum_indexes(Relation *Irel, IndexBulkDeleteResult **stats,
 										 LVRelStats *vacrelstats, LVParallelState *lps,
@@ -396,7 +401,8 @@ static LVSharedIndStats *get_indstats(LVShared *lvshared, int n);
 static bool skip_parallel_vacuum_index(Relation indrel, LVShared *lvshared);
 static void vacuum_error_callback(void *arg);
 static void update_vacuum_error_info(LVRelStats *errinfo, LVSavedErrInfo *saved_err_info,
-									 int phase, BlockNumber blkno);
+									 int phase, BlockNumber blkno,
+									 OffsetNumber offnum);
 static void restore_vacuum_error_info(LVRelStats *errinfo, const LVSavedErrInfo *saved_err_info);
 
 
@@ -465,6 +471,7 @@ heap_vacuum_rel(Relation onerel, VacuumParams *params,
 						  params->freeze_table_age,
 						  params->multixact_freeze_min_age,
 						  params->multixact_freeze_table_age,
+						  true, /* we must be a top-level command */
 						  &OldestXmin, &FreezeLimit, &xidFullScanLimit,
 						  &MultiXactCutoff, &mxactFullScanLimit);
 
@@ -547,7 +554,8 @@ heap_vacuum_rel(Relation onerel, VacuumParams *params,
 		 * revert to the previous phase.
 		 */
 		update_vacuum_error_info(vacrelstats, NULL, VACUUM_ERRCB_PHASE_TRUNCATE,
-								 vacrelstats->nonempty_pages);
+								 vacrelstats->nonempty_pages,
+								 InvalidOffsetNumber);
 		lazy_truncate_heap(onerel, vacrelstats);
 	}
 
@@ -561,31 +569,19 @@ heap_vacuum_rel(Relation onerel, VacuumParams *params,
 	/*
 	 * Update statistics in pg_class.
 	 *
-	 * A corner case here is that if we scanned no pages at all because every
-	 * page is all-visible, we should not update relpages/reltuples, because
-	 * we have no new information to contribute.  In particular this keeps us
-	 * from replacing relpages=reltuples=0 (which means "unknown tuple
-	 * density") with nonzero relpages and reltuples=0 (which means "zero
-	 * tuple density") unless there's some actual evidence for the latter.
+	 * In principle new_live_tuples could be -1 indicating that we (still)
+	 * don't know the tuple count.  In practice that probably can't happen,
+	 * since we'd surely have scanned some pages if the table is new and
+	 * nonempty.
 	 *
-	 * It's important that we use tupcount_pages and not scanned_pages for the
-	 * check described above; scanned_pages counts pages where we could not
-	 * get cleanup lock, and which were processed only for frozenxid purposes.
-	 *
-	 * We do update relallvisible even in the corner case, since if the table
-	 * is all-visible we'd definitely like to know that.  But clamp the value
-	 * to be not more than what we're setting relpages to.
+	 * For safety, clamp relallvisible to be not more than what we're setting
+	 * relpages to.
 	 *
 	 * Also, don't change relfrozenxid/relminmxid if we skipped any pages,
 	 * since then we don't know for certain that all tuples have a newer xmin.
 	 */
 	new_rel_pages = vacrelstats->rel_pages;
 	new_live_tuples = vacrelstats->new_live_tuples;
-	if (vacrelstats->tupcount_pages == 0 && new_rel_pages > 0)
-	{
-		new_rel_pages = vacrelstats->old_rel_pages;
-		new_live_tuples = vacrelstats->old_live_tuples;
-	}
 
 	visibilitymap_count(onerel, &new_rel_allvisible, NULL);
 	if (new_rel_allvisible > new_rel_pages)
@@ -606,7 +602,7 @@ heap_vacuum_rel(Relation onerel, VacuumParams *params,
 	/* report results to the stats collector, too */
 	pgstat_report_vacuum(RelationGetRelid(onerel),
 						 onerel->rd_rel->relisshared,
-						 new_live_tuples,
+						 Max(new_live_tuples, 0),
 						 vacrelstats->new_dead_tuples);
 	pgstat_progress_end_command();
 
@@ -960,7 +956,7 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_SCANNED, blkno);
 
 		update_vacuum_error_info(vacrelstats, NULL, VACUUM_ERRCB_PHASE_SCAN_HEAP,
-								 blkno);
+								 blkno, InvalidOffsetNumber);
 
 		if (blkno == next_unskippable_block)
 		{
@@ -1129,7 +1125,7 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 			 * to use lazy_check_needs_freeze() for both situations, though.
 			 */
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
-			if (!lazy_check_needs_freeze(buf, &hastup))
+			if (!lazy_check_needs_freeze(buf, &hastup, vacrelstats))
 			{
 				UnlockReleaseBuffer(buf);
 				vacrelstats->scanned_pages++;
@@ -1244,7 +1240,8 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		 */
 		tups_vacuumed += heap_page_prune(onerel, buf, vistest, false,
 										 InvalidTransactionId, 0,
-										 &vacrelstats->latestRemovedXid);
+										 &vacrelstats->latestRemovedXid,
+										 &vacrelstats->offnum);
 
 		/*
 		 * Now scan the page to collect vacuumable items and check for tuples
@@ -1267,6 +1264,11 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		{
 			ItemId		itemid;
 
+			/*
+			 * Set the offset number so that we can display it along with any
+			 * error that occurred while processing this tuple.
+			 */
+			vacrelstats->offnum = offnum;
 			itemid = PageGetItemId(page, offnum);
 
 			/* Unused items require no processing, but we count 'em */
@@ -1469,6 +1471,12 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		}						/* scan along page */
 
 		/*
+		 * Clear the offset information once we have processed all the tuples
+		 * on the page.
+		 */
+		vacrelstats->offnum = InvalidOffsetNumber;
+
+		/*
 		 * If we froze any tuples, mark the buffer dirty, and write a WAL
 		 * record recording the changes.  We must log the changes to be
 		 * crash-safe against future truncation of CLOG.
@@ -1662,6 +1670,9 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 	/* report that everything is scanned and vacuumed */
 	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_SCANNED, blkno);
 
+	/* Clear the block number information */
+	vacrelstats->blkno = InvalidBlockNumber;
+
 	pfree(frozen);
 
 	/* save stats for use later */
@@ -1674,9 +1685,12 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 														  vacrelstats->tupcount_pages,
 														  live_tuples);
 
-	/* also compute total number of surviving heap entries */
+	/*
+	 * Also compute the total number of surviving heap entries.  In the
+	 * (unlikely) scenario that new_live_tuples is -1, take it as zero.
+	 */
 	vacrelstats->new_rel_tuples =
-		vacrelstats->new_live_tuples + vacrelstats->new_dead_tuples;
+		Max(vacrelstats->new_live_tuples, 0) + vacrelstats->new_dead_tuples;
 
 	/*
 	 * Release any remaining pin on visibility map page.
@@ -1842,7 +1856,7 @@ lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats)
 
 	/* Update error traceback information */
 	update_vacuum_error_info(vacrelstats, &saved_err_info, VACUUM_ERRCB_PHASE_VACUUM_HEAP,
-							 InvalidBlockNumber);
+							 InvalidBlockNumber, InvalidOffsetNumber);
 
 	pg_rusage_init(&ru0);
 	npages = 0;
@@ -1878,6 +1892,9 @@ lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats)
 		RecordPageWithFreeSpace(onerel, tblk, freespace);
 		npages++;
 	}
+
+	/* Clear the block number information */
+	vacrelstats->blkno = InvalidBlockNumber;
 
 	if (BufferIsValid(vmbuffer))
 	{
@@ -1921,7 +1938,7 @@ lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 
 	/* Update error traceback information */
 	update_vacuum_error_info(vacrelstats, &saved_err_info, VACUUM_ERRCB_PHASE_VACUUM_HEAP,
-							 blkno);
+							 blkno, InvalidOffsetNumber);
 
 	START_CRIT_SECTION();
 
@@ -1973,7 +1990,8 @@ lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 	 * dirty, exclusively locked, and, if needed, a full page image has been
 	 * emitted in the log_heap_clean() above.
 	 */
-	if (heap_page_is_all_visible(onerel, buffer, &visibility_cutoff_xid,
+	if (heap_page_is_all_visible(onerel, buffer, vacrelstats,
+								 &visibility_cutoff_xid,
 								 &all_frozen))
 		PageSetAllVisible(page);
 
@@ -2012,7 +2030,7 @@ lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
  * Also returns a flag indicating whether page contains any tuples at all.
  */
 static bool
-lazy_check_needs_freeze(Buffer buf, bool *hastup)
+lazy_check_needs_freeze(Buffer buf, bool *hastup, LVRelStats *vacrelstats)
 {
 	Page		page = BufferGetPage(buf);
 	OffsetNumber offnum,
@@ -2037,6 +2055,11 @@ lazy_check_needs_freeze(Buffer buf, bool *hastup)
 	{
 		ItemId		itemid;
 
+		/*
+		 * Set the offset number so that we can display it along with any
+		 * error that occurred while processing this tuple.
+		 */
+		vacrelstats->offnum = offnum;
 		itemid = PageGetItemId(page, offnum);
 
 		/* this should match hastup test in count_nondeletable_pages() */
@@ -2051,10 +2074,13 @@ lazy_check_needs_freeze(Buffer buf, bool *hastup)
 
 		if (heap_tuple_needs_freeze(tupleheader, FreezeLimit,
 									MultiXactCutoff, buf))
-			return true;
+			break;
 	}							/* scan along page */
 
-	return false;
+	/* Clear the offset information once we have processed the given page. */
+	vacrelstats->offnum = InvalidOffsetNumber;
+
+	return (offnum <= maxoff);
 }
 
 /*
@@ -2401,7 +2427,7 @@ lazy_cleanup_all_indexes(Relation *Irel, IndexBulkDeleteResult **stats,
  *		dead_tuples, and update running statistics.
  *
  *		reltuples is the number of heap tuples to be passed to the
- *		bulkdelete callback.
+ *		bulkdelete callback.  It's always assumed to be estimated.
  */
 static void
 lazy_vacuum_index(Relation indrel, IndexBulkDeleteResult **stats,
@@ -2432,7 +2458,7 @@ lazy_vacuum_index(Relation indrel, IndexBulkDeleteResult **stats,
 	vacrelstats->indname = pstrdup(RelationGetRelationName(indrel));
 	update_vacuum_error_info(vacrelstats, &saved_err_info,
 							 VACUUM_ERRCB_PHASE_VACUUM_INDEX,
-							 InvalidBlockNumber);
+							 InvalidBlockNumber, InvalidOffsetNumber);
 
 	/* Do bulk deletion */
 	*stats = index_bulk_delete(&ivinfo, *stats,
@@ -2492,34 +2518,34 @@ lazy_cleanup_index(Relation indrel,
 	vacrelstats->indname = pstrdup(RelationGetRelationName(indrel));
 	update_vacuum_error_info(vacrelstats, &saved_err_info,
 							 VACUUM_ERRCB_PHASE_INDEX_CLEANUP,
-							 InvalidBlockNumber);
+							 InvalidBlockNumber, InvalidOffsetNumber);
 
 	*stats = index_vacuum_cleanup(&ivinfo, *stats);
 
-	/* Revert back to the old phase information for error traceback */
+	if (*stats)
+	{
+		if (IsParallelWorker())
+			msg = gettext_noop("index \"%s\" now contains %.0f row versions in %u pages as reported by parallel vacuum worker");
+		else
+			msg = gettext_noop("index \"%s\" now contains %.0f row versions in %u pages");
+
+		ereport(elevel,
+				(errmsg(msg,
+						RelationGetRelationName(indrel),
+						(*stats)->num_index_tuples,
+						(*stats)->num_pages),
+				 errdetail("%.0f index row versions were removed.\n"
+						   "%u index pages have been deleted, %u are currently reusable.\n"
+						   "%s.",
+						   (*stats)->tuples_removed,
+						   (*stats)->pages_deleted, (*stats)->pages_free,
+						   pg_rusage_show(&ru0))));
+	}
+
+	/* Revert to the previous phase information for error traceback */
 	restore_vacuum_error_info(vacrelstats, &saved_err_info);
 	pfree(vacrelstats->indname);
 	vacrelstats->indname = NULL;
-
-	if (!(*stats))
-		return;
-
-	if (IsParallelWorker())
-		msg = gettext_noop("index \"%s\" now contains %.0f row versions in %u pages as reported by parallel vacuum worker");
-	else
-		msg = gettext_noop("index \"%s\" now contains %.0f row versions in %u pages");
-
-	ereport(elevel,
-			(errmsg(msg,
-					RelationGetRelationName(indrel),
-					(*stats)->num_index_tuples,
-					(*stats)->num_pages),
-			 errdetail("%.0f index row versions were removed.\n"
-					   "%u index pages have been deleted, %u are currently reusable.\n"
-					   "%s.",
-					   (*stats)->tuples_removed,
-					   (*stats)->pages_deleted, (*stats)->pages_free,
-					   pg_rusage_show(&ru0))));
 }
 
 /*
@@ -2958,6 +2984,7 @@ vac_cmp_itemptr(const void *left, const void *right)
  */
 static bool
 heap_page_is_all_visible(Relation rel, Buffer buf,
+						 LVRelStats *vacrelstats,
 						 TransactionId *visibility_cutoff_xid,
 						 bool *all_frozen)
 {
@@ -2982,6 +3009,11 @@ heap_page_is_all_visible(Relation rel, Buffer buf,
 		ItemId		itemid;
 		HeapTupleData tuple;
 
+		/*
+		 * Set the offset number so that we can display it along with any
+		 * error that occurred while processing this tuple.
+		 */
+		vacrelstats->offnum = offnum;
 		itemid = PageGetItemId(page, offnum);
 
 		/* Unused or redirect line pointers are of no interest */
@@ -3058,6 +3090,9 @@ heap_page_is_all_visible(Relation rel, Buffer buf,
 				break;
 		}
 	}							/* scan along page */
+
+	/* Clear the offset information once we have processed the given page. */
+	vacrelstats->offnum = InvalidOffsetNumber;
 
 	return all_visible;
 }
@@ -3580,14 +3615,32 @@ vacuum_error_callback(void *arg)
 	{
 		case VACUUM_ERRCB_PHASE_SCAN_HEAP:
 			if (BlockNumberIsValid(errinfo->blkno))
-				errcontext("while scanning block %u of relation \"%s.%s\"",
-						   errinfo->blkno, errinfo->relnamespace, errinfo->relname);
+			{
+				if (OffsetNumberIsValid(errinfo->offnum))
+					errcontext("while scanning block %u and offset %u of relation \"%s.%s\"",
+							   errinfo->blkno, errinfo->offnum, errinfo->relnamespace, errinfo->relname);
+				else
+					errcontext("while scanning block %u of relation \"%s.%s\"",
+							   errinfo->blkno, errinfo->relnamespace, errinfo->relname);
+			}
+			else
+				errcontext("while scanning relation \"%s.%s\"",
+						   errinfo->relnamespace, errinfo->relname);
 			break;
 
 		case VACUUM_ERRCB_PHASE_VACUUM_HEAP:
 			if (BlockNumberIsValid(errinfo->blkno))
-				errcontext("while vacuuming block %u of relation \"%s.%s\"",
-						   errinfo->blkno, errinfo->relnamespace, errinfo->relname);
+			{
+				if (OffsetNumberIsValid(errinfo->offnum))
+					errcontext("while vacuuming block %u and offset %u of relation \"%s.%s\"",
+							   errinfo->blkno, errinfo->offnum, errinfo->relnamespace, errinfo->relname);
+				else
+					errcontext("while vacuuming block %u of relation \"%s.%s\"",
+							   errinfo->blkno, errinfo->relnamespace, errinfo->relname);
+			}
+			else
+				errcontext("while vacuuming relation \"%s.%s\"",
+						   errinfo->relnamespace, errinfo->relname);
 			break;
 
 		case VACUUM_ERRCB_PHASE_VACUUM_INDEX:
@@ -3619,15 +3672,17 @@ vacuum_error_callback(void *arg)
  */
 static void
 update_vacuum_error_info(LVRelStats *errinfo, LVSavedErrInfo *saved_err_info, int phase,
-						 BlockNumber blkno)
+						 BlockNumber blkno, OffsetNumber offnum)
 {
 	if (saved_err_info)
 	{
+		saved_err_info->offnum = errinfo->offnum;
 		saved_err_info->blkno = errinfo->blkno;
 		saved_err_info->phase = errinfo->phase;
 	}
 
 	errinfo->blkno = blkno;
+	errinfo->offnum = offnum;
 	errinfo->phase = phase;
 }
 
@@ -3638,5 +3693,6 @@ static void
 restore_vacuum_error_info(LVRelStats *errinfo, const LVSavedErrInfo *saved_err_info)
 {
 	errinfo->blkno = saved_err_info->blkno;
+	errinfo->offnum = saved_err_info->offnum;
 	errinfo->phase = saved_err_info->phase;
 }

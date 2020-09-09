@@ -78,6 +78,8 @@
 
 #include "postgres.h"
 
+#include <fcntl.h>
+
 #include "storage/buffile.h"
 #include "utils/builtins.h"
 #include "utils/logtape.h"
@@ -489,7 +491,7 @@ ltsReleaseBlock(LogicalTapeSet *lts, long blocknum)
 		 * If the freelist becomes very large, just return and leak this free
 		 * block.
 		 */
-		if (lts->freeBlocksLen * 2 > MaxAllocSize)
+		if (lts->freeBlocksLen * 2 * sizeof(long) > MaxAllocSize)
 			return;
 
 		lts->freeBlocksLen *= 2;
@@ -551,7 +553,7 @@ ltsConcatWorkerTapes(LogicalTapeSet *lts, TapeShare *shared,
 		lt = &lts->tapes[i];
 
 		pg_itoa(i, filename);
-		file = BufFileOpenShared(fileset, filename);
+		file = BufFileOpenShared(fileset, filename, O_RDONLY);
 		filesize = BufFileSize(file);
 
 		/*

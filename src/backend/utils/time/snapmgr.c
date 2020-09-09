@@ -53,6 +53,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
+#include "datatype/timestamp.h"
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
 #include "storage/predicate.h"
@@ -67,6 +68,7 @@
 #include "utils/resowner_private.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/timestamp.h"
 
 
 /*
@@ -595,6 +597,8 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	CurrentSnapshot->takenDuringRecovery = sourcesnap->takenDuringRecovery;
 	/* NB: curcid should NOT be copied, it's a local matter */
 
+	CurrentSnapshot->snapXactCompletionCount = 0;
+
 	/*
 	 * Now we have to fix what GetSnapshotData did with MyProc->xmin and
 	 * TransactionXmin.  There is a race condition: to make sure we are not
@@ -670,6 +674,7 @@ CopySnapshot(Snapshot snapshot)
 	newsnap->regd_count = 0;
 	newsnap->active_count = 0;
 	newsnap->copied = true;
+	newsnap->snapXactCompletionCount = 0;
 
 	/* setup XID array */
 	if (snapshot->xcnt > 0)
@@ -2207,6 +2212,7 @@ RestoreSnapshot(char *start_address)
 	snapshot->curcid = serialized_snapshot.curcid;
 	snapshot->whenTaken = serialized_snapshot.whenTaken;
 	snapshot->lsn = serialized_snapshot.lsn;
+	snapshot->snapXactCompletionCount = 0;
 
 	/* Copy XIDs, if present. */
 	if (serialized_snapshot.xcnt > 0)

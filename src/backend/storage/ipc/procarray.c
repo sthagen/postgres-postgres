@@ -146,7 +146,7 @@ typedef struct ProcArrayStruct
  *    I.e. the difference to GlobalVisSharedRels is that
  *    snapshot in other databases are ignored.
  *
- * 3) GlobalVisCatalogRels, which only considers an XID's
+ * 3) GlobalVisDataRels, which only considers an XID's
  *    effects visible-to-everyone if neither snapshots in the current
  *    database, nor a replication slot's xmin consider XID as running.
  *
@@ -198,7 +198,7 @@ typedef struct ComputeXidHorizonsResult
 	 * be removed.
 	 *
 	 * This likely should only be needed to determine whether pg_subtrans can
-	 * be truncated. It currently includes the effects of replications slots,
+	 * be truncated. It currently includes the effects of replication slots,
 	 * for historical reasons. But that could likely be changed.
 	 */
 	TransactionId oldest_considered_running;
@@ -207,7 +207,7 @@ typedef struct ComputeXidHorizonsResult
 	 * Oldest xid for which deleted tuples need to be retained in shared
 	 * tables.
 	 *
-	 * This includes the effects of replications lots. If that's not desired,
+	 * This includes the effects of replication slots. If that's not desired,
 	 * look at shared_oldest_nonremovable_raw;
 	 */
 	TransactionId shared_oldest_nonremovable;
@@ -407,6 +407,7 @@ CreateSharedProcArray(void)
 		procArray->lastOverflowedXid = InvalidTransactionId;
 		procArray->replication_slot_xmin = InvalidTransactionId;
 		procArray->replication_slot_catalog_xmin = InvalidTransactionId;
+		ShmemVariableCache->xactCompletionCount = 1;
 	}
 
 	allProcs = ProcGlobal->allProcs;
@@ -533,6 +534,9 @@ ProcArrayRemove(PGPROC *proc, TransactionId latestXid)
 
 		/* Advance global latestCompletedXid while holding the lock */
 		MaintainLatestCompletedXid(latestXid);
+
+		/* Same with xactCompletionCount  */
+		ShmemVariableCache->xactCompletionCount++;
 
 		ProcGlobal->xids[proc->pgxactoff] = 0;
 		ProcGlobal->subxidStates[proc->pgxactoff].overflowed = false;
@@ -667,6 +671,7 @@ ProcArrayEndTransactionInternal(PGPROC *proc, TransactionId latestXid)
 {
 	size_t		pgxactoff = proc->pgxactoff;
 
+	Assert(LWLockHeldByMe(ProcArrayLock));
 	Assert(TransactionIdIsValid(ProcGlobal->xids[pgxactoff]));
 	Assert(ProcGlobal->xids[pgxactoff] == proc->xid);
 
@@ -698,6 +703,9 @@ ProcArrayEndTransactionInternal(PGPROC *proc, TransactionId latestXid)
 
 	/* Also advance global latestCompletedXid while holding the lock */
 	MaintainLatestCompletedXid(latestXid);
+
+	/* Same with xactCompletionCount  */
+	ShmemVariableCache->xactCompletionCount++;
 }
 
 /*
@@ -832,13 +840,20 @@ ProcArrayClearTransaction(PGPROC *proc)
 	size_t		pgxactoff;
 
 	/*
-	 * We can skip locking ProcArrayLock exclusively here, because this action
-	 * does not actually change anyone's view of the set of running XIDs: our
-	 * entry is duplicate with the gxact that has already been inserted into
-	 * the ProcArray. But need it in shared mode for pgproc->pgxactoff to stay
-	 * the same.
+	 * Currently we need to lock ProcArrayLock exclusively here, as we
+	 * increment xactCompletionCount below. We also need it at least in shared
+	 * mode for pgproc->pgxactoff to stay the same below.
+	 *
+	 * We could however, as this action does not actually change anyone's view
+	 * of the set of running XIDs (our entry is duplicate with the gxact that
+	 * has already been inserted into the ProcArray), lower the lock level to
+	 * shared if we were to make xactCompletionCount an atomic variable. But
+	 * that doesn't seem worth it currently, as a 2PC commit is heavyweight
+	 * enough for this not to be the bottleneck.  If it ever becomes a
+	 * bottleneck it may also be worth considering to combine this with the
+	 * subsequent ProcArrayRemove()
 	 */
-	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 
 	pgxactoff = proc->pgxactoff;
 
@@ -851,6 +866,15 @@ ProcArrayClearTransaction(PGPROC *proc)
 
 	Assert(!(proc->vacuumFlags & PROC_VACUUM_STATE_MASK));
 	Assert(!proc->delayChkpt);
+
+	/*
+	 * Need to increment completion count even though transaction hasn't
+	 * really committed yet. The reason for that is that GetSnapshotData()
+	 * omits the xid of the current transaction, thus without the increment we
+	 * otherwise could end up reusing the snapshot later. Which would be bad,
+	 * because it might not count the prepared transaction as running.
+	 */
+	ShmemVariableCache->xactCompletionCount++;
 
 	/* Clear the subtransaction-XID cache too */
 	Assert(ProcGlobal->subxidStates[pgxactoff].count == proc->subxidStatus.count &&
@@ -1663,7 +1687,7 @@ ComputeXidHorizons(ComputeXidHorizonsResult *h)
 		TransactionId xmin;
 
 		/* Fetch xid just once - see GetNewTransactionId */
-		xid = UINT32_ACCESS_ONCE(other_xids[pgprocno]);
+		xid = UINT32_ACCESS_ONCE(other_xids[index]);
 		xmin = UINT32_ACCESS_ONCE(proc->xmin);
 
 		/*
@@ -1917,6 +1941,93 @@ GetMaxSnapshotSubxidCount(void)
 }
 
 /*
+ * Initialize old_snapshot_threshold specific parts of a newly build snapshot.
+ */
+static void
+GetSnapshotDataInitOldSnapshot(Snapshot snapshot)
+{
+	if (!OldSnapshotThresholdActive())
+	{
+		/*
+		 * If not using "snapshot too old" feature, fill related fields with
+		 * dummy values that don't require any locking.
+		 */
+		snapshot->lsn = InvalidXLogRecPtr;
+		snapshot->whenTaken = 0;
+	}
+	else
+	{
+		/*
+		 * Capture the current time and WAL stream location in case this
+		 * snapshot becomes old enough to need to fall back on the special
+		 * "old snapshot" logic.
+		 */
+		snapshot->lsn = GetXLogInsertRecPtr();
+		snapshot->whenTaken = GetSnapshotCurrentTimestamp();
+		MaintainOldSnapshotTimeMapping(snapshot->whenTaken, snapshot->xmin);
+	}
+}
+
+/*
+ * Helper function for GetSnapshotData() that checks if the bulk of the
+ * visibility information in the snapshot is still valid. If so, it updates
+ * the fields that need to change and returns true. Otherwise it returns
+ * false.
+ *
+ * This very likely can be evolved to not need ProcArrayLock held (at very
+ * least in the case we already hold a snapshot), but that's for another day.
+ */
+static bool
+GetSnapshotDataReuse(Snapshot snapshot)
+{
+	uint64 curXactCompletionCount;
+
+	Assert(LWLockHeldByMe(ProcArrayLock));
+
+	if (unlikely(snapshot->snapXactCompletionCount == 0))
+		return false;
+
+	curXactCompletionCount = ShmemVariableCache->xactCompletionCount;
+	if (curXactCompletionCount != snapshot->snapXactCompletionCount)
+		return false;
+
+	/*
+	 * If the current xactCompletionCount is still the same as it was at the
+	 * time the snapshot was built, we can be sure that rebuilding the
+	 * contents of the snapshot the hard way would result in the same snapshot
+	 * contents:
+	 *
+	 * As explained in transam/README, the set of xids considered running by
+	 * GetSnapshotData() cannot change while ProcArrayLock is held. Snapshot
+	 * contents only depend on transactions with xids and xactCompletionCount
+	 * is incremented whenever a transaction with an xid finishes (while
+	 * holding ProcArrayLock) exclusively). Thus the xactCompletionCount check
+	 * ensures we would detect if the snapshot would have changed.
+	 *
+	 * As the snapshot contents are the same as it was before, it is is safe
+	 * to re-enter the snapshot's xmin into the PGPROC array. None of the rows
+	 * visible under the snapshot could already have been removed (that'd
+	 * require the set of running transactions to change) and it fulfills the
+	 * requirement that concurrent GetSnapshotData() calls yield the same
+	 * xmin.
+	 */
+	if (!TransactionIdIsValid(MyProc->xmin))
+		MyProc->xmin = TransactionXmin = snapshot->xmin;
+
+	RecentXmin = snapshot->xmin;
+	Assert(TransactionIdPrecedesOrEquals(TransactionXmin, RecentXmin));
+
+	snapshot->curcid = GetCurrentCommandId(false);
+	snapshot->active_count = 0;
+	snapshot->regd_count = 0;
+	snapshot->copied = false;
+
+	GetSnapshotDataInitOldSnapshot(snapshot);
+
+	return true;
+}
+
+/*
  * GetSnapshotData -- returns information about running transactions.
  *
  * The returned snapshot includes xmin (lowest still-running xact ID),
@@ -1963,6 +2074,7 @@ GetSnapshotData(Snapshot snapshot)
 	TransactionId oldestxid;
 	int			mypgxactoff;
 	TransactionId myxid;
+	uint64		curXactCompletionCount;
 
 	TransactionId replication_slot_xmin = InvalidTransactionId;
 	TransactionId replication_slot_catalog_xmin = InvalidTransactionId;
@@ -2007,12 +2119,19 @@ GetSnapshotData(Snapshot snapshot)
 	 */
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 
+	if (GetSnapshotDataReuse(snapshot))
+	{
+		LWLockRelease(ProcArrayLock);
+		return snapshot;
+	}
+
 	latest_completed = ShmemVariableCache->latestCompletedXid;
 	mypgxactoff = MyProc->pgxactoff;
 	myxid = other_xids[mypgxactoff];
 	Assert(myxid == MyProc->xid);
 
 	oldestxid = ShmemVariableCache->oldestXid;
+	curXactCompletionCount = ShmemVariableCache->xactCompletionCount;
 
 	/* xmax is always latestCompletedXid + 1 */
 	xmax = XidFromFullTransactionId(latest_completed);
@@ -2266,6 +2385,7 @@ GetSnapshotData(Snapshot snapshot)
 	snapshot->xcnt = count;
 	snapshot->subxcnt = subcount;
 	snapshot->suboverflowed = suboverflowed;
+	snapshot->snapXactCompletionCount = curXactCompletionCount;
 
 	snapshot->curcid = GetCurrentCommandId(false);
 
@@ -2277,26 +2397,7 @@ GetSnapshotData(Snapshot snapshot)
 	snapshot->regd_count = 0;
 	snapshot->copied = false;
 
-	if (old_snapshot_threshold < 0)
-	{
-		/*
-		 * If not using "snapshot too old" feature, fill related fields with
-		 * dummy values that don't require any locking.
-		 */
-		snapshot->lsn = InvalidXLogRecPtr;
-		snapshot->whenTaken = 0;
-	}
-	else
-	{
-		/*
-		 * Capture the current time and WAL stream location in case this
-		 * snapshot becomes old enough to need to fall back on the special
-		 * "old snapshot" logic.
-		 */
-		snapshot->lsn = GetXLogInsertRecPtr();
-		snapshot->whenTaken = GetSnapshotCurrentTimestamp();
-		MaintainOldSnapshotTimeMapping(snapshot->whenTaken, xmin);
-	}
+	GetSnapshotDataInitOldSnapshot(snapshot);
 
 	return snapshot;
 }
@@ -3332,7 +3433,6 @@ CancelDBBackends(Oid databaseid, ProcSignalReason sigmode, bool conflictPending)
 {
 	ProcArrayStruct *arrayP = procArray;
 	int			index;
-	pid_t		pid = 0;
 
 	/* tell all backends to die */
 	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
@@ -3345,6 +3445,7 @@ CancelDBBackends(Oid databaseid, ProcSignalReason sigmode, bool conflictPending)
 		if (databaseid == InvalidOid || proc->databaseId == databaseid)
 		{
 			VirtualTransactionId procvxid;
+			pid_t		pid;
 
 			GET_VXID_FROM_PGPROC(procvxid, *proc);
 

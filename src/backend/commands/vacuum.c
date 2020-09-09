@@ -907,6 +907,9 @@ get_all_vacuum_rels(int options)
 /*
  * vacuum_set_xid_limits() -- compute oldestXmin and freeze cutoff points
  *
+ * Input parameters are the target relation, applicable freeze age settings,
+ * and isTopLevel which should be passed down from ProcessUtility.
+ *
  * The output parameters are:
  * - oldestXmin is the cutoff value used to distinguish whether tuples are
  *	 DEAD or RECENTLY_DEAD (see HeapTupleSatisfiesVacuum).
@@ -931,6 +934,7 @@ vacuum_set_xid_limits(Relation rel,
 					  int freeze_table_age,
 					  int multixact_freeze_min_age,
 					  int multixact_freeze_table_age,
+					  bool isTopLevel,
 					  TransactionId *oldestXmin,
 					  TransactionId *freezeLimit,
 					  TransactionId *xidFullScanLimit,
@@ -946,32 +950,53 @@ vacuum_set_xid_limits(Relation rel,
 	MultiXactId mxactLimit;
 	MultiXactId safeMxactLimit;
 
-	/*
-	 * We can always ignore processes running lazy vacuum.  This is because we
-	 * use these values only for deciding which tuples we must keep in the
-	 * tables.  Since lazy vacuum doesn't write its XID anywhere (usually no
-	 * XID assigned), it's safe to ignore it.  In theory it could be
-	 * problematic to ignore lazy vacuums in a full vacuum, but keep in mind
-	 * that only one vacuum process can be working on a particular table at
-	 * any time, and that each vacuum is always an independent transaction.
-	 */
-	*oldestXmin = GetOldestNonRemovableTransactionId(rel);
-
-	if (OldSnapshotThresholdActive())
+	if (RELATION_IS_LOCAL(rel) && !IsInTransactionBlock(isTopLevel))
 	{
-		TransactionId limit_xmin;
-		TimestampTz limit_ts;
+		/*
+		 * If we are processing a temp relation (which by prior checks must be
+		 * one belonging to our session), and we are not inside any
+		 * transaction block, then there can be no tuples in the rel that are
+		 * still in-doubt, nor can there be any that are dead but possibly
+		 * still interesting to some snapshot our session holds.  We don't
+		 * need to care whether other sessions could see such tuples, either.
+		 * So we can aggressively set the cutoff xmin to be the nextXid.
+		 */
+		*oldestXmin = ReadNewTransactionId();
+	}
+	else
+	{
+		/*
+		 * Otherwise, calculate the cutoff xmin normally.
+		 *
+		 * We can always ignore processes running lazy vacuum.  This is
+		 * because we use these values only for deciding which tuples we must
+		 * keep in the tables.  Since lazy vacuum doesn't write its XID
+		 * anywhere (usually no XID assigned), it's safe to ignore it.  In
+		 * theory it could be problematic to ignore lazy vacuums in a full
+		 * vacuum, but keep in mind that only one vacuum process can be
+		 * working on a particular table at any time, and that each vacuum is
+		 * always an independent transaction.
+		 */
+		*oldestXmin = GetOldestNonRemovableTransactionId(rel);
 
-		if (TransactionIdLimitedForOldSnapshots(*oldestXmin, rel, &limit_xmin, &limit_ts))
+		if (OldSnapshotThresholdActive())
 		{
-			/*
-			 * TODO: We should only set the threshold if we are pruning on the
-			 * basis of the increased limits. Not as crucial here as it is for
-			 * opportunistic pruning (which often happens at a much higher
-			 * frequency), but would still be a significant improvement.
-			 */
-			SetOldSnapshotThresholdTimestamp(limit_ts, limit_xmin);
-			*oldestXmin = limit_xmin;
+			TransactionId limit_xmin;
+			TimestampTz limit_ts;
+
+			if (TransactionIdLimitedForOldSnapshots(*oldestXmin, rel,
+													&limit_xmin, &limit_ts))
+			{
+				/*
+				 * TODO: We should only set the threshold if we are pruning on
+				 * the basis of the increased limits.  Not as crucial here as
+				 * it is for opportunistic pruning (which often happens at a
+				 * much higher frequency), but would still be a significant
+				 * improvement.
+				 */
+				SetOldSnapshotThresholdTimestamp(limit_ts, limit_xmin);
+				*oldestXmin = limit_xmin;
+			}
 		}
 	}
 
@@ -1128,8 +1153,8 @@ vacuum_set_xid_limits(Relation rel,
  *		live tuples seen; but if we did not, we should not blindly extrapolate
  *		from that number, since VACUUM may have scanned a quite nonrandom
  *		subset of the table.  When we have only partial information, we take
- *		the old value of pg_class.reltuples as a measurement of the
- *		tuple density in the unscanned pages.
+ *		the old value of pg_class.reltuples/pg_class.relpages as a measurement
+ *		of the tuple density in the unscanned pages.
  *
  *		Note: scanned_tuples should count only *live* tuples, since
  *		pg_class.reltuples is defined that way.
@@ -1152,18 +1177,16 @@ vac_estimate_reltuples(Relation relation,
 
 	/*
 	 * If scanned_pages is zero but total_pages isn't, keep the existing value
-	 * of reltuples.  (Note: callers should avoid updating the pg_class
-	 * statistics in this situation, since no new information has been
-	 * provided.)
+	 * of reltuples.  (Note: we might be returning -1 in this case.)
 	 */
 	if (scanned_pages == 0)
 		return old_rel_tuples;
 
 	/*
-	 * If old value of relpages is zero, old density is indeterminate; we
-	 * can't do much except scale up scanned_tuples to match total_pages.
+	 * If old density is unknown, we can't do much except scale up
+	 * scanned_tuples to match total_pages.
 	 */
-	if (old_rel_pages == 0)
+	if (old_rel_tuples < 0 || old_rel_pages == 0)
 		return floor((scanned_tuples / scanned_pages) * total_pages + 0.5);
 
 	/*
@@ -1907,7 +1930,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params)
 			cluster_options |= CLUOPT_VERBOSE;
 
 		/* VACUUM FULL is now a variant of CLUSTER; see cluster.c */
-		cluster_rel(relid, InvalidOid, cluster_options);
+		cluster_rel(relid, InvalidOid, cluster_options, true);
 	}
 	else
 		table_relation_vacuum(onerel, params, vac_strategy);

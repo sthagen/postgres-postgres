@@ -492,7 +492,7 @@ static void dump_var(const char *str, NumericVar *var);
 			 pfree(buf); \
 	} while (0)
 
-#define init_var(v)		MemSetAligned(v, 0, sizeof(NumericVar))
+#define init_var(v)		memset(v, 0, sizeof(NumericVar))
 
 #define NUMERIC_DIGITS(num) (NUMERIC_HEADER_IS_SHORT(num) ? \
 	(num)->choice.n_short.n_data : (num)->choice.n_long.n_data)
@@ -8326,11 +8326,22 @@ mul_var(const NumericVar *var1, const NumericVar *var2, NumericVar *result,
 		 * Add the appropriate multiple of var2 into the accumulator.
 		 *
 		 * As above, digits of var2 can be ignored if they don't contribute,
-		 * so we only include digits for which i1+i2+2 <= res_ndigits - 1.
+		 * so we only include digits for which i1+i2+2 < res_ndigits.
+		 *
+		 * This inner loop is the performance bottleneck for multiplication,
+		 * so we want to keep it simple enough so that it can be
+		 * auto-vectorized.  Accordingly, process the digits left-to-right
+		 * even though schoolbook multiplication would suggest right-to-left.
+		 * Since we aren't propagating carries in this loop, the order does
+		 * not matter.
 		 */
-		for (i2 = Min(var2ndigits - 1, res_ndigits - i1 - 3), i = i1 + i2 + 2;
-			 i2 >= 0; i2--)
-			dig[i--] += var1digit * var2digits[i2];
+		{
+			int			i2limit = Min(var2ndigits, res_ndigits - i1 - 2);
+			int		   *dig_i1_2 = &dig[i1 + 2];
+
+			for (i2 = 0; i2 < i2limit; i2++)
+				dig_i1_2[i2] += var1digit * var2digits[i2];
+		}
 	}
 
 	/*
