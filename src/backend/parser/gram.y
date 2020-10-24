@@ -166,7 +166,7 @@ static RoleSpec *makeRoleSpec(RoleSpecType type, int location);
 static void check_qualified_name(List *names, core_yyscan_t yyscanner);
 static List *check_func_name(List *names, core_yyscan_t yyscanner);
 static List *check_indirection(List *indirection, core_yyscan_t yyscanner);
-static List *extractArgTypes(List *parameters);
+static List *extractArgTypes(ObjectType objtype, List *parameters);
 static List *extractAggrArgTypes(List *aggrargs);
 static List *makeOrderedSetArgs(List *directargs, List *orderedargs,
 								core_yyscan_t yyscanner);
@@ -375,8 +375,8 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <accesspriv> privilege
 %type <list>	privileges privilege_list
 %type <privtarget> privilege_target
-%type <objwithargs> function_with_argtypes aggregate_with_argtypes operator_with_argtypes
-%type <list>	function_with_argtypes_list aggregate_with_argtypes_list operator_with_argtypes_list
+%type <objwithargs> function_with_argtypes aggregate_with_argtypes operator_with_argtypes procedure_with_argtypes function_with_argtypes_common
+%type <list>	function_with_argtypes_list aggregate_with_argtypes_list operator_with_argtypes_list procedure_with_argtypes_list
 %type <ival>	defacl_privilege_target
 %type <defelt>	DefACLOption
 %type <list>	DefACLOptionList
@@ -540,14 +540,16 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <str>		Sconst comment_text notify_payload
 %type <str>		RoleId opt_boolean_or_string
 %type <list>	var_list
-%type <str>		ColId ColLabel var_name type_function_name param_name
+%type <str>		ColId ColLabel BareColLabel
 %type <str>		NonReservedWord NonReservedWord_or_Sconst
+%type <str>		var_name type_function_name param_name
 %type <str>		createdb_opt_name
 %type <node>	var_value zone_value
 %type <rolespec> auth_ident RoleSpec opt_granted_by
 
 %type <keyword> unreserved_keyword type_func_name_keyword
 %type <keyword> col_name_keyword reserved_keyword
+%type <keyword> bare_label_keyword
 
 %type <node>	TableConstraint TableLikeClause
 %type <ival>	TableLikeOptionList TableLikeOption
@@ -741,24 +743,16 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %nonassoc	'<' '>' '=' LESS_EQUALS GREATER_EQUALS NOT_EQUALS
 %nonassoc	BETWEEN IN_P LIKE ILIKE SIMILAR NOT_LA
 %nonassoc	ESCAPE			/* ESCAPE must be just above LIKE/ILIKE/SIMILAR */
-%left		POSTFIXOP		/* dummy for postfix Op rules */
 /*
- * To support target_el without AS, we must give IDENT an explicit priority
- * between POSTFIXOP and Op.  We can safely assign the same priority to
- * various unreserved keywords as needed to resolve ambiguities (this can't
- * have any bad effects since obviously the keywords will still behave the
- * same as if they weren't keywords).  We need to do this:
- * for PARTITION, RANGE, ROWS, GROUPS to support opt_existing_window_name;
- * for RANGE, ROWS, GROUPS so that they can follow a_expr without creating
- * postfix-operator problems;
- * for GENERATED so that it can follow b_expr;
- * and for NULL so that it can follow b_expr in ColQualList without creating
- * postfix-operator problems.
+ * To support target_el without AS, it used to be necessary to assign IDENT an
+ * explicit precedence just less than Op.  While that's not really necessary
+ * since we removed postfix operators, it's still helpful to do so because
+ * there are some other unreserved keywords that need precedence assignments.
+ * If those keywords have the same precedence as IDENT then they clearly act
+ * the same as non-keywords, reducing the risk of unwanted precedence effects.
  *
- * To support CUBE and ROLLUP in GROUP BY without reserving them, we give them
- * an explicit priority lower than '(', so that a rule with CUBE '(' will shift
- * rather than reducing a conflicting rule that takes CUBE as a function name.
- * Using the same precedence as IDENT seems right for the reasons given above.
+ * We need to do this for PARTITION, RANGE, ROWS, and GROUPS to support
+ * opt_existing_window_name (see comment there).
  *
  * The frame_bound productions UNBOUNDED PRECEDING and UNBOUNDED FOLLOWING
  * are even messier: since UNBOUNDED is an unreserved keyword (per spec!),
@@ -768,9 +762,14 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
  * appear to cause UNBOUNDED to be treated differently from other unreserved
  * keywords anywhere else in the grammar, but it's definitely risky.  We can
  * blame any funny behavior of UNBOUNDED on the SQL standard, though.
+ *
+ * To support CUBE and ROLLUP in GROUP BY without reserving them, we give them
+ * an explicit priority lower than '(', so that a rule with CUBE '(' will shift
+ * rather than reducing a conflicting rule that takes CUBE as a function name.
+ * Using the same precedence as IDENT seems right for the reasons given above.
  */
-%nonassoc	UNBOUNDED		/* ideally should have same precedence as IDENT */
-%nonassoc	IDENT GENERATED NULL_P PARTITION RANGE ROWS GROUPS PRECEDING FOLLOWING CUBE ROLLUP
+%nonassoc	UNBOUNDED		/* ideally would have same precedence as IDENT */
+%nonassoc	IDENT PARTITION RANGE ROWS GROUPS PRECEDING FOLLOWING CUBE ROLLUP
 %left		Op OPERATOR		/* multi-character ops and user-defined operators */
 %left		'+' '-'
 %left		'*' '/' '%'
@@ -791,8 +790,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
  * left-associativity among the JOIN rules themselves.
  */
 %left		JOIN CROSS LEFT FULL RIGHT INNER_P NATURAL
-/* kluge to keep xml_whitespace_option from causing shift/reduce conflicts */
-%right		PRESERVE STRIP_P
 
 %%
 
@@ -4626,7 +4623,7 @@ AlterExtensionContentsStmt:
 					n->object = (Node *) lcons(makeString($9), $7);
 					$$ = (Node *)n;
 				}
-			| ALTER EXTENSION name add_drop PROCEDURE function_with_argtypes
+			| ALTER EXTENSION name add_drop PROCEDURE procedure_with_argtypes
 				{
 					AlterExtensionContentsStmt *n = makeNode(AlterExtensionContentsStmt);
 					n->extname = $3;
@@ -4635,7 +4632,7 @@ AlterExtensionContentsStmt:
 					n->object = (Node *) $6;
 					$$ = (Node *)n;
 				}
-			| ALTER EXTENSION name add_drop ROUTINE function_with_argtypes
+			| ALTER EXTENSION name add_drop ROUTINE procedure_with_argtypes
 				{
 					AlterExtensionContentsStmt *n = makeNode(AlterExtensionContentsStmt);
 					n->extname = $3;
@@ -6368,7 +6365,7 @@ CommentStmt:
 					n->comment = $8;
 					$$ = (Node *) n;
 				}
-			| COMMENT ON PROCEDURE function_with_argtypes IS comment_text
+			| COMMENT ON PROCEDURE procedure_with_argtypes IS comment_text
 				{
 					CommentStmt *n = makeNode(CommentStmt);
 					n->objtype = OBJECT_PROCEDURE;
@@ -6376,7 +6373,7 @@ CommentStmt:
 					n->comment = $6;
 					$$ = (Node *) n;
 				}
-			| COMMENT ON ROUTINE function_with_argtypes IS comment_text
+			| COMMENT ON ROUTINE procedure_with_argtypes IS comment_text
 				{
 					CommentStmt *n = makeNode(CommentStmt);
 					n->objtype = OBJECT_ROUTINE;
@@ -6522,7 +6519,7 @@ SecLabelStmt:
 					n->label = $9;
 					$$ = (Node *) n;
 				}
-			| SECURITY LABEL opt_provider ON PROCEDURE function_with_argtypes
+			| SECURITY LABEL opt_provider ON PROCEDURE procedure_with_argtypes
 			  IS security_label
 				{
 					SecLabelStmt *n = makeNode(SecLabelStmt);
@@ -6883,7 +6880,7 @@ privilege_target:
 					n->objs = $2;
 					$$ = n;
 				}
-			| PROCEDURE function_with_argtypes_list
+			| PROCEDURE procedure_with_argtypes_list
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
@@ -6891,7 +6888,7 @@ privilege_target:
 					n->objs = $2;
 					$$ = n;
 				}
-			| ROUTINE function_with_argtypes_list
+			| ROUTINE procedure_with_argtypes_list
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
@@ -7412,20 +7409,33 @@ function_with_argtypes_list:
 													{ $$ = lappend($1, $3); }
 		;
 
+procedure_with_argtypes_list:
+			procedure_with_argtypes					{ $$ = list_make1($1); }
+			| procedure_with_argtypes_list ',' procedure_with_argtypes
+													{ $$ = lappend($1, $3); }
+		;
+
 function_with_argtypes:
 			func_name func_args
 				{
 					ObjectWithArgs *n = makeNode(ObjectWithArgs);
 					n->objname = $1;
-					n->objargs = extractArgTypes($2);
+					n->objargs = extractArgTypes(OBJECT_FUNCTION, $2);
 					$$ = n;
 				}
+			| function_with_argtypes_common
+				{
+					$$ = $1;
+				}
+		;
+
+function_with_argtypes_common:
 			/*
 			 * Because of reduce/reduce conflicts, we can't use func_name
 			 * below, but we can write it out the long way, which actually
 			 * allows more cases.
 			 */
-			| type_func_name_keyword
+			type_func_name_keyword
 				{
 					ObjectWithArgs *n = makeNode(ObjectWithArgs);
 					n->objname = list_make1(makeString(pstrdup($1)));
@@ -7446,6 +7456,24 @@ function_with_argtypes:
 												  yyscanner);
 					n->args_unspecified = true;
 					$$ = n;
+				}
+		;
+
+/*
+ * This is different from function_with_argtypes in the call to
+ * extractArgTypes().
+ */
+procedure_with_argtypes:
+			func_name func_args
+				{
+					ObjectWithArgs *n = makeNode(ObjectWithArgs);
+					n->objname = $1;
+					n->objargs = extractArgTypes(OBJECT_PROCEDURE, $2);
+					$$ = n;
+				}
+			| function_with_argtypes_common
+				{
+					$$ = $1;
 				}
 		;
 
@@ -7827,7 +7855,7 @@ AlterFunctionStmt:
 					n->actions = $4;
 					$$ = (Node *) n;
 				}
-			| ALTER PROCEDURE function_with_argtypes alterfunc_opt_list opt_restrict
+			| ALTER PROCEDURE procedure_with_argtypes alterfunc_opt_list opt_restrict
 				{
 					AlterFunctionStmt *n = makeNode(AlterFunctionStmt);
 					n->objtype = OBJECT_PROCEDURE;
@@ -7835,7 +7863,7 @@ AlterFunctionStmt:
 					n->actions = $4;
 					$$ = (Node *) n;
 				}
-			| ALTER ROUTINE function_with_argtypes alterfunc_opt_list opt_restrict
+			| ALTER ROUTINE procedure_with_argtypes alterfunc_opt_list opt_restrict
 				{
 					AlterFunctionStmt *n = makeNode(AlterFunctionStmt);
 					n->objtype = OBJECT_ROUTINE;
@@ -7891,7 +7919,7 @@ RemoveFuncStmt:
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
-			| DROP PROCEDURE function_with_argtypes_list opt_drop_behavior
+			| DROP PROCEDURE procedure_with_argtypes_list opt_drop_behavior
 				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_PROCEDURE;
@@ -7901,7 +7929,7 @@ RemoveFuncStmt:
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
-			| DROP PROCEDURE IF_P EXISTS function_with_argtypes_list opt_drop_behavior
+			| DROP PROCEDURE IF_P EXISTS procedure_with_argtypes_list opt_drop_behavior
 				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_PROCEDURE;
@@ -7911,7 +7939,7 @@ RemoveFuncStmt:
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
-			| DROP ROUTINE function_with_argtypes_list opt_drop_behavior
+			| DROP ROUTINE procedure_with_argtypes_list opt_drop_behavior
 				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_ROUTINE;
@@ -7921,7 +7949,7 @@ RemoveFuncStmt:
 					n->concurrent = false;
 					$$ = (Node *)n;
 				}
-			| DROP ROUTINE IF_P EXISTS function_with_argtypes_list opt_drop_behavior
+			| DROP ROUTINE IF_P EXISTS procedure_with_argtypes_list opt_drop_behavior
 				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_ROUTINE;
@@ -8396,7 +8424,7 @@ RenameStmt: ALTER AGGREGATE aggregate_with_argtypes RENAME TO name
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
-			| ALTER PROCEDURE function_with_argtypes RENAME TO name
+			| ALTER PROCEDURE procedure_with_argtypes RENAME TO name
 				{
 					RenameStmt *n = makeNode(RenameStmt);
 					n->renameType = OBJECT_PROCEDURE;
@@ -8414,7 +8442,7 @@ RenameStmt: ALTER AGGREGATE aggregate_with_argtypes RENAME TO name
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
-			| ALTER ROUTINE function_with_argtypes RENAME TO name
+			| ALTER ROUTINE procedure_with_argtypes RENAME TO name
 				{
 					RenameStmt *n = makeNode(RenameStmt);
 					n->renameType = OBJECT_ROUTINE;
@@ -8825,7 +8853,7 @@ AlterObjectDependsStmt:
 					n->remove = $4;
 					$$ = (Node *)n;
 				}
-			| ALTER PROCEDURE function_with_argtypes opt_no DEPENDS ON EXTENSION name
+			| ALTER PROCEDURE procedure_with_argtypes opt_no DEPENDS ON EXTENSION name
 				{
 					AlterObjectDependsStmt *n = makeNode(AlterObjectDependsStmt);
 					n->objectType = OBJECT_PROCEDURE;
@@ -8834,7 +8862,7 @@ AlterObjectDependsStmt:
 					n->remove = $4;
 					$$ = (Node *)n;
 				}
-			| ALTER ROUTINE function_with_argtypes opt_no DEPENDS ON EXTENSION name
+			| ALTER ROUTINE procedure_with_argtypes opt_no DEPENDS ON EXTENSION name
 				{
 					AlterObjectDependsStmt *n = makeNode(AlterObjectDependsStmt);
 					n->objectType = OBJECT_ROUTINE;
@@ -8965,7 +8993,7 @@ AlterObjectSchemaStmt:
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
-			| ALTER PROCEDURE function_with_argtypes SET SCHEMA name
+			| ALTER PROCEDURE procedure_with_argtypes SET SCHEMA name
 				{
 					AlterObjectSchemaStmt *n = makeNode(AlterObjectSchemaStmt);
 					n->objectType = OBJECT_PROCEDURE;
@@ -8974,7 +9002,7 @@ AlterObjectSchemaStmt:
 					n->missing_ok = false;
 					$$ = (Node *)n;
 				}
-			| ALTER ROUTINE function_with_argtypes SET SCHEMA name
+			| ALTER ROUTINE procedure_with_argtypes SET SCHEMA name
 				{
 					AlterObjectSchemaStmt *n = makeNode(AlterObjectSchemaStmt);
 					n->objectType = OBJECT_ROUTINE;
@@ -9276,7 +9304,7 @@ AlterOwnerStmt: ALTER AGGREGATE aggregate_with_argtypes OWNER TO RoleSpec
 					n->newowner = $9;
 					$$ = (Node *)n;
 				}
-			| ALTER PROCEDURE function_with_argtypes OWNER TO RoleSpec
+			| ALTER PROCEDURE procedure_with_argtypes OWNER TO RoleSpec
 				{
 					AlterOwnerStmt *n = makeNode(AlterOwnerStmt);
 					n->objectType = OBJECT_PROCEDURE;
@@ -9284,7 +9312,7 @@ AlterOwnerStmt: ALTER AGGREGATE aggregate_with_argtypes OWNER TO RoleSpec
 					n->newowner = $6;
 					$$ = (Node *)n;
 				}
-			| ALTER ROUTINE function_with_argtypes OWNER TO RoleSpec
+			| ALTER ROUTINE procedure_with_argtypes OWNER TO RoleSpec
 				{
 					AlterOwnerStmt *n = makeNode(AlterOwnerStmt);
 					n->objectType = OBJECT_ROUTINE;
@@ -12993,8 +13021,6 @@ a_expr:		c_expr									{ $$ = $1; }
 				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, $3, @2); }
 			| qual_Op a_expr					%prec Op
 				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $1, NULL, $2, @1); }
-			| a_expr qual_Op					%prec POSTFIXOP
-				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, NULL, @2); }
 
 			| a_expr AND a_expr
 				{ $$ = makeAndExpr($1, $3, @2); }
@@ -13408,8 +13434,6 @@ b_expr:		c_expr
 				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, $3, @2); }
 			| qual_Op b_expr					%prec Op
 				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $1, NULL, $2, @1); }
-			| b_expr qual_Op					%prec POSTFIXOP
-				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, NULL, @2); }
 			| b_expr IS DISTINCT FROM b_expr		%prec IS
 				{
 					$$ = (Node *) makeSimpleA_Expr(AEXPR_DISTINCT, "=", $1, $5, @2);
@@ -14663,15 +14687,7 @@ target_el:	a_expr AS ColLabel
 					$$->val = (Node *)$1;
 					$$->location = @1;
 				}
-			/*
-			 * We support omitting AS only for column labels that aren't
-			 * any known keyword.  There is an ambiguity against postfix
-			 * operators: is "a ! b" an infix expression, or a postfix
-			 * expression and a column label?  We prefer to resolve this
-			 * as an infix expression, which we accomplish by assigning
-			 * IDENT a precedence higher than POSTFIXOP.
-			 */
-			| a_expr IDENT
+			| a_expr BareColLabel
 				{
 					$$ = makeNode(ResTarget);
 					$$->name = $2;
@@ -14919,6 +14935,13 @@ RoleId:		RoleSpec
 											"CURRENT_USER"),
 									 parser_errposition(@1)));
 							break;
+						case ROLESPEC_CURRENT_ROLE:
+							ereport(ERROR,
+									(errcode(ERRCODE_RESERVED_NAME),
+									 errmsg("%s cannot be used as a role name here",
+											"CURRENT_ROLE"),
+									 parser_errposition(@1)));
+							break;
 					}
 				}
 			;
@@ -14949,6 +14972,10 @@ RoleSpec:	NonReservedWord
 							n->rolename = pstrdup($1);
 						}
 						$$ = n;
+					}
+			| CURRENT_ROLE
+					{
+						$$ = makeRoleSpec(ROLESPEC_CURRENT_ROLE, @1);
 					}
 			| CURRENT_USER
 					{
@@ -15007,6 +15034,13 @@ ColLabel:	IDENT									{ $$ = $1; }
 			| col_name_keyword						{ $$ = pstrdup($1); }
 			| type_func_name_keyword				{ $$ = pstrdup($1); }
 			| reserved_keyword						{ $$ = pstrdup($1); }
+		;
+
+/* Bare column label --- names that can be column labels without writing "AS".
+ * This classification is orthogonal to the other keyword categories.
+ */
+BareColLabel:	IDENT								{ $$ = $1; }
+			| bare_label_keyword					{ $$ = pstrdup($1); }
 		;
 
 
@@ -15513,6 +15547,429 @@ reserved_keyword:
 			| WITH
 		;
 
+/*
+ * While all keywords can be used as column labels when preceded by AS,
+ * not all of them can be used as a "bare" column label without AS.
+ * Those that can be used as a bare label must be listed here,
+ * in addition to appearing in one of the category lists above.
+ *
+ * Always add a new keyword to this list if possible.  Mark it BARE_LABEL
+ * in kwlist.h if it is included here, or AS_LABEL if it is not.
+ */
+bare_label_keyword:
+			  ABORT_P
+			| ABSOLUTE_P
+			| ACCESS
+			| ACTION
+			| ADD_P
+			| ADMIN
+			| AFTER
+			| AGGREGATE
+			| ALL
+			| ALSO
+			| ALTER
+			| ALWAYS
+			| ANALYSE
+			| ANALYZE
+			| AND
+			| ANY
+			| ASC
+			| ASSERTION
+			| ASSIGNMENT
+			| ASYMMETRIC
+			| AT
+			| ATTACH
+			| ATTRIBUTE
+			| AUTHORIZATION
+			| BACKWARD
+			| BEFORE
+			| BEGIN_P
+			| BETWEEN
+			| BIGINT
+			| BINARY
+			| BIT
+			| BOOLEAN_P
+			| BOTH
+			| BY
+			| CACHE
+			| CALL
+			| CALLED
+			| CASCADE
+			| CASCADED
+			| CASE
+			| CAST
+			| CATALOG_P
+			| CHAIN
+			| CHARACTERISTICS
+			| CHECK
+			| CHECKPOINT
+			| CLASS
+			| CLOSE
+			| CLUSTER
+			| COALESCE
+			| COLLATE
+			| COLLATION
+			| COLUMN
+			| COLUMNS
+			| COMMENT
+			| COMMENTS
+			| COMMIT
+			| COMMITTED
+			| CONCURRENTLY
+			| CONFIGURATION
+			| CONFLICT
+			| CONNECTION
+			| CONSTRAINT
+			| CONSTRAINTS
+			| CONTENT_P
+			| CONTINUE_P
+			| CONVERSION_P
+			| COPY
+			| COST
+			| CROSS
+			| CSV
+			| CUBE
+			| CURRENT_P
+			| CURRENT_CATALOG
+			| CURRENT_DATE
+			| CURRENT_ROLE
+			| CURRENT_SCHEMA
+			| CURRENT_TIME
+			| CURRENT_TIMESTAMP
+			| CURRENT_USER
+			| CURSOR
+			| CYCLE
+			| DATA_P
+			| DATABASE
+			| DEALLOCATE
+			| DEC
+			| DECIMAL_P
+			| DECLARE
+			| DEFAULT
+			| DEFAULTS
+			| DEFERRABLE
+			| DEFERRED
+			| DEFINER
+			| DELETE_P
+			| DELIMITER
+			| DELIMITERS
+			| DEPENDS
+			| DESC
+			| DETACH
+			| DICTIONARY
+			| DISABLE_P
+			| DISCARD
+			| DISTINCT
+			| DO
+			| DOCUMENT_P
+			| DOMAIN_P
+			| DOUBLE_P
+			| DROP
+			| EACH
+			| ELSE
+			| ENABLE_P
+			| ENCODING
+			| ENCRYPTED
+			| END_P
+			| ENUM_P
+			| ESCAPE
+			| EVENT
+			| EXCLUDE
+			| EXCLUDING
+			| EXCLUSIVE
+			| EXECUTE
+			| EXISTS
+			| EXPLAIN
+			| EXPRESSION
+			| EXTENSION
+			| EXTERNAL
+			| EXTRACT
+			| FALSE_P
+			| FAMILY
+			| FIRST_P
+			| FLOAT_P
+			| FOLLOWING
+			| FORCE
+			| FOREIGN
+			| FORWARD
+			| FREEZE
+			| FULL
+			| FUNCTION
+			| FUNCTIONS
+			| GENERATED
+			| GLOBAL
+			| GRANTED
+			| GREATEST
+			| GROUPING
+			| GROUPS
+			| HANDLER
+			| HEADER_P
+			| HOLD
+			| IDENTITY_P
+			| IF_P
+			| ILIKE
+			| IMMEDIATE
+			| IMMUTABLE
+			| IMPLICIT_P
+			| IMPORT_P
+			| IN_P
+			| INCLUDE
+			| INCLUDING
+			| INCREMENT
+			| INDEX
+			| INDEXES
+			| INHERIT
+			| INHERITS
+			| INITIALLY
+			| INLINE_P
+			| INNER_P
+			| INOUT
+			| INPUT_P
+			| INSENSITIVE
+			| INSERT
+			| INSTEAD
+			| INT_P
+			| INTEGER
+			| INTERVAL
+			| INVOKER
+			| IS
+			| ISOLATION
+			| JOIN
+			| KEY
+			| LABEL
+			| LANGUAGE
+			| LARGE_P
+			| LAST_P
+			| LATERAL_P
+			| LEADING
+			| LEAKPROOF
+			| LEAST
+			| LEFT
+			| LEVEL
+			| LIKE
+			| LISTEN
+			| LOAD
+			| LOCAL
+			| LOCALTIME
+			| LOCALTIMESTAMP
+			| LOCATION
+			| LOCK_P
+			| LOCKED
+			| LOGGED
+			| MAPPING
+			| MATCH
+			| MATERIALIZED
+			| MAXVALUE
+			| METHOD
+			| MINVALUE
+			| MODE
+			| MOVE
+			| NAME_P
+			| NAMES
+			| NATIONAL
+			| NATURAL
+			| NCHAR
+			| NEW
+			| NEXT
+			| NFC
+			| NFD
+			| NFKC
+			| NFKD
+			| NO
+			| NONE
+			| NORMALIZE
+			| NORMALIZED
+			| NOT
+			| NOTHING
+			| NOTIFY
+			| NOWAIT
+			| NULL_P
+			| NULLIF
+			| NULLS_P
+			| NUMERIC
+			| OBJECT_P
+			| OF
+			| OFF
+			| OIDS
+			| OLD
+			| ONLY
+			| OPERATOR
+			| OPTION
+			| OPTIONS
+			| OR
+			| ORDINALITY
+			| OTHERS
+			| OUT_P
+			| OUTER_P
+			| OVERLAY
+			| OVERRIDING
+			| OWNED
+			| OWNER
+			| PARALLEL
+			| PARSER
+			| PARTIAL
+			| PARTITION
+			| PASSING
+			| PASSWORD
+			| PLACING
+			| PLANS
+			| POLICY
+			| POSITION
+			| PRECEDING
+			| PREPARE
+			| PREPARED
+			| PRESERVE
+			| PRIMARY
+			| PRIOR
+			| PRIVILEGES
+			| PROCEDURAL
+			| PROCEDURE
+			| PROCEDURES
+			| PROGRAM
+			| PUBLICATION
+			| QUOTE
+			| RANGE
+			| READ
+			| REAL
+			| REASSIGN
+			| RECHECK
+			| RECURSIVE
+			| REF
+			| REFERENCES
+			| REFERENCING
+			| REFRESH
+			| REINDEX
+			| RELATIVE_P
+			| RELEASE
+			| RENAME
+			| REPEATABLE
+			| REPLACE
+			| REPLICA
+			| RESET
+			| RESTART
+			| RESTRICT
+			| RETURNS
+			| REVOKE
+			| RIGHT
+			| ROLE
+			| ROLLBACK
+			| ROLLUP
+			| ROUTINE
+			| ROUTINES
+			| ROW
+			| ROWS
+			| RULE
+			| SAVEPOINT
+			| SCHEMA
+			| SCHEMAS
+			| SCROLL
+			| SEARCH
+			| SECURITY
+			| SELECT
+			| SEQUENCE
+			| SEQUENCES
+			| SERIALIZABLE
+			| SERVER
+			| SESSION
+			| SESSION_USER
+			| SET
+			| SETOF
+			| SETS
+			| SHARE
+			| SHOW
+			| SIMILAR
+			| SIMPLE
+			| SKIP
+			| SMALLINT
+			| SNAPSHOT
+			| SOME
+			| SQL_P
+			| STABLE
+			| STANDALONE_P
+			| START
+			| STATEMENT
+			| STATISTICS
+			| STDIN
+			| STDOUT
+			| STORAGE
+			| STORED
+			| STRICT_P
+			| STRIP_P
+			| SUBSCRIPTION
+			| SUBSTRING
+			| SUPPORT
+			| SYMMETRIC
+			| SYSID
+			| SYSTEM_P
+			| TABLE
+			| TABLES
+			| TABLESAMPLE
+			| TABLESPACE
+			| TEMP
+			| TEMPLATE
+			| TEMPORARY
+			| TEXT_P
+			| THEN
+			| TIES
+			| TIME
+			| TIMESTAMP
+			| TRAILING
+			| TRANSACTION
+			| TRANSFORM
+			| TREAT
+			| TRIGGER
+			| TRIM
+			| TRUE_P
+			| TRUNCATE
+			| TRUSTED
+			| TYPE_P
+			| TYPES_P
+			| UESCAPE
+			| UNBOUNDED
+			| UNCOMMITTED
+			| UNENCRYPTED
+			| UNIQUE
+			| UNKNOWN
+			| UNLISTEN
+			| UNLOGGED
+			| UNTIL
+			| UPDATE
+			| USER
+			| USING
+			| VACUUM
+			| VALID
+			| VALIDATE
+			| VALIDATOR
+			| VALUE_P
+			| VALUES
+			| VARCHAR
+			| VARIADIC
+			| VERBOSE
+			| VERSION_P
+			| VIEW
+			| VIEWS
+			| VOLATILE
+			| WHEN
+			| WHITESPACE_P
+			| WORK
+			| WRAPPER
+			| WRITE
+			| XML_P
+			| XMLATTRIBUTES
+			| XMLCONCAT
+			| XMLELEMENT
+			| XMLEXISTS
+			| XMLFOREST
+			| XMLNAMESPACES
+			| XMLPARSE
+			| XMLPI
+			| XMLROOT
+			| XMLSERIALIZE
+			| XMLTABLE
+			| YES_P
+			| ZONE
+		;
+
 %%
 
 /*
@@ -15792,13 +16249,14 @@ check_indirection(List *indirection, core_yyscan_t yyscanner)
 }
 
 /* extractArgTypes()
+ *
  * Given a list of FunctionParameter nodes, extract a list of just the
- * argument types (TypeNames) for input parameters only.  This is what
- * is needed to look up an existing function, which is what is wanted by
- * the productions that use this call.
+ * argument types (TypeNames) for signature parameters only (e.g., only input
+ * parameters for functions).  This is what is needed to look up an existing
+ * function, which is what is wanted by the productions that use this call.
  */
 static List *
-extractArgTypes(List *parameters)
+extractArgTypes(ObjectType objtype, List *parameters)
 {
 	List	   *result = NIL;
 	ListCell   *i;
@@ -15807,7 +16265,7 @@ extractArgTypes(List *parameters)
 	{
 		FunctionParameter *p = (FunctionParameter *) lfirst(i);
 
-		if (p->mode != FUNC_PARAM_OUT && p->mode != FUNC_PARAM_TABLE)
+		if ((p->mode != FUNC_PARAM_OUT || objtype == OBJECT_PROCEDURE) && p->mode != FUNC_PARAM_TABLE)
 			result = lappend(result, p->argType);
 	}
 	return result;
@@ -15820,7 +16278,7 @@ static List *
 extractAggrArgTypes(List *aggrargs)
 {
 	Assert(list_length(aggrargs) == 2);
-	return extractArgTypes((List *) linitial(aggrargs));
+	return extractArgTypes(OBJECT_AGGREGATE, (List *) linitial(aggrargs));
 }
 
 /* makeOrderedSetArgs()
@@ -15833,7 +16291,7 @@ makeOrderedSetArgs(List *directargs, List *orderedargs,
 				   core_yyscan_t yyscanner)
 {
 	FunctionParameter *lastd = (FunctionParameter *) llast(directargs);
-	int			ndirectargs;
+	Value	   *ndirectargs;
 
 	/* No restriction unless last direct arg is VARIADIC */
 	if (lastd->mode == FUNC_PARAM_VARIADIC)
@@ -15857,10 +16315,10 @@ makeOrderedSetArgs(List *directargs, List *orderedargs,
 	}
 
 	/* don't merge into the next line, as list_concat changes directargs */
-	ndirectargs = list_length(directargs);
+	ndirectargs = makeInteger(list_length(directargs));
 
 	return list_make2(list_concat(directargs, orderedargs),
-					  makeInteger(ndirectargs));
+					  ndirectargs);
 }
 
 /* insertSelectOptions()
@@ -15919,7 +16377,7 @@ insertSelectOptions(SelectStmt *stmt,
 		if (!stmt->sortClause && limitClause->limitOption == LIMIT_OPTION_WITH_TIES)
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("WITH TIES options can not be specified without ORDER BY clause")));
+					 errmsg("WITH TIES cannot be specified without ORDER BY clause")));
 		stmt->limitOption = limitClause->limitOption;
 	}
 	if (withClause)

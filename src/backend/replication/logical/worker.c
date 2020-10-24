@@ -344,7 +344,6 @@ static EState *
 create_estate_for_relation(LogicalRepRelMapEntry *rel)
 {
 	EState	   *estate;
-	ResultRelInfo *resultRelInfo;
 	RangeTblEntry *rte;
 
 	estate = CreateExecutorState();
@@ -355,13 +354,6 @@ create_estate_for_relation(LogicalRepRelMapEntry *rel)
 	rte->relkind = rel->localrel->rd_rel->relkind;
 	rte->rellockmode = AccessShareLock;
 	ExecInitRangeTable(estate, list_make1(rte));
-
-	resultRelInfo = makeNode(ResultRelInfo);
-	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
-
-	estate->es_result_relations = resultRelInfo;
-	estate->es_num_result_relations = 1;
-	estate->es_result_relation_info = resultRelInfo;
 
 	estate->es_output_cid = GetCurrentCommandId(true);
 
@@ -1150,6 +1142,7 @@ GetRelationIdentityOrPK(Relation rel)
 static void
 apply_handle_insert(StringInfo s)
 {
+	ResultRelInfo *resultRelInfo;
 	LogicalRepRelMapEntry *rel;
 	LogicalRepTupleData newtup;
 	LogicalRepRelId relid;
@@ -1179,6 +1172,8 @@ apply_handle_insert(StringInfo s)
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
+	resultRelInfo = makeNode(ResultRelInfo);
+	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
 
 	/* Input functions may need an active snapshot, so get one */
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -1191,10 +1186,10 @@ apply_handle_insert(StringInfo s)
 
 	/* For a partitioned table, insert the tuple into a partition. */
 	if (rel->localrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		apply_handle_tuple_routing(estate->es_result_relation_info, estate,
+		apply_handle_tuple_routing(resultRelInfo, estate,
 								   remoteslot, NULL, rel, CMD_INSERT);
 	else
-		apply_handle_insert_internal(estate->es_result_relation_info, estate,
+		apply_handle_insert_internal(resultRelInfo, estate,
 									 remoteslot);
 
 	PopActiveSnapshot();
@@ -1218,7 +1213,7 @@ apply_handle_insert_internal(ResultRelInfo *relinfo,
 	ExecOpenIndices(relinfo, false);
 
 	/* Do the insert. */
-	ExecSimpleRelationInsert(estate, remoteslot);
+	ExecSimpleRelationInsert(relinfo, estate, remoteslot);
 
 	/* Cleanup. */
 	ExecCloseIndices(relinfo);
@@ -1265,6 +1260,7 @@ check_relation_updatable(LogicalRepRelMapEntry *rel)
 static void
 apply_handle_update(StringInfo s)
 {
+	ResultRelInfo *resultRelInfo;
 	LogicalRepRelMapEntry *rel;
 	LogicalRepRelId relid;
 	EState	   *estate;
@@ -1301,6 +1297,8 @@ apply_handle_update(StringInfo s)
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
+	resultRelInfo = makeNode(ResultRelInfo);
+	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
 
 	/*
 	 * Populate updatedCols so that per-column triggers can fire.  This could
@@ -1337,10 +1335,10 @@ apply_handle_update(StringInfo s)
 
 	/* For a partitioned table, apply update to correct partition. */
 	if (rel->localrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		apply_handle_tuple_routing(estate->es_result_relation_info, estate,
+		apply_handle_tuple_routing(resultRelInfo, estate,
 								   remoteslot, &newtup, rel, CMD_UPDATE);
 	else
-		apply_handle_update_internal(estate->es_result_relation_info, estate,
+		apply_handle_update_internal(resultRelInfo, estate,
 									 remoteslot, &newtup, rel);
 
 	PopActiveSnapshot();
@@ -1392,7 +1390,8 @@ apply_handle_update_internal(ResultRelInfo *relinfo,
 		EvalPlanQualSetSlot(&epqstate, remoteslot);
 
 		/* Do the actual update. */
-		ExecSimpleRelationUpdate(estate, &epqstate, localslot, remoteslot);
+		ExecSimpleRelationUpdate(relinfo, estate, &epqstate, localslot,
+								 remoteslot);
 	}
 	else
 	{
@@ -1420,6 +1419,7 @@ apply_handle_update_internal(ResultRelInfo *relinfo,
 static void
 apply_handle_delete(StringInfo s)
 {
+	ResultRelInfo *resultRelInfo;
 	LogicalRepRelMapEntry *rel;
 	LogicalRepTupleData oldtup;
 	LogicalRepRelId relid;
@@ -1452,6 +1452,8 @@ apply_handle_delete(StringInfo s)
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
+	resultRelInfo = makeNode(ResultRelInfo);
+	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
 
 	PushActiveSnapshot(GetTransactionSnapshot());
 
@@ -1462,10 +1464,10 @@ apply_handle_delete(StringInfo s)
 
 	/* For a partitioned table, apply delete to correct partition. */
 	if (rel->localrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		apply_handle_tuple_routing(estate->es_result_relation_info, estate,
+		apply_handle_tuple_routing(resultRelInfo, estate,
 								   remoteslot, NULL, rel, CMD_DELETE);
 	else
-		apply_handle_delete_internal(estate->es_result_relation_info, estate,
+		apply_handle_delete_internal(resultRelInfo, estate,
 									 remoteslot, &rel->remoterel);
 
 	PopActiveSnapshot();
@@ -1504,7 +1506,7 @@ apply_handle_delete_internal(ResultRelInfo *relinfo, EState *estate,
 		EvalPlanQualSetSlot(&epqstate, localslot);
 
 		/* Do the actual delete. */
-		ExecSimpleRelationDelete(estate, &epqstate, localslot);
+		ExecSimpleRelationDelete(relinfo, estate, &epqstate, localslot);
 	}
 	else
 	{
@@ -1570,7 +1572,6 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 	ResultRelInfo *partrelinfo;
 	Relation	partrel;
 	TupleTableSlot *remoteslot_part;
-	PartitionRoutingInfo *partinfo;
 	TupleConversionMap *map;
 	MemoryContext oldctx;
 
@@ -1597,11 +1598,10 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 	 * partition's rowtype. Convert if needed or just copy, using a dedicated
 	 * slot to store the tuple in any case.
 	 */
-	partinfo = partrelinfo->ri_PartitionInfo;
-	remoteslot_part = partinfo->pi_PartitionTupleSlot;
+	remoteslot_part = partrelinfo->ri_PartitionTupleSlot;
 	if (remoteslot_part == NULL)
 		remoteslot_part = table_slot_create(partrel, &estate->es_tupleTable);
-	map = partinfo->pi_RootToPartitionMap;
+	map = partrelinfo->ri_RootToPartitionMap;
 	if (map != NULL)
 		remoteslot_part = execute_attr_map_slot(map->attrMap, remoteslot,
 												remoteslot_part);
@@ -1612,7 +1612,6 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 	}
 	MemoryContextSwitchTo(oldctx);
 
-	estate->es_result_relation_info = partrelinfo;
 	switch (operation)
 	{
 		case CMD_INSERT:
@@ -1676,7 +1675,7 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 				 * Does the updated tuple still satisfy the current
 				 * partition's constraint?
 				 */
-				if (partrelinfo->ri_PartitionCheck == NULL ||
+				if (!partrel->rd_rel->relispartition ||
 					ExecPartitionCheck(partrelinfo, remoteslot_part, estate,
 									   false))
 				{
@@ -1693,8 +1692,8 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 					ExecOpenIndices(partrelinfo, false);
 
 					EvalPlanQualSetSlot(&epqstate, remoteslot_part);
-					ExecSimpleRelationUpdate(estate, &epqstate, localslot,
-											 remoteslot_part);
+					ExecSimpleRelationUpdate(partrelinfo, estate, &epqstate,
+											 localslot, remoteslot_part);
 					ExecCloseIndices(partrelinfo);
 					EvalPlanQualEnd(&epqstate);
 				}
@@ -1735,7 +1734,6 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 					Assert(partrelinfo_new != partrelinfo);
 
 					/* DELETE old tuple found in the old partition. */
-					estate->es_result_relation_info = partrelinfo;
 					apply_handle_delete_internal(partrelinfo, estate,
 												 localslot,
 												 &relmapentry->remoterel);
@@ -1748,12 +1746,11 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 					 */
 					oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 					partrel = partrelinfo_new->ri_RelationDesc;
-					partinfo = partrelinfo_new->ri_PartitionInfo;
-					remoteslot_part = partinfo->pi_PartitionTupleSlot;
+					remoteslot_part = partrelinfo_new->ri_PartitionTupleSlot;
 					if (remoteslot_part == NULL)
 						remoteslot_part = table_slot_create(partrel,
 															&estate->es_tupleTable);
-					map = partinfo->pi_RootToPartitionMap;
+					map = partrelinfo_new->ri_RootToPartitionMap;
 					if (map != NULL)
 					{
 						remoteslot_part = execute_attr_map_slot(map->attrMap,
@@ -1767,7 +1764,6 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 						slot_getallattrs(remoteslot);
 					}
 					MemoryContextSwitchTo(oldctx);
-					estate->es_result_relation_info = partrelinfo_new;
 					apply_handle_insert_internal(partrelinfo_new, estate,
 												 remoteslot_part);
 				}
@@ -2061,6 +2057,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 {
 	TimestampTz last_recv_timestamp = GetCurrentTimestamp();
 	bool		ping_sent = false;
+	TimeLineID	tli;
 
 	/*
 	 * Init the ApplyMessageContext which we clean up after each replication
@@ -2202,12 +2199,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 
 		/* Check if we need to exit the streaming loop. */
 		if (endofstream)
-		{
-			TimeLineID	tli;
-
-			walrcv_endstreaming(wrconn, &tli);
 			break;
-		}
 
 		/*
 		 * Wait for more data or latch.  If we have unflushed transactions,
@@ -2284,6 +2276,9 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 			send_feedback(last_received, requestReply, requestReply);
 		}
 	}
+
+	/* All done */
+	walrcv_endstreaming(wrconn, &tli);
 }
 
 /*
@@ -3025,10 +3020,8 @@ ApplyWorkerMain(Datum main_arg)
 		/* This is table synchronization worker, call initial sync. */
 		syncslotname = LogicalRepSyncTableStart(&origin_startpos);
 
-		/* The slot name needs to be allocated in permanent memory context. */
-		oldctx = MemoryContextSwitchTo(ApplyContext);
-		myslotname = pstrdup(syncslotname);
-		MemoryContextSwitchTo(oldctx);
+		/* allocate slot name in long-lived context */
+		myslotname = MemoryContextStrdup(ApplyContext, syncslotname);
 
 		pfree(syncslotname);
 	}
@@ -3072,7 +3065,6 @@ ApplyWorkerMain(Datum main_arg)
 		 * does some initializations on the upstream so let's still call it.
 		 */
 		(void) walrcv_identify_system(wrconn, &startpointTLI);
-
 	}
 
 	/*
@@ -3087,7 +3079,9 @@ ApplyWorkerMain(Datum main_arg)
 	options.logical = true;
 	options.startpoint = origin_startpos;
 	options.slotname = myslotname;
-	options.proto.logical.proto_version = LOGICALREP_PROTO_VERSION_NUM;
+	options.proto.logical.proto_version =
+		walrcv_server_version(wrconn) >= 140000 ?
+		LOGICALREP_PROTO_STREAM_VERSION_NUM : LOGICALREP_PROTO_VERSION_NUM;
 	options.proto.logical.publication_names = MySubscription->publications;
 	options.proto.logical.binary = MySubscription->binary;
 	options.proto.logical.streaming = MySubscription->stream;

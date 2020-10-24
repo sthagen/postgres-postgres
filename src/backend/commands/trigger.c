@@ -35,6 +35,7 @@
 #include "commands/defrem.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
+#include "executor/execPartition.h"
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "nodes/makefuncs.h"
@@ -1529,27 +1530,6 @@ EnableDisableTrigger(Relation rel, const char *tgname,
 			CatalogTupleUpdate(tgrel, &newtup->t_self, newtup);
 
 			heap_freetuple(newtup);
-
-			/*
-			 * When altering FOR EACH ROW triggers on a partitioned table, do
-			 * the same on the partitions as well.
-			 */
-			if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE &&
-				(TRIGGER_FOR_ROW(oldtrig->tgtype)))
-			{
-				PartitionDesc partdesc = RelationGetPartitionDesc(rel);
-				int			i;
-
-				for (i = 0; i < partdesc->nparts; i++)
-				{
-					Relation	part;
-
-					part = relation_open(partdesc->oids[i], lockmode);
-					EnableDisableTrigger(part, NameStr(oldtrig->tgname),
-										 fires_when, skip_system, lockmode);
-					table_close(part, NoLock);	/* keep lock till commit */
-				}
-			}
 
 			changed = true;
 		}
@@ -4227,7 +4207,7 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 
 	if (local_estate)
 	{
-		ExecCleanUpTriggerState(estate);
+		ExecCloseResultRelations(estate);
 		ExecResetTupleTable(estate->es_tupleTable, false);
 		FreeExecutorState(estate);
 	}
@@ -4292,9 +4272,10 @@ GetAfterTriggersTableData(Oid relid, CmdType cmdType)
  * If there are no triggers in 'trigdesc' that request relevant transition
  * tables, then return NULL.
  *
- * The resulting object can be passed to the ExecAR* functions.  The caller
- * should set tcs_map or tcs_original_insert_tuple as appropriate when dealing
- * with child tables.
+ * The resulting object can be passed to the ExecAR* functions.  When
+ * dealing with child tables, the caller can set tcs_original_insert_tuple
+ * to avoid having to reconstruct the original tuple in the root table's
+ * format.
  *
  * Note that we copy the flags from a parent table into this struct (rather
  * than subsequently using the relation's TriggerDesc directly) so that we can
@@ -5389,7 +5370,7 @@ AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 	if (row_trigger && transition_capture != NULL)
 	{
 		TupleTableSlot *original_insert_tuple = transition_capture->tcs_original_insert_tuple;
-		TupleConversionMap *map = transition_capture->tcs_map;
+		TupleConversionMap *map = relinfo->ri_ChildToRootMap;
 		bool		delete_old_table = transition_capture->tcs_delete_old_table;
 		bool		update_old_table = transition_capture->tcs_update_old_table;
 		bool		update_new_table = transition_capture->tcs_update_new_table;

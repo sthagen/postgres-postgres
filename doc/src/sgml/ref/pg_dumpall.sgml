@@ -202,7 +202,9 @@ PostgreSQL documentation
         Specifies verbose mode.  This will cause
         <application>pg_dumpall</application> to output start/stop
         times to the dump file, and progress messages to standard error.
-        It will also enable verbose output in <application>pg_dump</application>.
+        Repeating the option causes additional debug-level messages
+        to appear on standard error.
+        The option is also passed down to <application>pg_dump</application>.
        </para>
       </listitem>
      </varlistentry>
@@ -550,8 +552,9 @@ PostgreSQL documentation
       <term><option>--dbname=<replaceable class="parameter">connstr</replaceable></option></term>
       <listitem>
        <para>
-        Specifies parameters used to connect to the server, as a connection
-        string. See <xref linkend="libpq-connstring"/> for more information.
+        Specifies parameters used to connect to the server, as a <link
+        linkend="libpq-connstring">connction string</link>;  these
+        will override any conflicting command line options.
        </para>
        <para>
         The option is called <literal>--dbname</literal> for consistency with other

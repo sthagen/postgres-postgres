@@ -1699,8 +1699,8 @@ ComputeXidHorizons(ComputeXidHorizonsResult *h)
 		 */
 		xmin = TransactionIdOlder(xmin, xid);
 
-        /* if neither is set, this proc doesn't influence the horizon */
-        if (!TransactionIdIsValid(xmin))
+		/* if neither is set, this proc doesn't influence the horizon */
+		if (!TransactionIdIsValid(xmin))
 			continue;
 
 		/*
@@ -3627,7 +3627,7 @@ TerminateOtherDBBackends(Oid databaseId)
 	if (nprepared > 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_IN_USE),
-				 errmsg("database \"%s\" is being used by prepared transaction",
+				 errmsg("database \"%s\" is being used by prepared transactions",
 						get_database_name(databaseId)),
 				 errdetail_plural("There is %d prepared transaction using the database.",
 								  "There are %d prepared transactions using the database.",
@@ -4106,7 +4106,7 @@ GlobalVisCheckRemovableXid(Relation rel, TransactionId xid)
  *
  * Be very careful about when to use this function. It can only safely be used
  * when there is a guarantee that xid is within MaxTransactionId / 2 xids of
- * rel. That e.g. can be guaranteed if the the caller assures a snapshot is
+ * rel. That e.g. can be guaranteed if the caller assures a snapshot is
  * held by the backend and xid is from a table (where vacuum/freezing ensures
  * the xid has to be within that range), or if xid is from the procarray and
  * prevents xid wraparound that way.
@@ -4279,6 +4279,9 @@ ExpireTreeKnownAssignedTransactionIds(TransactionId xid, int nsubxids,
 
 	/* As in ProcArrayEndTransaction, advance latestCompletedXid */
 	MaintainLatestCompletedXidRecovery(max_xid);
+
+	/* ... and xactCompletionCount */
+	ShmemVariableCache->xactCompletionCount++;
 
 	LWLockRelease(ProcArrayLock);
 }

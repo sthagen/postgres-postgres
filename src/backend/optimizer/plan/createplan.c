@@ -2261,7 +2261,7 @@ create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path)
 	{
 		bool		is_first_sort = ((RollupData *) linitial(rollups))->is_hashed;
 
-		for_each_cell(lc, rollups, list_second_cell(rollups))
+		for_each_from(lc, rollups, 1)
 		{
 			RollupData *rollup = lfirst(lc);
 			AttrNumber *new_grpColIdx;
@@ -5530,7 +5530,11 @@ make_foreignscan(List *qptlist,
 	plan->lefttree = outer_plan;
 	plan->righttree = NULL;
 	node->scan.scanrelid = scanrelid;
+
+	/* these may be overridden by the FDW's PlanDirectModify callback. */
 	node->operation = CMD_SELECT;
+	node->resultRelation = 0;
+
 	/* fs_server will be filled in by create_foreignscan_plan */
 	node->fs_server = InvalidOid;
 	node->fdw_exprs = fdw_exprs;
@@ -6808,8 +6812,6 @@ make_modifytable(PlannerInfo *root,
 	node->rootRelation = rootRelation;
 	node->partColsUpdated = partColsUpdated;
 	node->resultRelations = resultRelations;
-	node->resultRelIndex = -1;	/* will be set correctly in setrefs.c */
-	node->rootResultRelIndex = -1;	/* will be set correctly in setrefs.c */
 	node->plans = subplans;
 	if (!onconflict)
 	{

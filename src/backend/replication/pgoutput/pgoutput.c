@@ -77,7 +77,7 @@ static void send_relation_and_attrs(Relation relation, TransactionId xid,
  * and with streamed transactions the commit order may be different from
  * the order the transactions are sent in. Also, the (sub) transactions
  * might get aborted so we need to send the schema for each (sub) transaction
- * so that we don't loose the schema information on abort. For handling this,
+ * so that we don't lose the schema information on abort. For handling this,
  * we maintain the list of xids (streamed_txns) for those we have already sent
  * the schema.
  *
@@ -272,11 +272,11 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 								&enable_streaming);
 
 		/* Check if we support requested protocol */
-		if (data->protocol_version > LOGICALREP_PROTO_VERSION_NUM)
+		if (data->protocol_version > LOGICALREP_PROTO_MAX_VERSION_NUM)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("client sent proto_version=%d but we only support protocol %d or lower",
-							data->protocol_version, LOGICALREP_PROTO_VERSION_NUM)));
+							data->protocol_version, LOGICALREP_PROTO_MAX_VERSION_NUM)));
 
 		if (data->protocol_version < LOGICALREP_PROTO_MIN_VERSION_NUM)
 			ereport(ERROR,
@@ -945,16 +945,26 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 
 	Assert(RelationSyncCache != NULL);
 
-	/* Find cached function info, creating if not found */
-	oldctx = MemoryContextSwitchTo(CacheMemoryContext);
+	/* Find cached relation info, creating if not found */
 	entry = (RelationSyncEntry *) hash_search(RelationSyncCache,
 											  (void *) &relid,
 											  HASH_ENTER, &found);
-	MemoryContextSwitchTo(oldctx);
 	Assert(entry != NULL);
 
 	/* Not found means schema wasn't sent */
-	if (!found || !entry->replicate_valid)
+	if (!found)
+	{
+		/* immediately make a new entry valid enough to satisfy callbacks */
+		entry->schema_sent = false;
+		entry->streamed_txns = NIL;
+		entry->replicate_valid = false;
+		entry->pubactions.pubinsert = entry->pubactions.pubupdate =
+			entry->pubactions.pubdelete = entry->pubactions.pubtruncate = false;
+		entry->publish_as_relid = InvalidOid;
+	}
+
+	/* Validate the entry */
+	if (!entry->replicate_valid)
 	{
 		List	   *pubids = GetRelationPublications(relid);
 		ListCell   *lc;
@@ -977,9 +987,6 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 		 * relcache considers all publications given relation is in, but here
 		 * we only need to consider ones that the subscriber requested.
 		 */
-		entry->pubactions.pubinsert = entry->pubactions.pubupdate =
-			entry->pubactions.pubdelete = entry->pubactions.pubtruncate = false;
-
 		foreach(lc, data->publications)
 		{
 			Publication *pub = lfirst(lc);
@@ -1052,12 +1059,6 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 
 		entry->publish_as_relid = publish_as_relid;
 		entry->replicate_valid = true;
-	}
-
-	if (!found)
-	{
-		entry->schema_sent = false;
-		entry->streamed_txns = NULL;
 	}
 
 	return entry;
@@ -1145,7 +1146,7 @@ rel_sync_cache_relation_cb(Datum arg, Oid relid)
 	{
 		entry->schema_sent = false;
 		list_free(entry->streamed_txns);
-		entry->streamed_txns = NULL;
+		entry->streamed_txns = NIL;
 	}
 }
 

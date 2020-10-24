@@ -19,8 +19,9 @@
 /*
  * Protocol capabilities
  *
- * LOGICALREP_PROTO_VERSION_NUM is our native protocol and the greatest version
- * we can support. LOGICALREP_PROTO_MIN_VERSION_NUM is the oldest version we
+ * LOGICALREP_PROTO_VERSION_NUM is our native protocol.
+ * LOGICALREP_PROTO_MAX_VERSION_NUM is the greatest version we can support.
+ * LOGICALREP_PROTO_MIN_VERSION_NUM is the oldest version we
  * have backwards compatibility for. The client requests protocol version at
  * connect time.
  *
@@ -28,8 +29,9 @@
  * support for streaming large transactions.
  */
 #define LOGICALREP_PROTO_MIN_VERSION_NUM 1
+#define LOGICALREP_PROTO_VERSION_NUM 1
 #define LOGICALREP_PROTO_STREAM_VERSION_NUM 2
-#define LOGICALREP_PROTO_VERSION_NUM 2
+#define LOGICALREP_PROTO_MAX_VERSION_NUM LOGICALREP_PROTO_STREAM_VERSION_NUM
 
 /*
  * This struct stores a tuple received via logical replication.
@@ -133,7 +135,6 @@ extern void logicalrep_write_stream_start(StringInfo out, TransactionId xid,
 extern TransactionId logicalrep_read_stream_start(StringInfo in,
 												  bool *first_segment);
 extern void logicalrep_write_stream_stop(StringInfo out);
-extern TransactionId logicalrep_read_stream_stop(StringInfo in);
 extern void logicalrep_write_stream_commit(StringInfo out, ReorderBufferTXN *txn,
 										   XLogRecPtr commit_lsn);
 extern TransactionId logicalrep_read_stream_commit(StringInfo out,

@@ -1381,10 +1381,12 @@ parse_format(FormatNode *node, const char *str, const KeyWord *kw,
 		{
 			int			chlen;
 
-			if (flags & STD_FLAG)
+			if ((flags & STD_FLAG) && *str != '"')
 			{
 				/*
-				 * Standard mode, allow only following separators: "-./,':; "
+				 * Standard mode, allow only following separators: "-./,':; ".
+				 * However, we support double quotes even in standard mode
+				 * (see below).  This is our extension of standard mode.
 				 */
 				if (strchr("-./,':; ", *str) == NULL)
 					ereport(ERROR,
@@ -3346,7 +3348,19 @@ DCH_from_char(FormatNode *node, const char *in, TmFromChar *out,
 			}
 			else
 			{
-				s += pg_mblen(s);
+				int			chlen = pg_mblen(s);
+
+				/*
+				 * Standard mode requires strict match of format characters.
+				 */
+				if (std && n->type == NODE_TYPE_CHAR &&
+					strncmp(s, n->character, chlen) != 0)
+					RETURN_ERROR(ereport(ERROR,
+										 (errcode(ERRCODE_INVALID_DATETIME_FORMAT),
+										  errmsg("unmatched format character \"%s\"",
+												 n->character))));
+
+				s += chlen;
 			}
 			continue;
 		}
@@ -4555,8 +4569,11 @@ do_to_timestamp(text *date_txt, text *fmt, Oid collid, bool std,
 		{
 			/* If a 4-digit year is provided, we use that and ignore CC. */
 			tm->tm_year = tmfc.year;
-			if (tmfc.bc && tm->tm_year > 0)
-				tm->tm_year = -(tm->tm_year - 1);
+			if (tmfc.bc)
+				tm->tm_year = -tm->tm_year;
+			/* correct for our representation of BC years */
+			if (tm->tm_year < 0)
+				tm->tm_year++;
 		}
 		fmask |= DTK_M(YEAR);
 	}
@@ -6070,10 +6087,8 @@ numeric_to_number(PG_FUNCTION_ARGS)
 	if (IS_MULTI(&Num))
 	{
 		Numeric		x;
-		Numeric		a = DatumGetNumeric(DirectFunctionCall1(int4_numeric,
-															Int32GetDatum(10)));
-		Numeric		b = DatumGetNumeric(DirectFunctionCall1(int4_numeric,
-															Int32GetDatum(-Num.multi)));
+		Numeric		a = int64_to_numeric(10);
+		Numeric		b = int64_to_numeric(-Num.multi);
 
 		x = DatumGetNumeric(DirectFunctionCall2(numeric_power,
 												NumericGetDatum(a),
@@ -6162,10 +6177,8 @@ numeric_to_char(PG_FUNCTION_ARGS)
 
 		if (IS_MULTI(&Num))
 		{
-			Numeric		a = DatumGetNumeric(DirectFunctionCall1(int4_numeric,
-																Int32GetDatum(10)));
-			Numeric		b = DatumGetNumeric(DirectFunctionCall1(int4_numeric,
-																Int32GetDatum(Num.multi)));
+			Numeric		a = int64_to_numeric(10);
+			Numeric		b = int64_to_numeric(Num.multi);
 
 			x = DatumGetNumeric(DirectFunctionCall2(numeric_power,
 													NumericGetDatum(a),
@@ -6339,11 +6352,8 @@ int8_to_char(PG_FUNCTION_ARGS)
 	else if (IS_EEEE(&Num))
 	{
 		/* to avoid loss of precision, must go via numeric not float8 */
-		Numeric		val;
-
-		val = DatumGetNumeric(DirectFunctionCall1(int8_numeric,
-												  Int64GetDatum(value)));
-		orgnum = numeric_out_sci(val, Num.post);
+		orgnum = numeric_out_sci(int64_to_numeric(value),
+								 Num.post);
 
 		/*
 		 * numeric_out_sci() does not emit a sign for positive numbers.  We
