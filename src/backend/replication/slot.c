@@ -320,7 +320,7 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	 * ReplicationSlotAllocationLock.
 	 */
 	if (SlotIsLogical(slot))
-		pgstat_report_replslot(NameStr(slot->data.name), 0, 0, 0);
+		pgstat_report_replslot(NameStr(slot->data.name), 0, 0, 0, 0, 0, 0);
 
 	/*
 	 * Now that the slot has been marked as in_use and active, it's safe to
@@ -527,9 +527,9 @@ ReplicationSlotRelease(void)
 	MyReplicationSlot = NULL;
 
 	/* might not have been set when we've been a plain slot */
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-	MyProc->vacuumFlags &= ~PROC_IN_LOGICAL_DECODING;
-	ProcGlobal->vacuumFlags[MyProc->pgxactoff] = MyProc->vacuumFlags;
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	MyProc->statusFlags &= ~PROC_IN_LOGICAL_DECODING;
+	ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
 	LWLockRelease(ProcArrayLock);
 }
 

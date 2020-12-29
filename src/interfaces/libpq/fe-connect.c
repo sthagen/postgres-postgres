@@ -215,7 +215,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Database-Password-File", "", 64,
 	offsetof(struct pg_conn, pgpassfile)},
 
-	{"channel_binding", "PGCHANNELBINDING", NULL, NULL,
+	{"channel_binding", "PGCHANNELBINDING", DefaultChannelBinding, NULL,
 		"Channel-Binding", "", 8,	/* sizeof("require") == 8 */
 	offsetof(struct pg_conn, channel_binding)},
 
@@ -1093,7 +1093,7 @@ connectOptions2(PGconn *conn)
 		{
 			ch->type = CHT_HOST_NAME;
 #ifdef HAVE_UNIX_SOCKETS
-			if (is_absolute_path(ch->host))
+			if (is_unixsock_path(ch->host))
 				ch->type = CHT_UNIX_SOCKET;
 #endif
 		}
@@ -2909,11 +2909,16 @@ keep_going:						/* We will come back to here until there is
 #ifdef USE_SSL
 
 				/*
-				 * If SSL is enabled and we haven't already got it running,
-				 * request it instead of sending the startup message.
+				 * If SSL is enabled and we haven't already got encryption of
+				 * some sort running, request SSL instead of sending the
+				 * startup message.
 				 */
 				if (conn->allow_ssl_try && !conn->wait_ssl_try &&
-					!conn->ssl_in_use)
+					!conn->ssl_in_use
+#ifdef ENABLE_GSS
+					&& !conn->gssenc
+#endif
+					)
 				{
 					ProtocolVersion pv;
 
@@ -3042,6 +3047,7 @@ keep_going:						/* We will come back to here until there is
 						}
 						/* Otherwise, proceed with normal startup */
 						conn->allow_ssl_try = false;
+						/* We can proceed using this connection */
 						conn->status = CONNECTION_MADE;
 						return PGRES_POLLING_WRITING;
 					}
@@ -3139,8 +3145,7 @@ keep_going:						/* We will come back to here until there is
 						 * don't hang up the socket, though.
 						 */
 						conn->try_gss = false;
-						pqDropConnection(conn, true);
-						conn->status = CONNECTION_NEEDED;
+						need_new_connection = true;
 						goto keep_going;
 					}
 
@@ -3158,6 +3163,7 @@ keep_going:						/* We will come back to here until there is
 						}
 
 						conn->try_gss = false;
+						/* We can proceed using this connection */
 						conn->status = CONNECTION_MADE;
 						return PGRES_POLLING_WRITING;
 					}
@@ -3186,8 +3192,7 @@ keep_going:						/* We will come back to here until there is
 					 * the current connection to do so, though.
 					 */
 					conn->try_gss = false;
-					pqDropConnection(conn, true);
-					conn->status = CONNECTION_NEEDED;
+					need_new_connection = true;
 					goto keep_going;
 				}
 				return pollres;
@@ -3354,10 +3359,9 @@ keep_going:						/* We will come back to here until there is
 					 */
 					if (conn->gssenc && conn->gssencmode[0] == 'p')
 					{
-						/* postmaster expects us to drop the connection */
+						/* only retry once */
 						conn->try_gss = false;
-						pqDropConnection(conn, true);
-						conn->status = CONNECTION_NEEDED;
+						need_new_connection = true;
 						goto keep_going;
 					}
 #endif
@@ -6945,7 +6949,7 @@ passwordFromFile(const char *hostname, const char *port, const char *dbname,
 	/* 'localhost' matches pghost of '' or the default socket directory */
 	if (hostname == NULL || hostname[0] == '\0')
 		hostname = DefaultHost;
-	else if (is_absolute_path(hostname))
+	else if (is_unixsock_path(hostname))
 
 		/*
 		 * We should probably use canonicalize_path(), but then we have to
@@ -7088,7 +7092,7 @@ pgpassfileWarning(PGconn *conn)
 }
 
 /*
- * Check if the SSL procotol value given in input is valid or not.
+ * Check if the SSL protocol value given in input is valid or not.
  * This is used as a sanity check routine for the connection parameters
  * ssl_min_protocol_version and ssl_max_protocol_version.
  */

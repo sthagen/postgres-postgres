@@ -802,6 +802,9 @@ CREATE VIEW pg_stat_replication_slots AS
             s.spill_txns,
             s.spill_count,
             s.spill_bytes,
+            s.stream_txns,
+            s.stream_count,
+            s.stream_bytes,
             s.stats_reset
     FROM pg_stat_get_replication_slots() AS s;
 
@@ -990,6 +993,9 @@ CREATE VIEW pg_stat_bgwriter AS
 
 CREATE VIEW pg_stat_wal AS
     SELECT
+        w.wal_records,
+        w.wal_fpi,
+        w.wal_bytes,
         w.wal_buffers_full,
         w.stats_reset
     FROM pg_stat_get_wal() w;

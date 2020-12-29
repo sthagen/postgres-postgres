@@ -29,6 +29,15 @@ typedef enum
 	INDEX_DROP_SET_DEAD
 } IndexStateFlagsAction;
 
+/* options for REINDEX */
+typedef enum ReindexOption
+{
+	REINDEXOPT_VERBOSE = 1 << 0,	/* print progress info */
+	REINDEXOPT_REPORT_PROGRESS = 1 << 1,	/* report pgstat progress */
+	REINDEXOPT_MISSING_OK = 1 << 2, /* skip missing relations */
+	REINDEXOPT_CONCURRENTLY = 1 << 3	/* concurrent mode */
+} ReindexOption;
+
 /* state info for validate_index bulkdelete callback */
 typedef struct ValidateIndexState
 {
@@ -120,6 +129,9 @@ extern void FormIndexDatum(IndexInfo *indexInfo,
 						   EState *estate,
 						   Datum *values,
 						   bool *isnull);
+
+extern void index_check_collation_versions(Oid relid);
+extern void index_update_collation_versions(Oid relid, Oid coll);
 
 extern void index_build(Relation heapRelation,
 						Relation indexRelation,

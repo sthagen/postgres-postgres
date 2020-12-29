@@ -125,7 +125,7 @@ EnumValuesCreate(Oid enumTypeOid, List *vals)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_NAME),
 					 errmsg("invalid enum label \"%s\"", lab),
-					 errdetail("Labels must be %d characters or less.",
+					 errdetail("Labels must be %d bytes or less.",
 							   NAMEDATALEN - 1)));
 
 		values[Anum_pg_enum_oid - 1] = ObjectIdGetDatum(oids[elemno]);
@@ -188,7 +188,6 @@ init_enum_blacklist(void)
 {
 	HASHCTL		hash_ctl;
 
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(Oid);
 	hash_ctl.hcxt = TopTransactionContext;
@@ -228,7 +227,7 @@ AddEnumLabel(Oid enumTypeOid,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_NAME),
 				 errmsg("invalid enum label \"%s\"", newVal),
-				 errdetail("Labels must be %d characters or less.",
+				 errdetail("Labels must be %d bytes or less.",
 						   NAMEDATALEN - 1)));
 
 	/*
@@ -523,7 +522,7 @@ RenameEnumLabel(Oid enumTypeOid,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_NAME),
 				 errmsg("invalid enum label \"%s\"", newVal),
-				 errdetail("Labels must be %d characters or less.",
+				 errdetail("Labels must be %d bytes or less.",
 						   NAMEDATALEN - 1)));
 
 	/*

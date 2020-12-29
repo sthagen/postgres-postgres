@@ -105,7 +105,6 @@
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
 #include "libpq/pqsignal.h"
-#include "miscadmin.h"
 #include "pg_getopt.h"
 #include "pgstat.h"
 #include "port/pg_bswap.h"
@@ -219,11 +218,6 @@ int			ReservedBackends;
 /* The socket(s) we're listening to. */
 #define MAXLISTEN	64
 static pgsocket ListenSocket[MAXLISTEN];
-
-/*
- * Set by the -o option
- */
-static char ExtraOptions[MAXPGPATH];
 
 /*
  * These globals control the behavior of the postmaster in case some
@@ -537,7 +531,6 @@ typedef struct
 #endif
 	char		my_exec_path[MAXPGPATH];
 	char		pkglib_path[MAXPGPATH];
-	char		ExtraOptions[MAXPGPATH];
 } BackendParameters;
 
 static void read_backend_variables(char *id, Port *port);
@@ -694,7 +687,7 @@ PostmasterMain(int argc, char *argv[])
 	 * tcop/postgres.c (the option sets should not conflict) and with the
 	 * common help() function in main/main.c.
 	 */
-	while ((opt = getopt(argc, argv, "B:bc:C:D:d:EeFf:h:ijk:lN:nOo:Pp:r:S:sTt:W:-:")) != -1)
+	while ((opt = getopt(argc, argv, "B:bc:C:D:d:EeFf:h:ijk:lN:nOPp:r:S:sTt:W:-:")) != -1)
 	{
 		switch (opt)
 		{
@@ -771,13 +764,6 @@ PostmasterMain(int argc, char *argv[])
 
 			case 'O':
 				SetConfigOption("allow_system_table_mods", "true", PGC_POSTMASTER, PGC_S_ARGV);
-				break;
-
-			case 'o':
-				/* Other options to pass to the backend on the command line */
-				snprintf(ExtraOptions + strlen(ExtraOptions),
-						 sizeof(ExtraOptions) - strlen(ExtraOptions),
-						 " %s", optarg);
 				break;
 
 			case 'P':
@@ -1222,8 +1208,9 @@ PostmasterMain(int argc, char *argv[])
 								 NULL,
 								 NULL);
 		if (err != kDNSServiceErr_NoError)
-			elog(LOG, "DNSServiceRegister() failed: error code %ld",
-				 (long) err);
+			ereport(LOG,
+					(errmsg("DNSServiceRegister() failed: error code %ld",
+							(long) err)));
 
 		/*
 		 * We don't bother to read the mDNS daemon's reply, and we expect that
@@ -1481,7 +1468,8 @@ getInstallationPaths(const char *argv0)
 
 	/* Locate the postgres executable itself */
 	if (find_my_exec(argv0, my_exec_path) < 0)
-		elog(FATAL, "%s: could not locate my own executable path", argv0);
+		ereport(FATAL,
+				(errmsg("%s: could not locate my own executable path", argv0)));
 
 #ifdef EXEC_BACKEND
 	/* Locate executable backend before we change working directory */
@@ -2064,6 +2052,7 @@ retry1:
 	else if (proto == NEGOTIATE_GSS_CODE && !gss_done)
 	{
 		char		GSSok = 'N';
+
 #ifdef ENABLE_GSS
 		/* No GSSAPI encryption when on Unix socket */
 		if (!IS_AF_UNIX(port->laddr.addr.ss_family))
@@ -2532,37 +2521,19 @@ ConnCreate(int serverFd)
 		return NULL;
 	}
 
-	/*
-	 * Allocate GSSAPI specific state struct
-	 */
-#ifndef EXEC_BACKEND
-#if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
-	port->gss = (pg_gssinfo *) calloc(1, sizeof(pg_gssinfo));
-	if (!port->gss)
-	{
-		ereport(LOG,
-				(errcode(ERRCODE_OUT_OF_MEMORY),
-				 errmsg("out of memory")));
-		ExitPostmaster(1);
-	}
-#endif
-#endif
-
 	return port;
 }
 
 
 /*
  * ConnFree -- free a local connection data structure
+ *
+ * Caller has already closed the socket if any, so there's not much
+ * to do here.
  */
 static void
 ConnFree(Port *conn)
 {
-#ifdef USE_SSL
-	secure_close(conn);
-#endif
-	if (conn->gss)
-		free(conn->gss);
 	free(conn);
 }
 
@@ -2900,6 +2871,8 @@ pmdie(SIGNAL_ARGS)
 			sd_notify(0, "STOPPING=1");
 #endif
 
+			/* tell children to shut down ASAP */
+			SetQuitSignalReason(PMQUIT_FOR_STOP);
 			TerminateChildren(SIGQUIT);
 			pmState = PM_WAIT_BACKENDS;
 
@@ -3477,6 +3450,7 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 		LogChildExit(LOG, procname, pid, exitstatus);
 		ereport(LOG,
 				(errmsg("terminating any other active server processes")));
+		SetQuitSignalReason(PMQUIT_FOR_CRASH);
 	}
 
 	/* Process background workers. */
@@ -3809,6 +3783,13 @@ PostmasterStateMachine(void)
 	 */
 	if (pmState == PM_STOP_BACKENDS)
 	{
+		/*
+		 * Forget any pending requests for background workers, since we're no
+		 * longer willing to launch any new workers.  (If additional requests
+		 * arrive, BackgroundWorkerStateChange will reject them.)
+		 */
+		ForgetUnstartedBackgroundWorkers();
+
 		/* Signal all backend children except walsenders */
 		SignalSomeChildren(SIGTERM,
 						   BACKEND_TYPE_ALL - BACKEND_TYPE_WALSND);
@@ -4483,54 +4464,16 @@ BackendInitialize(Port *port)
  * BackendRun -- set up the backend's argument list and invoke PostgresMain()
  *
  * returns:
- *		Shouldn't return at all.
- *		If PostgresMain() fails, return status.
+ *		Doesn't return at all.
  */
 static void
 BackendRun(Port *port)
 {
-	char	  **av;
-	int			maxac;
-	int			ac;
-	int			i;
+	char	   *av[2];
+	const int	ac = 1;
 
-	/*
-	 * Now, build the argv vector that will be given to PostgresMain.
-	 *
-	 * The maximum possible number of commandline arguments that could come
-	 * from ExtraOptions is (strlen(ExtraOptions) + 1) / 2; see
-	 * pg_split_opts().
-	 */
-	maxac = 2;					/* for fixed args supplied below */
-	maxac += (strlen(ExtraOptions) + 1) / 2;
-
-	av = (char **) MemoryContextAlloc(TopMemoryContext,
-									  maxac * sizeof(char *));
-	ac = 0;
-
-	av[ac++] = "postgres";
-
-	/*
-	 * Pass any backend switches specified with -o on the postmaster's own
-	 * command line.  We assume these are secure.
-	 */
-	pg_split_opts(av, &ac, ExtraOptions);
-
-	av[ac] = NULL;
-
-	Assert(ac < maxac);
-
-	/*
-	 * Debug: print arguments being passed to backend
-	 */
-	ereport(DEBUG3,
-			(errmsg_internal("%s child[%d]: starting with (",
-							 progname, (int) getpid())));
-	for (i = 0; i < ac; ++i)
-		ereport(DEBUG3,
-				(errmsg_internal("\t%s", av[i])));
-	ereport(DEBUG3,
-			(errmsg_internal(")")));
+	av[0] = "postgres";
+	av[1] = NULL;
 
 	/*
 	 * Make sure we aren't in PostmasterContext anymore.  (We can't delete it
@@ -4727,16 +4670,18 @@ retry:
 									NULL);
 	if (paramHandle == INVALID_HANDLE_VALUE)
 	{
-		elog(LOG, "could not create backend parameter file mapping: error code %lu",
-			 GetLastError());
+		ereport(LOG,
+				(errmsg("could not create backend parameter file mapping: error code %lu",
+						GetLastError())));
 		return -1;
 	}
 
 	param = MapViewOfFile(paramHandle, FILE_MAP_WRITE, 0, 0, sizeof(BackendParameters));
 	if (!param)
 	{
-		elog(LOG, "could not map backend parameter memory: error code %lu",
-			 GetLastError());
+		ereport(LOG,
+				(errmsg("could not map backend parameter memory: error code %lu",
+						GetLastError())));
 		CloseHandle(paramHandle);
 		return -1;
 	}
@@ -4761,7 +4706,8 @@ retry:
 	}
 	if (cmdLine[sizeof(cmdLine) - 2] != '\0')
 	{
-		elog(LOG, "subprocess command line too long");
+		ereport(LOG,
+				(errmsg("subprocess command line too long")));
 		UnmapViewOfFile(param);
 		CloseHandle(paramHandle);
 		return -1;
@@ -4778,8 +4724,9 @@ retry:
 	if (!CreateProcess(NULL, cmdLine, NULL, NULL, TRUE, CREATE_SUSPENDED,
 					   NULL, NULL, &si, &pi))
 	{
-		elog(LOG, "CreateProcess call failed: %m (error code %lu)",
-			 GetLastError());
+		ereport(LOG,
+				(errmsg("CreateProcess() call failed: %m (error code %lu)",
+						GetLastError())));
 		UnmapViewOfFile(param);
 		CloseHandle(paramHandle);
 		return -1;
@@ -4804,11 +4751,13 @@ retry:
 
 	/* Drop the parameter shared memory that is now inherited to the backend */
 	if (!UnmapViewOfFile(param))
-		elog(LOG, "could not unmap view of backend parameter file: error code %lu",
-			 GetLastError());
+		ereport(LOG,
+				(errmsg("could not unmap view of backend parameter file: error code %lu",
+						GetLastError())));
 	if (!CloseHandle(paramHandle))
-		elog(LOG, "could not close handle to backend parameter file: error code %lu",
-			 GetLastError());
+		ereport(LOG,
+				(errmsg("could not close handle to backend parameter file: error code %lu",
+						GetLastError())));
 
 	/*
 	 * Reserve the memory region used by our main shared memory segment before
@@ -4939,18 +4888,6 @@ SubPostmasterMain(int argc, char *argv[])
 
 	/* Setup as postmaster child */
 	InitPostmasterChild();
-
-	/*
-	 * Set up memory area for GSS information. Mirrors the code in ConnCreate
-	 * for the non-exec case.
-	 */
-#if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
-	port.gss = (pg_gssinfo *) calloc(1, sizeof(pg_gssinfo));
-	if (!port.gss)
-		ereport(FATAL,
-				(errcode(ERRCODE_OUT_OF_MEMORY),
-				 errmsg("out of memory")));
-#endif
 
 	/*
 	 * If appropriate, physically re-attach to shared memory segment. We want
@@ -5195,13 +5132,6 @@ sigusr1_handler(SIGNAL_ARGS)
 	PG_SETMASK(&BlockSig);
 #endif
 
-	/* Process background worker state change. */
-	if (CheckPostmasterSignal(PMSIGNAL_BACKGROUND_WORKER_CHANGE))
-	{
-		BackgroundWorkerStateChange();
-		StartWorkerNeeded = true;
-	}
-
 	/*
 	 * RECOVERY_STARTED and BEGIN_HOT_STANDBY signals are ignored in
 	 * unexpected states. If the startup process quickly starts up, completes
@@ -5247,6 +5177,7 @@ sigusr1_handler(SIGNAL_ARGS)
 
 		pmState = PM_RECOVERY;
 	}
+
 	if (CheckPostmasterSignal(PMSIGNAL_BEGIN_HOT_STANDBY) &&
 		pmState == PM_RECOVERY && Shutdown == NoShutdown)
 	{
@@ -5269,6 +5200,14 @@ sigusr1_handler(SIGNAL_ARGS)
 		connsAllowed = ALLOW_ALL_CONNS;
 
 		/* Some workers may be scheduled to start now */
+		StartWorkerNeeded = true;
+	}
+
+	/* Process background worker state changes. */
+	if (CheckPostmasterSignal(PMSIGNAL_BACKGROUND_WORKER_CHANGE))
+	{
+		/* Accept new worker requests only if not stopping. */
+		BackgroundWorkerStateChange(pmState < PM_STOP_BACKENDS);
 		StartWorkerNeeded = true;
 	}
 
@@ -5692,7 +5631,9 @@ CreateOptsFile(int argc, char *argv[], char *fullprogname)
 
 	if ((fp = fopen(OPTS_FILE, "w")) == NULL)
 	{
-		elog(LOG, "could not create file \"%s\": %m", OPTS_FILE);
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not create file \"%s\": %m", OPTS_FILE)));
 		return false;
 	}
 
@@ -5703,7 +5644,9 @@ CreateOptsFile(int argc, char *argv[], char *fullprogname)
 
 	if (fclose(fp))
 	{
-		elog(LOG, "could not write file \"%s\": %m", OPTS_FILE);
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not write file \"%s\": %m", OPTS_FILE)));
 		return false;
 	}
 
@@ -6253,8 +6196,6 @@ save_backend_variables(BackendParameters *param, Port *port,
 
 	strlcpy(param->pkglib_path, pkglib_path, MAXPGPATH);
 
-	strlcpy(param->ExtraOptions, ExtraOptions, MAXPGPATH);
-
 	return true;
 }
 
@@ -6484,8 +6425,6 @@ restore_backend_variables(BackendParameters *param, Port *port)
 	strlcpy(my_exec_path, param->my_exec_path, MAXPGPATH);
 
 	strlcpy(pkglib_path, param->pkglib_path, MAXPGPATH);
-
-	strlcpy(ExtraOptions, param->ExtraOptions, MAXPGPATH);
 
 	/*
 	 * We need to restore fd.c's counts of externally-opened FDs; to avoid

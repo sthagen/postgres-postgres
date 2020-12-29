@@ -154,6 +154,33 @@ select * from trigtest;
 
 drop table trigtest;
 
+-- Check behavior with an implicit column default, too (bug #16644)
+create table trigtest (
+  a integer,
+  b bool default true not null,
+  c text default 'xyzzy' not null);
+
+create trigger trigger_return_old
+	before insert or delete or update on trigtest
+	for each row execute procedure trigger_return_old();
+
+insert into trigtest values(1);
+select * from trigtest;
+
+alter table trigtest add column d integer default 42 not null;
+
+select * from trigtest;
+update trigtest set a = 2 where a = 1 returning *;
+select * from trigtest;
+
+alter table trigtest drop column b;
+
+select * from trigtest;
+update trigtest set a = 2 where a = 1 returning *;
+select * from trigtest;
+
+drop table trigtest;
+
 create sequence ttdummy_seq increment 10 start 0 minvalue 0;
 
 create table tttest (
@@ -426,7 +453,7 @@ create table trigtest2 (i int references trigtest(i) on delete cascade);
 
 create function trigtest() returns trigger as $$
 begin
-	raise notice '% % % %', TG_RELNAME, TG_OP, TG_WHEN, TG_LEVEL;
+	raise notice '% % % %', TG_TABLE_NAME, TG_OP, TG_WHEN, TG_LEVEL;
 	return new;
 end;$$ language plpgsql;
 
@@ -662,7 +689,7 @@ begin
         argstr := argstr || TG_argv[i];
     end loop;
 
-    raise notice '% % % % (%)', TG_RELNAME, TG_WHEN, TG_OP, TG_LEVEL, argstr;
+    raise notice '% % % % (%)', TG_TABLE_NAME, TG_WHEN, TG_OP, TG_LEVEL, argstr;
 
     if TG_LEVEL = 'ROW' then
         if TG_OP = 'INSERT' then
@@ -2085,7 +2112,7 @@ CCC	42
 \.
 
 -- same behavior for copy if there is an index (interesting because rows are
--- captured by a different code path in copy.c if there are indexes)
+-- captured by a different code path in copyfrom.c if there are indexes)
 create index on parent(b);
 copy parent (a, b) from stdin;
 DDD	42
@@ -2320,6 +2347,93 @@ drop table self_ref;
 drop function dump_insert();
 drop function dump_update();
 drop function dump_delete();
+
+--
+-- Tests for CREATE OR REPLACE TRIGGER
+--
+create table my_table (id integer);
+
+create function funcA() returns trigger as $$
+begin
+  raise notice 'hello from funcA';
+  return null;
+end; $$ language plpgsql;
+
+create function funcB() returns trigger as $$
+begin
+  raise notice 'hello from funcB';
+  return null;
+end; $$ language plpgsql;
+
+create trigger my_trig
+  after insert on my_table
+  for each row execute procedure funcA();
+
+create trigger my_trig
+  before insert on my_table
+  for each row execute procedure funcB();  -- should fail
+
+insert into my_table values (1);
+
+create or replace trigger my_trig
+  before insert on my_table
+  for each row execute procedure funcB();  -- OK
+
+insert into my_table values (2);  -- this insert should become a no-op
+
+table my_table;
+
+drop table my_table;
+
+-- test CREATE OR REPLACE TRIGGER on partition table
+create table parted_trig (a int) partition by range (a);
+create table parted_trig_1 partition of parted_trig
+       for values from (0) to (1000) partition by range (a);
+create table parted_trig_1_1 partition of parted_trig_1 for values from (0) to (100);
+create table parted_trig_2 partition of parted_trig for values from (1000) to (2000);
+create table default_parted_trig partition of parted_trig default;
+
+-- test that trigger can be replaced by another one
+-- at the same level of partition table
+create or replace trigger my_trig
+  after insert on parted_trig
+  for each row execute procedure funcA();
+insert into parted_trig (a) values (50);
+create or replace trigger my_trig
+  after insert on parted_trig
+  for each row execute procedure funcB();
+insert into parted_trig (a) values (50);
+
+-- test that child trigger cannot be replaced directly
+create or replace trigger my_trig
+  after insert on parted_trig
+  for each row execute procedure funcA();
+insert into parted_trig (a) values (50);
+create or replace trigger my_trig
+  after insert on parted_trig_1
+  for each row execute procedure funcB();  -- should fail
+insert into parted_trig (a) values (50);
+drop trigger my_trig on parted_trig;
+insert into parted_trig (a) values (50);
+
+-- test that user trigger can be overwritten by one defined at upper level
+create trigger my_trig
+  after insert on parted_trig_1
+  for each row execute procedure funcA();
+insert into parted_trig (a) values (50);
+create trigger my_trig
+  after insert on parted_trig
+  for each row execute procedure funcB();  -- should fail
+insert into parted_trig (a) values (50);
+create or replace trigger my_trig
+  after insert on parted_trig
+  for each row execute procedure funcB();
+insert into parted_trig (a) values (50);
+
+-- cleanup
+drop table parted_trig;
+drop function funcA();
+drop function funcB();
 
 -- Leave around some objects for other tests
 create table trigger_parted (a int primary key) partition by list (a);

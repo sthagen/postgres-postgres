@@ -857,7 +857,8 @@ check_same_host_or_net(SockAddr *raddr, IPCompareMethod method)
 	errno = 0;
 	if (pg_foreach_ifaddr(check_network_callback, &cn) < 0)
 	{
-		elog(LOG, "error enumerating network interfaces: %m");
+		ereport(LOG,
+				(errmsg("error enumerating network interfaces: %m")));
 		return false;
 	}
 
@@ -1188,8 +1189,11 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 
 			ret = pg_getaddrinfo_all(str, NULL, &hints, &gai_result);
 			if (ret == 0 && gai_result)
+			{
 				memcpy(&parsedline->addr, gai_result->ai_addr,
 					   gai_result->ai_addrlen);
+				parsedline->addrlen = gai_result->ai_addrlen;
+			}
 			else if (ret == EAI_NONAME)
 				parsedline->hostname = str;
 			else
@@ -1238,6 +1242,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 										token->string);
 					return NULL;
 				}
+				parsedline->masklen = parsedline->addrlen;
 				pfree(str);
 			}
 			else if (!parsedline->hostname)
@@ -1288,6 +1293,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 
 				memcpy(&parsedline->mask, gai_result->ai_addr,
 					   gai_result->ai_addrlen);
+				parsedline->masklen = gai_result->ai_addrlen;
 				pg_freeaddrinfo_all(hints.ai_family, gai_result);
 
 				if (parsedline->addr.ss_family != parsedline->mask.ss_family)
@@ -1439,19 +1445,6 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 				 errcontext("line %d of configuration file \"%s\"",
 							line_num, HbaFileName)));
 		*err_msg = "gssapi authentication is not supported on local sockets";
-		return NULL;
-	}
-	if (parsedline->conntype == ctHostGSS &&
-		parsedline->auth_method != uaGSS &&
-		parsedline->auth_method != uaReject &&
-		parsedline->auth_method != uaTrust)
-	{
-		ereport(elevel,
-				(errcode(ERRCODE_CONFIG_FILE_ERROR),
-				 errmsg("GSSAPI encryption only supports gss, trust, or reject authentication"),
-				 errcontext("line %d of configuration file \"%s\"",
-							line_num, HbaFileName)));
-		*err_msg = "GSSAPI encryption only supports gss, trust, or reject authentication";
 		return NULL;
 	}
 
@@ -2128,9 +2121,11 @@ check_hba(hbaPort *port)
 
 			/* Check GSSAPI state */
 #ifdef ENABLE_GSS
-			if (port->gss->enc && hba->conntype == ctHostNoGSS)
+			if (port->gss && port->gss->enc &&
+				hba->conntype == ctHostNoGSS)
 				continue;
-			else if (!port->gss->enc && hba->conntype == ctHostGSS)
+			else if (!(port->gss && port->gss->enc) &&
+					 hba->conntype == ctHostGSS)
 				continue;
 #else
 			if (hba->conntype == ctHostGSS)
@@ -2538,20 +2533,26 @@ fill_hba_line(Tuplestorestate *tuple_store, TupleDesc tupdesc,
 				}
 				else
 				{
-					if (pg_getnameinfo_all(&hba->addr, sizeof(hba->addr),
-										   buffer, sizeof(buffer),
-										   NULL, 0,
-										   NI_NUMERICHOST) == 0)
+					/*
+					 * Note: if pg_getnameinfo_all fails, it'll set buffer to
+					 * "???", which we want to return.
+					 */
+					if (hba->addrlen > 0)
 					{
-						clean_ipv6_addr(hba->addr.ss_family, buffer);
+						if (pg_getnameinfo_all(&hba->addr, hba->addrlen,
+											   buffer, sizeof(buffer),
+											   NULL, 0,
+											   NI_NUMERICHOST) == 0)
+							clean_ipv6_addr(hba->addr.ss_family, buffer);
 						addrstr = pstrdup(buffer);
 					}
-					if (pg_getnameinfo_all(&hba->mask, sizeof(hba->mask),
-										   buffer, sizeof(buffer),
-										   NULL, 0,
-										   NI_NUMERICHOST) == 0)
+					if (hba->masklen > 0)
 					{
-						clean_ipv6_addr(hba->mask.ss_family, buffer);
+						if (pg_getnameinfo_all(&hba->mask, hba->masklen,
+											   buffer, sizeof(buffer),
+											   NULL, 0,
+											   NI_NUMERICHOST) == 0)
+							clean_ipv6_addr(hba->mask.ss_family, buffer);
 						maskstr = pstrdup(buffer);
 					}
 				}

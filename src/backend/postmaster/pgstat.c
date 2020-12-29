@@ -41,6 +41,7 @@
 #include "catalog/pg_database.h"
 #include "catalog/pg_proc.h"
 #include "common/ip.h"
+#include "executor/instrument.h"
 #include "libpq/libpq.h"
 #include "libpq/pqsignal.h"
 #include "mb/pg_wchar.h"
@@ -142,6 +143,14 @@ char	   *pgstat_stat_tmpname = NULL;
  */
 PgStat_MsgBgWriter BgWriterStats;
 PgStat_MsgWal WalStats;
+
+/*
+ * WAL usage counters saved from pgWALUsage at the previous call to
+ * pgstat_send_wal(). This is used to calculate how much WAL usage
+ * happens between pgstat_send_wal() calls, by substracting
+ * the previous counters from the current ones.
+ */
+static WalUsage prevWalUsage;
 
 /*
  * List of SLRU names that we keep stats for.  There is no central registry of
@@ -627,7 +636,8 @@ retry2:
 		if (getsockopt(pgStatSock, SOL_SOCKET, SO_RCVBUF,
 					   (char *) &old_rcvbuf, &rcvbufsize) < 0)
 		{
-			elog(LOG, "getsockopt(SO_RCVBUF) failed: %m");
+			ereport(LOG,
+					(errmsg("getsockopt(%s) failed: %m", "SO_RCVBUF")));
 			/* if we can't get existing size, always try to set it */
 			old_rcvbuf = 0;
 		}
@@ -637,7 +647,8 @@ retry2:
 		{
 			if (setsockopt(pgStatSock, SOL_SOCKET, SO_RCVBUF,
 						   (char *) &new_rcvbuf, sizeof(new_rcvbuf)) < 0)
-				elog(LOG, "setsockopt(SO_RCVBUF) failed: %m");
+				ereport(LOG,
+						(errmsg("setsockopt(%s) failed: %m", "SO_RCVBUF")));
 		}
 	}
 
@@ -1254,7 +1265,6 @@ pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid)
 	HeapTuple	tup;
 	Snapshot	snapshot;
 
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(Oid);
 	hash_ctl.hcxt = CurrentMemoryContext;
@@ -1489,7 +1499,7 @@ pgstat_reset_replslot_counter(const char *name)
 		if (SlotIsPhysical(slot))
 			return;
 
-		memcpy(&msg.m_slotname, name, NAMEDATALEN);
+		strlcpy(msg.m_slotname, name, NAMEDATALEN);
 		msg.clearall = false;
 	}
 	else
@@ -1708,7 +1718,7 @@ pgstat_report_tempfile(size_t filesize)
  */
 void
 pgstat_report_replslot(const char *slotname, int spilltxns, int spillcount,
-					   int spillbytes)
+					   int spillbytes, int streamtxns, int streamcount, int streambytes)
 {
 	PgStat_MsgReplSlot msg;
 
@@ -1716,11 +1726,14 @@ pgstat_report_replslot(const char *slotname, int spilltxns, int spillcount,
 	 * Prepare and send the message
 	 */
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_REPLSLOT);
-	memcpy(&msg.m_slotname, slotname, NAMEDATALEN);
+	strlcpy(msg.m_slotname, slotname, NAMEDATALEN);
 	msg.m_drop = false;
 	msg.m_spill_txns = spilltxns;
 	msg.m_spill_count = spillcount;
 	msg.m_spill_bytes = spillbytes;
+	msg.m_stream_txns = streamtxns;
+	msg.m_stream_count = streamcount;
+	msg.m_stream_bytes = streambytes;
 	pgstat_send(&msg, sizeof(PgStat_MsgReplSlot));
 }
 
@@ -1736,7 +1749,7 @@ pgstat_report_replslot_drop(const char *slotname)
 	PgStat_MsgReplSlot msg;
 
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_REPLSLOT);
-	memcpy(&msg.m_slotname, slotname, NAMEDATALEN);
+	strlcpy(msg.m_slotname, slotname, NAMEDATALEN);
 	msg.m_drop = true;
 	pgstat_send(&msg, sizeof(PgStat_MsgReplSlot));
 }
@@ -1801,7 +1814,6 @@ pgstat_init_function_usage(FunctionCallInfo fcinfo,
 		/* First time through - initialize function stat table */
 		HASHCTL		hash_ctl;
 
-		memset(&hash_ctl, 0, sizeof(hash_ctl));
 		hash_ctl.keysize = sizeof(Oid);
 		hash_ctl.entrysize = sizeof(PgStat_BackendFunctionEntry);
 		pgStatFunctions = hash_create("Function stat entries",
@@ -1961,7 +1973,6 @@ get_tabstat_entry(Oid rel_id, bool isshared)
 	{
 		HASHCTL		ctl;
 
-		memset(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(TabStatHashEntry);
 
@@ -2878,6 +2889,11 @@ BackendStatusShmemSize(void)
 	size = add_size(size,
 					mul_size(sizeof(PgBackendSSLStatus), NumBackendStatSlots));
 #endif
+#ifdef ENABLE_GSS
+	/* BackendGssStatusBuffer: */
+	size = add_size(size,
+					mul_size(sizeof(PgBackendGSSStatus), NumBackendStatSlots));
+#endif
 	return size;
 }
 
@@ -3045,6 +3061,13 @@ pgstat_initialize(void)
 		MyBEEntry = &BackendStatusArray[MaxBackends + MyAuxProcType];
 	}
 
+	/*
+	 * Initialize prevWalUsage with pgWalUsage so that pgstat_send_wal() can
+	 * calculate how much pgWalUsage counters are increased by substracting
+	 * prevWalUsage from pgWalUsage.
+	 */
+	prevWalUsage = pgWalUsage;
+
 	/* Set up a process-exit hook to clean up */
 	on_shmem_exit(pgstat_beshutdown_hook, 0);
 }
@@ -3154,12 +3177,13 @@ pgstat_bestart(void)
 #ifdef ENABLE_GSS
 	if (MyProcPort && MyProcPort->gss != NULL)
 	{
+		const char *princ = be_gssapi_get_princ(MyProcPort);
+
 		lbeentry.st_gss = true;
 		lgssstatus.gss_auth = be_gssapi_get_auth(MyProcPort);
 		lgssstatus.gss_enc = be_gssapi_get_enc(MyProcPort);
-
-		if (lgssstatus.gss_auth)
-			strlcpy(lgssstatus.gss_princ, be_gssapi_get_princ(MyProcPort), NAMEDATALEN);
+		if (princ)
+			strlcpy(lgssstatus.gss_princ, princ, NAMEDATALEN);
 	}
 	else
 	{
@@ -4574,6 +4598,20 @@ pgstat_send_wal(void)
 	/* We assume this initializes to zeroes */
 	static const PgStat_MsgWal all_zeroes;
 
+	WalUsage	walusage;
+
+	/*
+	 * Calculate how much WAL usage counters are increased by substracting the
+	 * previous counters from the current ones. Fill the results in WAL stats
+	 * message.
+	 */
+	MemSet(&walusage, 0, sizeof(WalUsage));
+	WalUsageAccumDiff(&walusage, &pgWalUsage, &prevWalUsage);
+
+	WalStats.m_wal_records = walusage.wal_records;
+	WalStats.m_wal_fpi = walusage.wal_fpi;
+	WalStats.m_wal_bytes = walusage.wal_bytes;
+
 	/*
 	 * This function can be called even if nothing at all has happened. In
 	 * this case, avoid sending a completely empty message to the stats
@@ -4587,6 +4625,11 @@ pgstat_send_wal(void)
 	 */
 	pgstat_setheader(&WalStats.m_hdr, PGSTAT_MTYPE_WAL);
 	pgstat_send(&WalStats, sizeof(WalStats));
+
+	/*
+	 * Save the current counters for the subsequent calculation of WAL usage.
+	 */
+	prevWalUsage = pgWalUsage;
 
 	/*
 	 * Clear out the statistics buffer, so it can be re-used.
@@ -4954,7 +4997,6 @@ reset_dbentry_counters(PgStat_StatDBEntry *dbentry)
 	dbentry->stat_reset_timestamp = GetCurrentTimestamp();
 	dbentry->stats_timestamp = 0;
 
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(PgStat_StatTabEntry);
 	dbentry->tables = hash_create("Per-database table",
@@ -5383,7 +5425,6 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	/*
 	 * Create the DB hashtable
 	 */
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(PgStat_StatDBEntry);
 	hash_ctl.hcxt = pgStatLocalContext;
@@ -5568,7 +5609,6 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 						break;
 				}
 
-				memset(&hash_ctl, 0, sizeof(hash_ctl));
 				hash_ctl.keysize = sizeof(Oid);
 				hash_ctl.entrysize = sizeof(PgStat_StatTabEntry);
 				hash_ctl.hcxt = pgStatLocalContext;
@@ -6070,8 +6110,9 @@ backend_read_statsfile(void)
 				/* Copy because timestamptz_to_str returns a static buffer */
 				filetime = pstrdup(timestamptz_to_str(file_ts));
 				mytime = pstrdup(timestamptz_to_str(cur_ts));
-				elog(LOG, "stats collector's time %s is later than backend local time %s",
-					 filetime, mytime);
+				ereport(LOG,
+						(errmsg("statistics collector's time %s is later than backend local time %s",
+								filetime, mytime)));
 				pfree(filetime);
 				pfree(mytime);
 			}
@@ -6213,9 +6254,9 @@ pgstat_recv_inquiry(PgStat_MsgInquiry *msg, int len)
 			/* Copy because timestamptz_to_str returns a static buffer */
 			writetime = pstrdup(timestamptz_to_str(dbentry->stats_timestamp));
 			mytime = pstrdup(timestamptz_to_str(cur_ts));
-			elog(LOG,
-				 "stats_timestamp %s is later than collector's time %s for database %u",
-				 writetime, mytime, dbentry->databaseid);
+			ereport(LOG,
+					(errmsg("stats_timestamp %s is later than collector's time %s for database %u",
+							writetime, mytime, dbentry->databaseid)));
 			pfree(writetime);
 			pfree(mytime);
 		}
@@ -6756,6 +6797,9 @@ pgstat_recv_bgwriter(PgStat_MsgBgWriter *msg, int len)
 static void
 pgstat_recv_wal(PgStat_MsgWal *msg, int len)
 {
+	walStats.wal_records += msg->m_wal_records;
+	walStats.wal_fpi += msg->m_wal_fpi;
+	walStats.wal_bytes += msg->m_wal_bytes;
 	walStats.wal_buffers_full += msg->m_wal_buffers_full;
 }
 
@@ -6877,14 +6921,16 @@ pgstat_recv_replslot(PgStat_MsgReplSlot *msg, int len)
 	if (idx < 0)
 		return;
 
-	Assert(idx >= 0 && idx <= max_replication_slots);
+	/* it must be a valid replication slot index */
+	Assert(idx < nReplSlotStats);
+
 	if (msg->m_drop)
 	{
 		/* Remove the replication slot statistics with the given name */
-		memcpy(&replSlotStats[idx], &replSlotStats[nReplSlotStats - 1],
-			   sizeof(PgStat_ReplSlotStats));
+		if (idx < nReplSlotStats - 1)
+			memcpy(&replSlotStats[idx], &replSlotStats[nReplSlotStats - 1],
+				   sizeof(PgStat_ReplSlotStats));
 		nReplSlotStats--;
-		Assert(nReplSlotStats >= 0);
 	}
 	else
 	{
@@ -6892,6 +6938,9 @@ pgstat_recv_replslot(PgStat_MsgReplSlot *msg, int len)
 		replSlotStats[idx].spill_txns += msg->m_spill_txns;
 		replSlotStats[idx].spill_count += msg->m_spill_count;
 		replSlotStats[idx].spill_bytes += msg->m_spill_bytes;
+		replSlotStats[idx].stream_txns += msg->m_stream_txns;
+		replSlotStats[idx].stream_count += msg->m_stream_count;
+		replSlotStats[idx].stream_bytes += msg->m_stream_bytes;
 	}
 }
 
@@ -7107,7 +7156,7 @@ pgstat_replslot_index(const char *name, bool create_it)
 
 	/* Register new slot */
 	memset(&replSlotStats[nReplSlotStats], 0, sizeof(PgStat_ReplSlotStats));
-	memcpy(&replSlotStats[nReplSlotStats].slotname, name, NAMEDATALEN);
+	strlcpy(replSlotStats[nReplSlotStats].slotname, name, NAMEDATALEN);
 
 	return nReplSlotStats++;
 }
@@ -7125,6 +7174,9 @@ pgstat_reset_replslot(int i, TimestampTz ts)
 	replSlotStats[i].spill_txns = 0;
 	replSlotStats[i].spill_count = 0;
 	replSlotStats[i].spill_bytes = 0;
+	replSlotStats[i].stream_txns = 0;
+	replSlotStats[i].stream_count = 0;
+	replSlotStats[i].stream_bytes = 0;
 	replSlotStats[i].stat_reset_timestamp = ts;
 }
 

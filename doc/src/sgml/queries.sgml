@@ -1621,7 +1621,7 @@ SELECT DISTINCT ON (<replaceable>expression</replaceable> <optional>, <replaceab
 
 
  <sect1 id="queries-union">
-  <title>Combining Queries</title>
+  <title>Combining Queries (<literal>UNION</literal>, <literal>INTERSECT</literal>, <literal>EXCEPT</literal>)</title>
 
   <indexterm zone="queries-union">
    <primary>UNION</primary>
@@ -1701,7 +1701,7 @@ SELECT DISTINCT ON (<replaceable>expression</replaceable> <optional>, <replaceab
 
 
  <sect1 id="queries-order">
-  <title>Sorting Rows</title>
+  <title>Sorting Rows (<literal>ORDER BY</literal>)</title>
 
   <indexterm zone="queries-order">
    <primary>sorting</primary>
@@ -2181,15 +2181,6 @@ WITH RECURSIVE search_tree(id, link, data, <emphasis>path</emphasis>) AS (
 SELECT * FROM search_tree <emphasis>ORDER BY path</emphasis>;
 </programlisting>
    </para>
-
-   <note>
-    <para>
-     The queries shown in this and the following section involving
-     <literal>ROW</literal> constructors in the target list only support
-     <literal>UNION ALL</literal> (not plain <literal>UNION</literal>) in the
-     current implementation.
-    </para>
-   </note>
 
    <tip>
     <para>

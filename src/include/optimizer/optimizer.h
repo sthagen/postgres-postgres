@@ -24,6 +24,11 @@
 
 #include "nodes/parsenodes.h"
 
+/* Test if an expression node represents a SRF call.  Beware multiple eval! */
+#define IS_SRF_CALL(node) \
+	((IsA(node, FuncExpr) && ((FuncExpr *) (node))->funcretset) || \
+	 (IsA(node, OpExpr) && ((OpExpr *) (node))->opretset))
+
 /*
  * We don't want to include nodes/pathnodes.h here, because non-planner
  * code should generally treat PlannerInfo as an opaque typedef.
@@ -58,17 +63,23 @@ extern Selectivity clause_selectivity(PlannerInfo *root,
 									  int varRelid,
 									  JoinType jointype,
 									  SpecialJoinInfo *sjinfo);
-extern Selectivity clauselist_selectivity_simple(PlannerInfo *root,
-												 List *clauses,
-												 int varRelid,
-												 JoinType jointype,
-												 SpecialJoinInfo *sjinfo,
-												 Bitmapset *estimatedclauses);
+extern Selectivity clause_selectivity_ext(PlannerInfo *root,
+										  Node *clause,
+										  int varRelid,
+										  JoinType jointype,
+										  SpecialJoinInfo *sjinfo,
+										  bool use_extended_stats);
 extern Selectivity clauselist_selectivity(PlannerInfo *root,
 										  List *clauses,
 										  int varRelid,
 										  JoinType jointype,
 										  SpecialJoinInfo *sjinfo);
+extern Selectivity clauselist_selectivity_ext(PlannerInfo *root,
+											  List *clauses,
+											  int varRelid,
+											  JoinType jointype,
+											  SpecialJoinInfo *sjinfo,
+											  bool use_extended_stats);
 
 /* in path/costsize.c: */
 

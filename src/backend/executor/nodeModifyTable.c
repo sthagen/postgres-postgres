@@ -645,10 +645,7 @@ ExecInsert(ModifyTableState *mtstate,
 	}
 
 	if (canSetTag)
-	{
 		(estate->es_processed)++;
-		setLastTid(&slot->tts_tid);
-	}
 
 	/*
 	 * If this insert is the result of a partition key update that moved the
@@ -2371,7 +2368,6 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * Initialize any WITH CHECK OPTION constraints if needed.
 	 */
 	resultRelInfo = mtstate->resultRelInfo;
-	i = 0;
 	foreach(l, node->withCheckOptionLists)
 	{
 		List	   *wcoList = (List *) lfirst(l);
@@ -2390,7 +2386,6 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		resultRelInfo->ri_WithCheckOptions = wcoList;
 		resultRelInfo->ri_WithCheckOptionExprs = wcoExprs;
 		resultRelInfo++;
-		i++;
 	}
 
 	/*
@@ -2591,15 +2586,27 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 				TupleTableSlot *junkresslot;
 
 				subplan = mtstate->mt_plans[i]->plan;
-				if (operation == CMD_INSERT || operation == CMD_UPDATE)
-					ExecCheckPlanOutput(resultRelInfo->ri_RelationDesc,
-										subplan->targetlist);
 
 				junkresslot =
 					ExecInitExtraTupleSlot(estate, NULL,
 										   table_slot_callbacks(resultRelInfo->ri_RelationDesc));
-				j = ExecInitJunkFilter(subplan->targetlist,
-									   junkresslot);
+
+				/*
+				 * For an INSERT or UPDATE, the result tuple must always match
+				 * the target table's descriptor.  For a DELETE, it won't
+				 * (indeed, there's probably no non-junk output columns).
+				 */
+				if (operation == CMD_INSERT || operation == CMD_UPDATE)
+				{
+					ExecCheckPlanOutput(resultRelInfo->ri_RelationDesc,
+										subplan->targetlist);
+					j = ExecInitJunkFilterInsertion(subplan->targetlist,
+													RelationGetDescr(resultRelInfo->ri_RelationDesc),
+													junkresslot);
+				}
+				else
+					j = ExecInitJunkFilter(subplan->targetlist,
+										   junkresslot);
 
 				if (operation == CMD_UPDATE || operation == CMD_DELETE)
 				{
