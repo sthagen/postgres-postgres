@@ -11,7 +11,7 @@
  * be handled easily in a simple depth-first traversal.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -2589,6 +2589,38 @@ _copyOnConflictClause(const OnConflictClause *from)
 	return newnode;
 }
 
+static CTESearchClause *
+_copyCTESearchClause(const CTESearchClause *from)
+{
+	CTESearchClause *newnode = makeNode(CTESearchClause);
+
+	COPY_NODE_FIELD(search_col_list);
+	COPY_SCALAR_FIELD(search_breadth_first);
+	COPY_STRING_FIELD(search_seq_column);
+	COPY_LOCATION_FIELD(location);
+
+	return newnode;
+}
+
+static CTECycleClause *
+_copyCTECycleClause(const CTECycleClause *from)
+{
+	CTECycleClause *newnode = makeNode(CTECycleClause);
+
+	COPY_NODE_FIELD(cycle_col_list);
+	COPY_STRING_FIELD(cycle_mark_column);
+	COPY_NODE_FIELD(cycle_mark_value);
+	COPY_NODE_FIELD(cycle_mark_default);
+	COPY_STRING_FIELD(cycle_path_column);
+	COPY_LOCATION_FIELD(location);
+	COPY_SCALAR_FIELD(cycle_mark_type);
+	COPY_SCALAR_FIELD(cycle_mark_typmod);
+	COPY_SCALAR_FIELD(cycle_mark_collation);
+	COPY_SCALAR_FIELD(cycle_mark_neop);
+
+	return newnode;
+}
+
 static CommonTableExpr *
 _copyCommonTableExpr(const CommonTableExpr *from)
 {
@@ -2598,6 +2630,8 @@ _copyCommonTableExpr(const CommonTableExpr *from)
 	COPY_NODE_FIELD(aliascolnames);
 	COPY_SCALAR_FIELD(ctematerialized);
 	COPY_NODE_FIELD(ctequery);
+	COPY_NODE_FIELD(search_clause);
+	COPY_NODE_FIELD(cycle_clause);
 	COPY_LOCATION_FIELD(location);
 	COPY_SCALAR_FIELD(cterecursive);
 	COPY_SCALAR_FIELD(cterefcount);
@@ -3199,6 +3233,20 @@ _copySetOperationStmt(const SetOperationStmt *from)
 	return newnode;
 }
 
+static PLAssignStmt *
+_copyPLAssignStmt(const PLAssignStmt *from)
+{
+	PLAssignStmt *newnode = makeNode(PLAssignStmt);
+
+	COPY_STRING_FIELD(name);
+	COPY_NODE_FIELD(indirection);
+	COPY_SCALAR_FIELD(nnames);
+	COPY_NODE_FIELD(val);
+	COPY_LOCATION_FIELD(location);
+
+	return newnode;
+}
+
 static AlterTableStmt *
 _copyAlterTableStmt(const AlterTableStmt *from)
 {
@@ -3256,6 +3304,7 @@ _copyGrantStmt(const GrantStmt *from)
 	COPY_NODE_FIELD(privileges);
 	COPY_NODE_FIELD(grantees);
 	COPY_SCALAR_FIELD(grant_option);
+	COPY_NODE_FIELD(grantor);
 	COPY_SCALAR_FIELD(behavior);
 
 	return newnode;
@@ -5220,6 +5269,9 @@ copyObjectImpl(const void *from)
 		case T_SetOperationStmt:
 			retval = _copySetOperationStmt(from);
 			break;
+		case T_PLAssignStmt:
+			retval = _copyPLAssignStmt(from);
+			break;
 		case T_AlterTableStmt:
 			retval = _copyAlterTableStmt(from);
 			break;
@@ -5663,6 +5715,12 @@ copyObjectImpl(const void *from)
 			break;
 		case T_OnConflictClause:
 			retval = _copyOnConflictClause(from);
+			break;
+		case T_CTESearchClause:
+			retval = _copyCTESearchClause(from);
+			break;
+		case T_CTECycleClause:
+			retval = _copyCTECycleClause(from);
 			break;
 		case T_CommonTableExpr:
 			retval = _copyCommonTableExpr(from);

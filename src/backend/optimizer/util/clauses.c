@@ -3,7 +3,7 @@
  * clauses.c
  *	  routines to manipulate qualification clauses
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1897,9 +1897,9 @@ is_pseudo_constant_clause_relids(Node *clause, Relids relids)
  * Returns the number of different relations referenced in 'clause'.
  */
 int
-NumRelids(Node *clause)
+NumRelids(PlannerInfo *root, Node *clause)
 {
-	Relids		varnos = pull_varnos(clause);
+	Relids		varnos = pull_varnos(root, clause);
 	int			result = bms_num_members(varnos);
 
 	bms_free(varnos);
@@ -3805,9 +3805,9 @@ reorder_function_arguments(List *args, HeapTuple func_tuple)
 	int			i;
 
 	Assert(nargsprovided <= pronargs);
-	if (pronargs > FUNC_MAX_ARGS)
+	if (pronargs < 0 || pronargs > FUNC_MAX_ARGS)
 		elog(ERROR, "too many function arguments");
-	MemSet(argarray, 0, pronargs * sizeof(Node *));
+	memset(argarray, 0, pronargs * sizeof(Node *));
 
 	/* Deconstruct the argument list into an array indexed by argnumber */
 	i = 0;

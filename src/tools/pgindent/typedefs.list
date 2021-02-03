@@ -347,6 +347,7 @@ ClosePortalStmt
 ClosePtrType
 Clump
 ClusterInfo
+ClusterParams
 ClusterStmt
 CmdType
 CoalesceExpr
@@ -1197,6 +1198,7 @@ JsonbIterator
 JsonbIteratorToken
 JsonbPair
 JsonbParseState
+JsonbSubWorkspace
 JsonbTypeCategory
 JsonbValue
 JunkFilter
@@ -1315,9 +1317,21 @@ LogStmtLevel
 LogicalDecodeBeginCB
 LogicalDecodeChangeCB
 LogicalDecodeCommitCB
+LogicalDecodeFilterPrepareCB
+LogicalDecodeBeginPrepareCB
+LogicalDecodePrepareCB
+LogicalDecodeCommitPreparedCB
+LogicalDecodeRollbackPreparedCB
 LogicalDecodeFilterByOriginCB
 LogicalDecodeMessageCB
 LogicalDecodeShutdownCB
+LogicalDecodeStreamStartCB
+LogicalDecodeStreamStopCB
+LogicalDecodeStreamAbortCB
+LogicalDecodeStreamPrepareCB
+LogicalDecodeStreamCommitCB
+LogicalDecodeStreamChangeCB
+LogicalDecodeStreamMessageCB
 LogicalDecodeStartupCB
 LogicalDecodeTruncateCB
 LogicalDecodingContext
@@ -2049,7 +2063,9 @@ Regis
 RegisNode
 RegisteredBgWorker
 ReindexErrorInfo
+ReindexIndexInfo
 ReindexObjectType
+ReindexParams
 ReindexStmt
 ReindexType
 RelFileNode
@@ -3184,7 +3200,6 @@ pg_conv_map
 pg_crc32
 pg_crc32c
 pg_cryptohash_ctx
-pg_cryptohash_state
 pg_cryptohash_type
 pg_ctype_cache
 pg_enc
@@ -3200,6 +3215,7 @@ pg_md5_ctx
 pg_on_exit_callback
 pg_re_flags
 pg_saslprep_rc
+pg_sha1_ctx
 pg_sha224_ctx
 pg_sha256_ctx
 pg_sha384_ctx

@@ -9,7 +9,7 @@
  * See utils/resowner/README for more info.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -652,7 +652,7 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 
 			if (isCommit)
 				PrintPlanCacheLeakWarning(res);
-			ReleaseCachedPlan(res, true);
+			ReleaseCachedPlan(res, owner);
 		}
 
 		/* Ditto for tupdesc references */
@@ -703,18 +703,14 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 void
 ResourceOwnerReleaseAllPlanCacheRefs(ResourceOwner owner)
 {
-	ResourceOwner save;
 	Datum		foundres;
 
-	save = CurrentResourceOwner;
-	CurrentResourceOwner = owner;
 	while (ResourceArrayGetAny(&(owner->planrefarr), &foundres))
 	{
 		CachedPlan *res = (CachedPlan *) DatumGetPointer(foundres);
 
-		ReleaseCachedPlan(res, true);
+		ReleaseCachedPlan(res, owner);
 	}
-	CurrentResourceOwner = save;
 }
 
 /*

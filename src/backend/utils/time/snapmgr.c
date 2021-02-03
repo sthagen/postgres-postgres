@@ -35,7 +35,7 @@
  * stack is empty.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1764,7 +1764,11 @@ TransactionIdLimitedForOldSnapshots(TransactionId recentXmin,
 	Assert(OldSnapshotThresholdActive());
 	Assert(limit_ts != NULL && limit_xid != NULL);
 
-	if (!RelationAllowsEarlyPruning(relation))
+	/*
+	 * TestForOldSnapshot() assumes early pruning advances the page LSN, so we
+	 * can't prune early when skipping WAL.
+	 */
+	if (!RelationAllowsEarlyPruning(relation) || !RelationNeedsWAL(relation))
 		return false;
 
 	ts = GetSnapshotCurrentTimestamp();

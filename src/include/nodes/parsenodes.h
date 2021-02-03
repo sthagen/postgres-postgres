@@ -12,7 +12,7 @@
  * identifying statement boundaries in multi-statement source strings.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/parsenodes.h
@@ -1439,15 +1439,39 @@ typedef struct OnConflictClause
 /*
  * CommonTableExpr -
  *	   representation of WITH list element
- *
- * We don't currently support the SEARCH or CYCLE clause.
  */
+
 typedef enum CTEMaterialize
 {
 	CTEMaterializeDefault,		/* no option specified */
 	CTEMaterializeAlways,		/* MATERIALIZED */
 	CTEMaterializeNever			/* NOT MATERIALIZED */
 } CTEMaterialize;
+
+typedef struct CTESearchClause
+{
+	NodeTag		type;
+	List	   *search_col_list;
+	bool		search_breadth_first;
+	char	   *search_seq_column;
+	int			location;
+} CTESearchClause;
+
+typedef struct CTECycleClause
+{
+	NodeTag		type;
+	List	   *cycle_col_list;
+	char	   *cycle_mark_column;
+	Node	   *cycle_mark_value;
+	Node	   *cycle_mark_default;
+	char	   *cycle_path_column;
+	int			location;
+	/* These fields are set during parse analysis: */
+	Oid			cycle_mark_type;	/* common type of _value and _default */
+	int			cycle_mark_typmod;
+	Oid			cycle_mark_collation;
+	Oid			cycle_mark_neop;	/* <> operator for type */
+} CTECycleClause;
 
 typedef struct CommonTableExpr
 {
@@ -1457,6 +1481,8 @@ typedef struct CommonTableExpr
 	CTEMaterialize ctematerialized; /* is this an optimization fence? */
 	/* SelectStmt/InsertStmt/etc before parse analysis, Query afterwards: */
 	Node	   *ctequery;		/* the CTE's subquery */
+	CTESearchClause *search_clause;
+	CTECycleClause *cycle_clause;
 	int			location;		/* token location, or -1 if unknown */
 	/* These fields are set during parse analysis: */
 	bool		cterecursive;	/* is this CTE actually recursive? */
@@ -1673,6 +1699,25 @@ typedef struct SetOperationStmt
 	List	   *groupClauses;	/* a list of SortGroupClause's */
 	/* groupClauses is NIL if UNION ALL, but must be set otherwise */
 } SetOperationStmt;
+
+
+/* ----------------------
+ *		PL/pgSQL Assignment Statement
+ *
+ * Like SelectStmt, this is transformed into a SELECT Query.
+ * However, the targetlist of the result looks more like an UPDATE.
+ * ----------------------
+ */
+typedef struct PLAssignStmt
+{
+	NodeTag		type;
+
+	char	   *name;			/* initial column name */
+	List	   *indirection;	/* subscripts and field names, if any */
+	int			nnames;			/* number of names to use in ColumnRef */
+	SelectStmt *val;			/* the PL/pgSQL expression to assign */
+	int			location;		/* name's token location, or -1 if unknown */
+} PLAssignStmt;
 
 
 /*****************************************************************************
@@ -1930,6 +1975,7 @@ typedef struct GrantStmt
 	/* privileges == NIL denotes ALL PRIVILEGES */
 	List	   *grantees;		/* list of RoleSpec nodes */
 	bool		grant_option;	/* grant or revoke grant option */
+	RoleSpec   *grantor;
 	DropBehavior behavior;		/* drop behavior (for REVOKE) */
 } GrantStmt;
 

@@ -4,7 +4,7 @@
  *		Common support routines for bin/scripts/
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/scripts/common.c
@@ -150,8 +150,7 @@ connectDatabase(const ConnParams *cparams, const char *progname,
 			PQfinish(conn);
 			return NULL;
 		}
-		pg_log_error("could not connect to database %s: %s",
-					 cparams->dbname, PQerrorMessage(conn));
+		pg_log_error("%s", PQerrorMessage(conn));
 		exit(1);
 	}
 

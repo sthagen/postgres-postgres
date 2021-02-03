@@ -18,7 +18,7 @@
  * "x" to be considered equal() to another reference to "x" in the query.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1086,6 +1086,18 @@ _equalSetOperationStmt(const SetOperationStmt *a, const SetOperationStmt *b)
 }
 
 static bool
+_equalPLAssignStmt(const PLAssignStmt *a, const PLAssignStmt *b)
+{
+	COMPARE_STRING_FIELD(name);
+	COMPARE_NODE_FIELD(indirection);
+	COMPARE_SCALAR_FIELD(nnames);
+	COMPARE_NODE_FIELD(val);
+	COMPARE_LOCATION_FIELD(location);
+
+	return true;
+}
+
+static bool
 _equalAlterTableStmt(const AlterTableStmt *a, const AlterTableStmt *b)
 {
 	COMPARE_NODE_FIELD(relation);
@@ -1133,6 +1145,7 @@ _equalGrantStmt(const GrantStmt *a, const GrantStmt *b)
 	COMPARE_NODE_FIELD(privileges);
 	COMPARE_NODE_FIELD(grantees);
 	COMPARE_SCALAR_FIELD(grant_option);
+	COMPARE_NODE_FIELD(grantor);
 	COMPARE_SCALAR_FIELD(behavior);
 
 	return true;
@@ -2829,12 +2842,42 @@ _equalOnConflictClause(const OnConflictClause *a, const OnConflictClause *b)
 }
 
 static bool
+_equalCTESearchClause(const CTESearchClause *a, const CTESearchClause *b)
+{
+	COMPARE_NODE_FIELD(search_col_list);
+	COMPARE_SCALAR_FIELD(search_breadth_first);
+	COMPARE_STRING_FIELD(search_seq_column);
+	COMPARE_LOCATION_FIELD(location);
+
+	return true;
+}
+
+static bool
+_equalCTECycleClause(const CTECycleClause *a, const CTECycleClause *b)
+{
+	COMPARE_NODE_FIELD(cycle_col_list);
+	COMPARE_STRING_FIELD(cycle_mark_column);
+	COMPARE_NODE_FIELD(cycle_mark_value);
+	COMPARE_NODE_FIELD(cycle_mark_default);
+	COMPARE_STRING_FIELD(cycle_path_column);
+	COMPARE_LOCATION_FIELD(location);
+	COMPARE_SCALAR_FIELD(cycle_mark_type);
+	COMPARE_SCALAR_FIELD(cycle_mark_typmod);
+	COMPARE_SCALAR_FIELD(cycle_mark_collation);
+	COMPARE_SCALAR_FIELD(cycle_mark_neop);
+
+	return true;
+}
+
+static bool
 _equalCommonTableExpr(const CommonTableExpr *a, const CommonTableExpr *b)
 {
 	COMPARE_STRING_FIELD(ctename);
 	COMPARE_NODE_FIELD(aliascolnames);
 	COMPARE_SCALAR_FIELD(ctematerialized);
 	COMPARE_NODE_FIELD(ctequery);
+	COMPARE_NODE_FIELD(search_clause);
+	COMPARE_NODE_FIELD(cycle_clause);
 	COMPARE_LOCATION_FIELD(location);
 	COMPARE_SCALAR_FIELD(cterecursive);
 	COMPARE_SCALAR_FIELD(cterefcount);
@@ -3274,6 +3317,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_SetOperationStmt:
 			retval = _equalSetOperationStmt(a, b);
+			break;
+		case T_PLAssignStmt:
+			retval = _equalPLAssignStmt(a, b);
 			break;
 		case T_AlterTableStmt:
 			retval = _equalAlterTableStmt(a, b);
@@ -3718,6 +3764,12 @@ equal(const void *a, const void *b)
 			break;
 		case T_OnConflictClause:
 			retval = _equalOnConflictClause(a, b);
+			break;
+		case T_CTESearchClause:
+			retval = _equalCTESearchClause(a, b);
+			break;
+		case T_CTECycleClause:
+			retval = _equalCTECycleClause(a, b);
 			break;
 		case T_CommonTableExpr:
 			retval = _equalCommonTableExpr(a, b);

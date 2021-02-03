@@ -2,7 +2,7 @@
 #
 # Makefile for src/interfaces/libpq library
 #
-# Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/interfaces/libpq/Makefile
@@ -45,9 +45,14 @@ OBJS = \
 	pqexpbuffer.o \
 	fe-auth.o
 
-ifeq ($(with_openssl),yes)
+# File shared across all SSL implementations supported.
+ifneq ($(with_ssl),no)
 OBJS += \
-	fe-secure-common.o \
+	fe-secure-common.o
+endif
+
+ifeq ($(with_ssl),openssl)
+OBJS += \
 	fe-secure-openssl.o
 endif
 

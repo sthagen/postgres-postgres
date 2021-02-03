@@ -92,7 +92,7 @@
  * heap's TOAST table will go through the normal bufmgr.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1256,8 +1256,8 @@ CheckPointLogicalRewriteHeap(void)
 
 			/*
 			 * The file cannot vanish due to concurrency since this function
-			 * is the only one removing logical mappings and it's run while
-			 * CheckpointLock is held exclusively.
+			 * is the only one removing logical mappings and only one
+			 * checkpoint can be in progress at a time.
 			 */
 			if (fd < 0)
 				ereport(ERROR,

@@ -34,7 +34,7 @@
  * This code isn't concerned about the FSM at all. The caller is responsible
  * for initializing that.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -49,7 +49,6 @@
 #include "access/parallel.h"
 #include "access/relscan.h"
 #include "access/table.h"
-#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -487,17 +486,17 @@ _bt_spools_heapscan(Relation heap, Relation index, BTBuildState *buildstate,
 	 * values set by table_index_build_scan
 	 */
 	{
-		const int	index[] = {
+		const int	progress_index[] = {
 			PROGRESS_CREATEIDX_TUPLES_TOTAL,
 			PROGRESS_SCAN_BLOCKS_TOTAL,
 			PROGRESS_SCAN_BLOCKS_DONE
 		};
-		const int64 val[] = {
+		const int64 progress_vals[] = {
 			buildstate->indtuples,
 			0, 0
 		};
 
-		pgstat_progress_update_multi_param(3, index, val);
+		pgstat_progress_update_multi_param(3, progress_index, progress_vals);
 	}
 
 	/* okay, all heap tuples are spooled */

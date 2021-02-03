@@ -4,7 +4,7 @@
  *	  prototypes for pathnode.c, relnode.c.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/pathnode.h
@@ -67,13 +67,12 @@ extern AppendPath *create_append_path(PlannerInfo *root, RelOptInfo *rel,
 									  List *subpaths, List *partial_subpaths,
 									  List *pathkeys, Relids required_outer,
 									  int parallel_workers, bool parallel_aware,
-									  List *partitioned_rels, double rows);
+									  double rows);
 extern MergeAppendPath *create_merge_append_path(PlannerInfo *root,
 												 RelOptInfo *rel,
 												 List *subpaths,
 												 List *pathkeys,
-												 Relids required_outer,
-												 List *partitioned_rels);
+												 Relids required_outer);
 extern GroupResultPath *create_group_result_path(PlannerInfo *root,
 												 RelOptInfo *rel,
 												 PathTarget *target,

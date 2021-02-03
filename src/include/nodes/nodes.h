@@ -4,7 +4,7 @@
  *	  Definitions for tagged nodes.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/nodes.h
@@ -314,6 +314,7 @@ typedef enum NodeTag
 	T_DeleteStmt,
 	T_UpdateStmt,
 	T_SelectStmt,
+	T_PLAssignStmt,
 	T_AlterTableStmt,
 	T_AlterTableCmd,
 	T_AlterDomainStmt,
@@ -470,6 +471,8 @@ typedef enum NodeTag
 	T_WithClause,
 	T_InferClause,
 	T_OnConflictClause,
+	T_CTESearchClause,
+	T_CTECycleClause,
 	T_CommonTableExpr,
 	T_RoleSpec,
 	T_TriggerTransition,

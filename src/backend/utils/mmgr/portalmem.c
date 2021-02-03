@@ -8,7 +8,7 @@
  * doesn't actually run the executor for them.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -310,7 +310,7 @@ PortalReleaseCachedPlan(Portal portal)
 {
 	if (portal->cplan)
 	{
-		ReleaseCachedPlan(portal->cplan, false);
+		ReleaseCachedPlan(portal->cplan, NULL);
 		portal->cplan = NULL;
 
 		/*
