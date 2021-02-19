@@ -479,7 +479,10 @@ pg_regcomp(regex_t *re,
 
 #ifdef REG_DEBUG
 	if (flags & REG_DUMP)
+	{
 		dump(re, stdout);
+		fflush(stdout);
+	}
 #endif
 
 	assert(v->err == 0);
@@ -721,7 +724,7 @@ parse(struct vars *v,
  *
  * This mostly manages concatenation, working closely with parseqatom().
  * Concatenated things are bundled up as much as possible, with separate
- * ',' nodes introduced only when necessary due to substructure.
+ * '.' nodes introduced only when necessary due to substructure.
  */
 static struct subre *
 parsebranch(struct vars *v,
@@ -939,7 +942,6 @@ parseqatom(struct vars *v,
 				subno = v->nsubexp;
 				if ((size_t) subno >= v->nsubs)
 					moresubs(v, subno);
-				assert((size_t) subno < v->nsubs);
 			}
 			else
 				atomtype = PLAIN;	/* something that's not '(' */
@@ -957,6 +959,7 @@ parseqatom(struct vars *v,
 			NOERR();
 			if (cap)
 			{
+				assert(v->subs[subno] == NULL);
 				v->subs[subno] = atom;
 				t = subre(v, '(', atom->flags | CAP, lp, rp);
 				NOERR();

@@ -1934,17 +1934,26 @@ static int
 postgresGetForeignModifyBatchSize(ResultRelInfo *resultRelInfo)
 {
 	int	batch_size;
+	PgFdwModifyState *fmstate = resultRelInfo->ri_FdwState ?
+							(PgFdwModifyState *) resultRelInfo->ri_FdwState :
+							NULL;
 
 	/* should be called only once */
 	Assert(resultRelInfo->ri_BatchSize == 0);
+
+	/*
+	 * Should never get called when the insert is being performed as part of
+	 * a row movement operation.
+	 */
+	Assert(fmstate == NULL || fmstate->aux_fmstate == NULL);
 
 	/*
 	 * In EXPLAIN without ANALYZE, ri_fdwstate is NULL, so we have to lookup
 	 * the option directly in server/table options. Otherwise just use the
 	 * value we determined earlier.
 	 */
-	if (resultRelInfo->ri_FdwState)
-		batch_size = ((PgFdwModifyState *) resultRelInfo->ri_FdwState)->batch_size;
+	if (fmstate)
+		batch_size = fmstate->batch_size;
 	else
 		batch_size = get_batch_size_option(resultRelInfo->ri_RelationDesc);
 
@@ -2025,7 +2034,7 @@ postgresBeginForeignInsert(ModifyTableState *mtstate,
 	PgFdwModifyState *fmstate;
 	ModifyTable *plan = castNode(ModifyTable, mtstate->ps.plan);
 	EState	   *estate = mtstate->ps.state;
-	Index		resultRelation = resultRelInfo->ri_RangeTableIndex;
+	Index		resultRelation;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	RangeTblEntry *rte;
 	TupleDesc	tupdesc = RelationGetDescr(rel);
@@ -2077,7 +2086,8 @@ postgresBeginForeignInsert(ModifyTableState *mtstate,
 	}
 
 	/*
-	 * If the foreign table is a partition, we need to create a new RTE
+	 * If the foreign table is a partition that doesn't have a corresponding
+	 * RTE entry, we need to create a new RTE
 	 * describing the foreign table for use by deparseInsertSql and
 	 * create_foreign_modify() below, after first copying the parent's RTE and
 	 * modifying some fields to describe the foreign partition to work on.
@@ -2085,9 +2095,11 @@ postgresBeginForeignInsert(ModifyTableState *mtstate,
 	 * correspond to this partition if it is one of the UPDATE subplan target
 	 * rels; in that case, we can just use the existing RTE as-is.
 	 */
-	rte = exec_rt_fetch(resultRelation, estate);
-	if (rte->relid != RelationGetRelid(rel))
+	if (resultRelInfo->ri_RangeTableIndex == 0)
 	{
+		ResultRelInfo *rootResultRelInfo = resultRelInfo->ri_RootResultRelInfo;
+
+		rte = exec_rt_fetch(rootResultRelInfo->ri_RangeTableIndex, estate);
 		rte = copyObject(rte);
 		rte->relid = RelationGetRelid(rel);
 		rte->relkind = RELKIND_FOREIGN_TABLE;
@@ -2099,8 +2111,15 @@ postgresBeginForeignInsert(ModifyTableState *mtstate,
 		 * Vars contained in those expressions.
 		 */
 		if (plan && plan->operation == CMD_UPDATE &&
-			resultRelation == plan->rootRelation)
+			rootResultRelInfo->ri_RangeTableIndex == plan->rootRelation)
 			resultRelation = mtstate->resultRelInfo[0].ri_RangeTableIndex;
+		else
+			resultRelation = rootResultRelInfo->ri_RangeTableIndex;
+	}
+	else
+	{
+		resultRelation = resultRelInfo->ri_RangeTableIndex;
+		rte = exec_rt_fetch(resultRelation, estate);
 	}
 
 	/* Construct the SQL command string. */
@@ -2923,7 +2942,7 @@ estimate_path_cost_size(PlannerInfo *root,
 		 */
 		if (fpinfo->rel_startup_cost >= 0 && fpinfo->rel_total_cost >= 0)
 		{
-			Assert(fpinfo->retrieved_rows >= 1);
+			Assert(fpinfo->retrieved_rows >= 0);
 
 			rows = fpinfo->rows;
 			retrieved_rows = fpinfo->retrieved_rows;

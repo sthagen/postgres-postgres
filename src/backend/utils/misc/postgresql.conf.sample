@@ -101,6 +101,7 @@
 #ssl_ca_file = ''
 #ssl_cert_file = 'server.crt'
 #ssl_crl_file = ''
+#ssl_crl_dir = ''
 #ssl_key_file = 'server.key'
 #ssl_ciphers = 'HIGH:MEDIUM:+3DES:!aNULL' # allowed SSL ciphers
 #ssl_prefer_server_ciphers = on
@@ -206,7 +207,7 @@
 #wal_sync_method = fsync		# the default is the first option
 					# supported by the operating system:
 					#   open_datasync
-					#   fdatasync (default on Linux)
+					#   fdatasync (default on Linux and FreeBSD)
 					#   fsync
 					#   fsync_writethrough
 					#   open_sync

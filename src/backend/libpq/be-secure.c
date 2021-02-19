@@ -42,6 +42,7 @@ char	   *ssl_cert_file;
 char	   *ssl_key_file;
 char	   *ssl_ca_file;
 char	   *ssl_crl_file;
+char	   *ssl_crl_dir;
 char	   *ssl_dh_params_file;
 char	   *ssl_passphrase_command;
 bool		ssl_passphrase_command_supports_reload;
@@ -119,7 +120,7 @@ secure_open_server(Port *port)
 	r = be_tls_open_server(port);
 
 	ereport(DEBUG2,
-			(errmsg("SSL connection from \"%s\"",
+			(errmsg_internal("SSL connection from \"%s\"",
 					port->peer_cn ? port->peer_cn : "(anonymous)")));
 #endif
 

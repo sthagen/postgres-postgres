@@ -214,8 +214,9 @@ select * from test_regex('a?*', '', '-');
 select * from test_regex('a+*', '', '-');
 -- expectError	7.15 -		a*+	BADRPT
 select * from test_regex('a*+', '', '-');
--- test for ancient brenext() bug; not currently in Tcl
+-- tests for ancient brenext() bugs; not currently in Tcl
 select * from test_regex('.*b', 'aaabbb', 'b');
+select * from test_regex('.\{1,10\}', 'abcdef', 'bQ');
 
 -- doing 8 "braces"
 
@@ -1049,6 +1050,10 @@ select * from test_regex('a(?!b)b*', 'a', 'HP');
 select * from test_regex('(?=b)b', 'b', 'HP');
 -- expectNomatch	23.8 HP		(?=b)b		a
 select * from test_regex('(?=b)b', 'a', 'HP');
+-- expectMatch	23.9 HP		...(?!.)	abcde	cde
+select * from test_regex('...(?!.)', 'abcde', 'HP');
+-- expectNomatch	23.10 HP	...(?=.)	abc
+select * from test_regex('...(?=.)', 'abc', 'HP');
 
 -- Postgres addition: lookbehind constraints
 
@@ -1068,6 +1073,15 @@ select * from test_regex('a(?<!b)b*', 'a', 'HP');
 select * from test_regex('(?<=b)b', 'bb', 'HP');
 -- expectNomatch	23.18 HP		(?<=b)b		b
 select * from test_regex('(?<=b)b', 'b', 'HP');
+-- expectMatch	23.19 HP		(?<=.)..	abcde	bc
+select * from test_regex('(?<=.)..', 'abcde', 'HP');
+-- expectMatch	23.20 HP		(?<=..)a*	aaabb	a
+select * from test_regex('(?<=..)a*', 'aaabb', 'HP');
+-- expectMatch	23.21 HP		(?<=..)b*	aaabb	{}
+-- Note: empty match here is correct, it matches after the first 2 characters
+select * from test_regex('(?<=..)b*', 'aaabb', 'HP');
+-- expectMatch	23.22 HP		(?<=..)b+	aaabb	bb
+select * from test_regex('(?<=..)b+', 'aaabb', 'HP');
 
 -- doing 24 "non-greedy quantifiers"
 
