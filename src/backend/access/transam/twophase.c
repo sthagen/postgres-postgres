@@ -475,6 +475,7 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	proc->lwWaitMode = 0;
 	proc->waitLock = NULL;
 	proc->waitProcLock = NULL;
+	pg_atomic_init_u64(&proc->waitStart, 0);
 	for (i = 0; i < NUM_LOCK_PARTITIONS; i++)
 		SHMQueueInit(&(proc->myProcLocks[i]));
 	/* subxid data must be filled later by GXactLoadSubxactData */
@@ -873,15 +874,8 @@ PGPROC *
 TwoPhaseGetDummyProc(TransactionId xid, bool lock_held)
 {
 	GlobalTransaction gxact = TwoPhaseGetGXact(xid, lock_held);
-	PGPROC	   *dummy = &ProcGlobal->allProcs[gxact->pgprocno];
 
-	/*
-	 * Initialize atomic variable in dummy proc so that GetLockStatusData()
-	 * can read it later.
-	 */
-	pg_atomic_init_u64(&dummy->waitStart, 0);
-
-	return dummy;
+	return &ProcGlobal->allProcs[gxact->pgprocno];
 }
 
 /************************************************************************/
@@ -1348,16 +1342,14 @@ XlogReadTwoPhaseData(XLogRecPtr lsn, char **buf, int *len)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not read two-phase state from WAL at %X/%X",
-						(uint32) (lsn >> 32),
-						(uint32) lsn)));
+						LSN_FORMAT_ARGS(lsn))));
 
 	if (XLogRecGetRmid(xlogreader) != RM_XACT_ID ||
 		(XLogRecGetInfo(xlogreader) & XLOG_XACT_OPMASK) != XLOG_XACT_PREPARE)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("expected two-phase state data is not present in WAL at %X/%X",
-						(uint32) (lsn >> 32),
-						(uint32) lsn)));
+						LSN_FORMAT_ARGS(lsn))));
 
 	if (len != NULL)
 		*len = XLogRecGetDataLen(xlogreader);

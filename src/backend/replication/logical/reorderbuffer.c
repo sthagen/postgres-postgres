@@ -2679,7 +2679,7 @@ ReorderBufferFinishPrepared(ReorderBuffer *rb, TransactionId xid,
 	XLogRecPtr	prepare_end_lsn;
 	TimestampTz prepare_time;
 
-	txn = ReorderBufferTXNByXid(rb, xid, true, NULL, commit_lsn, false);
+	txn = ReorderBufferTXNByXid(rb, xid, false, NULL, commit_lsn, false);
 
 	/* unknown transaction, nothing to do */
 	if (txn == NULL)
@@ -4366,8 +4366,7 @@ ReorderBufferSerializedPath(char *path, ReplicationSlot *slot, TransactionId xid
 
 	snprintf(path, MAXPGPATH, "pg_replslot/%s/xid-%u-lsn-%X-%X.spill",
 			 NameStr(MyReplicationSlot->data.name),
-			 xid,
-			 (uint32) (recptr >> 32), (uint32) recptr);
+			 xid, LSN_FORMAT_ARGS(recptr));
 }
 
 /*
