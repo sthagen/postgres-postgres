@@ -30,6 +30,7 @@
 #include "storage/shmem.h"
 #include "storage/sinval.h"
 #include "tcop/tcopprot.h"
+#include "utils/memutils.h"
 
 /*
  * The SIGUSR1 signal is multiplexed to support signaling multiple event
@@ -386,11 +387,6 @@ EmitProcSignalBarrier(ProcSignalBarrierType type)
 /*
  * WaitForProcSignalBarrier - wait until it is guaranteed that all changes
  * requested by a specific call to EmitProcSignalBarrier() have taken effect.
- *
- * We expect that the barrier will normally be absorbed very quickly by other
- * backends, so we start by waiting just 1/8 of a second and then back off
- * by a factor of two every time we time out, to a maximum wait time of
- * 1 second.
  */
 void
 WaitForProcSignalBarrier(uint64 generation)
@@ -661,6 +657,9 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 
 	if (CheckProcSignal(PROCSIG_BARRIER))
 		HandleProcSignalBarrierInterrupt();
+
+	if (CheckProcSignal(PROCSIG_LOG_MEMORY_CONTEXT))
+		HandleLogMemoryContextInterrupt();
 
 	if (CheckProcSignal(PROCSIG_RECOVERY_CONFLICT_DATABASE))
 		RecoveryConflictInterrupt(PROCSIG_RECOVERY_CONFLICT_DATABASE);

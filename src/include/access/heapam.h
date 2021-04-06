@@ -65,6 +65,12 @@ typedef struct HeapScanDescData
 
 	HeapTupleData rs_ctup;		/* current tuple in scan, if any */
 
+	/*
+	 * For parallel scans to store page allocation data.  NULL when not
+	 * performing a parallel scan.
+	 */
+	ParallelBlockTableScanWorkerData *rs_parallelworkerdata;
+
 	/* these fields only used in page-at-a-time mode and for bitmap scans */
 	int			rs_cindex;		/* current tuple's index in vistuples */
 	int			rs_ntuples;		/* number of visible tuples on page */
@@ -190,7 +196,7 @@ extern void heap_get_root_tuples(Page page, OffsetNumber *root_offsets);
 
 /* in heap/vacuumlazy.c */
 struct VacuumParams;
-extern void heap_vacuum_rel(Relation onerel,
+extern void heap_vacuum_rel(Relation rel,
 							struct VacuumParams *params, BufferAccessStrategy bstrategy);
 extern void parallel_vacuum_main(dsm_segment *seg, shm_toc *toc);
 

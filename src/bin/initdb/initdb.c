@@ -1437,7 +1437,7 @@ setup_auth(FILE *cmdfd)
 		 * The authid table shouldn't be readable except through views, to
 		 * ensure passwords are not publicly visible.
 		 */
-		"REVOKE ALL on pg_authid FROM public;\n\n",
+		"REVOKE ALL ON pg_authid FROM public;\n\n",
 		NULL
 	};
 
@@ -3238,6 +3238,9 @@ main(int argc, char *argv[])
 		get_parent_directory(pg_ctl_path);
 		/* ... and tag on pg_ctl instead */
 		join_path_components(pg_ctl_path, pg_ctl_path, "pg_ctl");
+
+		/* Convert the path to use native separators */
+		make_native_path(pg_ctl_path);
 
 		/* path to pg_ctl, properly quoted */
 		appendShellString(start_db_cmd, pg_ctl_path);

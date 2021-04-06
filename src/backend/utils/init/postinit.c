@@ -73,6 +73,7 @@ static void StatementTimeoutHandler(void);
 static void LockTimeoutHandler(void);
 static void IdleInTransactionSessionTimeoutHandler(void);
 static void IdleSessionTimeoutHandler(void);
+static void ClientCheckTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
 static void process_settings(Oid databaseid, Oid roleid);
@@ -264,11 +265,10 @@ PerformAuthentication(Port *port)
 
 #ifdef USE_SSL
 		if (port->ssl_in_use)
-			appendStringInfo(&logmsg, _(" SSL enabled (protocol=%s, cipher=%s, bits=%d, compression=%s)"),
+			appendStringInfo(&logmsg, _(" SSL enabled (protocol=%s, cipher=%s, bits=%d)"),
 							 be_tls_get_version(port),
 							 be_tls_get_cipher(port),
-							 be_tls_get_cipher_bits(port),
-							 be_tls_get_compression(port) ? _("on") : _("off"));
+							 be_tls_get_cipher_bits(port));
 #endif
 #ifdef ENABLE_GSS
 		if (port->gss)
@@ -621,6 +621,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		RegisterTimeout(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
 						IdleInTransactionSessionTimeoutHandler);
 		RegisterTimeout(IDLE_SESSION_TIMEOUT, IdleSessionTimeoutHandler);
+		RegisterTimeout(CLIENT_CONNECTION_CHECK_TIMEOUT, ClientCheckTimeoutHandler);
 	}
 
 	/*
@@ -679,6 +680,10 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	/* Initialize stats collection --- must happen before first xact */
 	if (!bootstrap)
 		pgstat_initialize();
+
+	/* Initialize status reporting */
+	if (!bootstrap)
+		pgstat_beinit();
 
 	/*
 	 * Load relcache entries for the shared system catalogs.  This must create
@@ -1239,6 +1244,14 @@ static void
 IdleSessionTimeoutHandler(void)
 {
 	IdleSessionTimeoutPending = true;
+	InterruptPending = true;
+	SetLatch(MyLatch);
+}
+
+static void
+ClientCheckTimeoutHandler(void)
+{
+	CheckClientConnectionPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);
 }

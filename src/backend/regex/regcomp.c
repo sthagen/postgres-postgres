@@ -150,6 +150,8 @@ static void delsub(struct nfa *, struct state *, struct state *);
 static void deltraverse(struct nfa *, struct state *, struct state *);
 static void dupnfa(struct nfa *, struct state *, struct state *, struct state *, struct state *);
 static void duptraverse(struct nfa *, struct state *, struct state *);
+static void removeconstraints(struct nfa *, struct state *, struct state *);
+static void removetraverse(struct nfa *, struct state *);
 static void cleartraverse(struct nfa *, struct state *);
 static struct state *single_color_transition(struct state *, struct state *);
 static void specialcolors(struct nfa *);
@@ -1182,6 +1184,10 @@ parseqatom(struct vars *v,
 		dupnfa(v->nfa, v->subs[subno]->begin, v->subs[subno]->end,
 			   atom->begin, atom->end);
 		NOERR();
+
+		/* The backref node's NFA should not enforce any constraints */
+		removeconstraints(v->nfa, atom->begin, atom->end);
+		NOERR();
 	}
 
 	/*
@@ -1209,6 +1215,23 @@ parseqatom(struct vars *v,
 		EMPTYARC(s, atom->begin);	/* empty prefix */
 		/* rest of branch can be strung starting from atom->end */
 		s2 = atom->end;
+	}
+	else if (!(atom->flags & (CAP | BACKR)))
+	{
+		/*
+		 * If there's no captures nor backrefs in the atom being repeated, we
+		 * don't really care where the submatches of the iteration are, so we
+		 * don't need an iteration node.  Make a plain DFA node instead.
+		 */
+		EMPTYARC(s, atom->begin);	/* empty prefix */
+		repeat(v, atom->begin, atom->end, m, n);
+		f = COMBINE(qprefer, atom->flags);
+		t = subre(v, '=', f, atom->begin, atom->end);
+		NOERR();
+		freesubre(v, atom);
+		*atomp = t;
+		/* rest of branch can be strung starting from t->end */
+		s2 = t->end;
 	}
 	else if (m > 0 && !(atom->flags & BACKR))
 	{
@@ -1265,6 +1288,10 @@ parseqatom(struct vars *v,
 		t->flags |= COMBINE(t->flags, t->child->sibling->flags);
 		top->flags |= COMBINE(top->flags, t->flags);
 
+		/* neither t nor top could be directly marked for capture as yet */
+		assert(t->capno == 0);
+		assert(top->capno == 0);
+
 		/*
 		 * At this point both top and t are concatenation (op == '.') subres,
 		 * and we have top->child = prefix of branch, top->child->sibling = t,
@@ -1284,6 +1311,24 @@ parseqatom(struct vars *v,
 			freesubre(v, top->child);
 			top->child = t->child;
 			freesrnode(v, t);
+		}
+
+		/*
+		 * Otherwise, it's possible that t->child is not messy in itself, but
+		 * we considered it messy because its greediness conflicts with what
+		 * preceded it.  Then it could be that the combination of t->child and
+		 * the rest of the branch is also not messy, in which case we can get
+		 * rid of the child concatenation by merging t->child and the rest of
+		 * the branch into one plain DFA node.
+		 */
+		else if (t->child->op == '=' &&
+				 t->child->sibling->op == '=' &&
+				 !MESSY(UP(t->child->flags | t->child->sibling->flags)))
+		{
+			t->op = '=';
+			t->flags = COMBINE(t->child->flags, t->child->sibling->flags);
+			freesubreandsiblings(v, t->child);
+			t->child = NULL;
 		}
 	}
 	else

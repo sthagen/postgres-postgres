@@ -431,6 +431,12 @@ CreateInitDecodingContext(const char *plugin,
 		startup_cb_wrapper(ctx, &ctx->options, true);
 	MemoryContextSwitchTo(old_context);
 
+	/*
+	 * We allow decoding of prepared transactions iff the two_phase option is
+	 * enabled at the time of slot creation.
+	 */
+	ctx->twophase &= MyReplicationSlot->data.two_phase;
+
 	ctx->reorder->output_rewrites = ctx->options.receive_rewrites;
 
 	return ctx;
@@ -530,6 +536,12 @@ CreateDecodingContext(XLogRecPtr start_lsn,
 	if (ctx->callbacks.startup_cb != NULL)
 		startup_cb_wrapper(ctx, &ctx->options, false);
 	MemoryContextSwitchTo(old_context);
+
+	/*
+	 * We allow decoding of prepared transactions iff the two_phase option is
+	 * enabled at the time of slot creation.
+	 */
+	ctx->twophase &= MyReplicationSlot->data.two_phase;
 
 	ctx->reorder->output_rewrites = ctx->options.receive_rewrites;
 
@@ -1071,7 +1083,8 @@ truncate_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 }
 
 bool
-filter_prepare_cb_wrapper(LogicalDecodingContext *ctx, const char *gid)
+filter_prepare_cb_wrapper(LogicalDecodingContext *ctx, TransactionId xid,
+						  const char *gid)
 {
 	LogicalErrorCallbackState state;
 	ErrorContextCallback errcallback;
@@ -1092,7 +1105,7 @@ filter_prepare_cb_wrapper(LogicalDecodingContext *ctx, const char *gid)
 	ctx->accept_writes = false;
 
 	/* do the actual work: call callback */
-	ret = ctx->callbacks.filter_prepare_cb(ctx, gid);
+	ret = ctx->callbacks.filter_prepare_cb(ctx, xid, gid);
 
 	/* Pop the error context stack */
 	error_context_stack = errcallback.previous;

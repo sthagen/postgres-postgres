@@ -62,6 +62,14 @@ typedef enum SortByNulls
 	SORTBY_NULLS_LAST
 } SortByNulls;
 
+/* Options for [ ALL | DISTINCT ] */
+typedef enum SetQuantifier
+{
+	SET_QUANTIFIER_DEFAULT,
+	SET_QUANTIFIER_ALL,
+	SET_QUANTIFIER_DISTINCT
+} SetQuantifier;
+
 /*
  * Grantable rights are encoded so that we can OR them together in a bitmask.
  * The present representation of AclItem limits us to 16 distinct rights,
@@ -146,6 +154,7 @@ typedef struct Query
 	List	   *returningList;	/* return-values list (of TargetEntry) */
 
 	List	   *groupClause;	/* a list of SortGroupClause's */
+	bool		groupDistinct;	/* is the group by clause distinct? */
 
 	List	   *groupingSets;	/* a list of GroupingSet's if present */
 
@@ -646,6 +655,7 @@ typedef struct ColumnDef
 	NodeTag		type;
 	char	   *colname;		/* name of column */
 	TypeName   *typeName;		/* type of column */
+	char	   *compression;	/* compression method for column */
 	int			inhcount;		/* number of times column is inherited */
 	bool		is_local;		/* column has local (non-inherited) def'n */
 	bool		is_not_null;	/* NOT NULL constraint specified? */
@@ -685,6 +695,7 @@ typedef enum TableLikeOption
 	CREATE_TABLE_LIKE_INDEXES = 1 << 5,
 	CREATE_TABLE_LIKE_STATISTICS = 1 << 6,
 	CREATE_TABLE_LIKE_STORAGE = 1 << 7,
+	CREATE_TABLE_LIKE_COMPRESSION = 1 << 8,
 	CREATE_TABLE_LIKE_ALL = PG_INT32_MAX
 } TableLikeOption;
 
@@ -860,6 +871,7 @@ typedef struct PartitionCmd
 	NodeTag		type;
 	RangeVar   *name;			/* name of partition to attach/detach */
 	PartitionBoundSpec *bound;	/* FOR VALUES, if attaching */
+	bool		concurrent;
 } PartitionCmd;
 
 /****************************************************************************
@@ -1056,6 +1068,13 @@ typedef struct RangeTblEntry
 	List	   *joinaliasvars;	/* list of alias-var expansions */
 	List	   *joinleftcols;	/* left-side input column numbers */
 	List	   *joinrightcols;	/* right-side input column numbers */
+
+	/*
+	 * join_using_alias is an alias clause attached directly to JOIN/USING. It
+	 * is different from the alias field (below) in that it does not hide the
+	 * range variables of the tables being joined.
+	 */
+	Alias	   *join_using_alias;
 
 	/*
 	 * Fields valid for a function RTE (else NIL/zero):
@@ -1629,6 +1648,7 @@ typedef struct SelectStmt
 	List	   *fromClause;		/* the FROM clause */
 	Node	   *whereClause;	/* WHERE qualification */
 	List	   *groupClause;	/* GROUP BY clauses */
+	bool		groupDistinct;	/* Is this GROUP BY DISTINCT? */
 	Node	   *havingClause;	/* HAVING conditional-expression */
 	List	   *windowClause;	/* WINDOW window_name AS (...), ... */
 
@@ -1845,6 +1865,7 @@ typedef enum AlterTableType
 	AT_SetOptions,				/* alter column set ( options ) */
 	AT_ResetOptions,			/* alter column reset ( options ) */
 	AT_SetStorage,				/* alter column set storage */
+	AT_SetCompression,			/* alter column set compression */
 	AT_DropColumn,				/* drop column */
 	AT_DropColumnRecurse,		/* internal to commands/tablecmds.c */
 	AT_AddIndex,				/* add index */
@@ -1896,10 +1917,12 @@ typedef enum AlterTableType
 	AT_GenericOptions,			/* OPTIONS (...) */
 	AT_AttachPartition,			/* ATTACH PARTITION */
 	AT_DetachPartition,			/* DETACH PARTITION */
+	AT_DetachPartitionFinalize,	/* DETACH PARTITION FINALIZE */
 	AT_AddIdentity,				/* ADD IDENTITY */
 	AT_SetIdentity,				/* SET identity column options */
 	AT_DropIdentity,			/* DROP IDENTITY */
-	AT_AlterCollationRefreshVersion /* ALTER COLLATION ... REFRESH VERSION */
+	AT_AlterCollationRefreshVersion, /* ALTER COLLATION ... REFRESH VERSION */
+	AT_ReAddStatistics			/* internal to commands/tablecmds.c */
 } AlterTableType;
 
 typedef struct ReplicaIdentityStmt
@@ -2115,7 +2138,7 @@ typedef struct CreateStmt
 	RangeVar   *relation;		/* relation to create */
 	List	   *tableElts;		/* column definitions (list of ColumnDef) */
 	List	   *inhRelations;	/* relations to inherit from (list of
-								 * inhRelation) */
+								 * RangeVar) */
 	PartitionBoundSpec *partbound;	/* FOR VALUES clause */
 	PartitionSpec *partspec;	/* PARTITION BY clause */
 	TypeName   *ofTypename;		/* OF typename */
@@ -2753,10 +2776,10 @@ typedef struct SecLabelStmt
 #define CURSOR_OPT_INSENSITIVE	0x0008	/* INSENSITIVE */
 #define CURSOR_OPT_HOLD			0x0010	/* WITH HOLD */
 /* these planner-control flags do not correspond to any SQL grammar: */
-#define CURSOR_OPT_FAST_PLAN	0x0020	/* prefer fast-start plan */
-#define CURSOR_OPT_GENERIC_PLAN 0x0040	/* force use of generic plan */
-#define CURSOR_OPT_CUSTOM_PLAN	0x0080	/* force use of custom plan */
-#define CURSOR_OPT_PARALLEL_OK	0x0100	/* parallel mode OK */
+#define CURSOR_OPT_FAST_PLAN	0x0100	/* prefer fast-start plan */
+#define CURSOR_OPT_GENERIC_PLAN 0x0200	/* force use of generic plan */
+#define CURSOR_OPT_CUSTOM_PLAN	0x0400	/* force use of custom plan */
+#define CURSOR_OPT_PARALLEL_OK	0x0800	/* parallel mode OK */
 
 typedef struct DeclareCursorStmt
 {
@@ -2857,7 +2880,23 @@ typedef struct CreateStatsStmt
 	List	   *relations;		/* rels to build stats on (list of RangeVar) */
 	char	   *stxcomment;		/* comment to apply to stats, or NULL */
 	bool		if_not_exists;	/* do nothing if stats name already exists */
+	bool		transformed;	/* true when transformStatsStmt is finished */
 } CreateStatsStmt;
+
+/*
+ * StatsElem - statistics parameters (used in CREATE STATISTICS)
+ *
+ * For a plain attribute, 'name' is the name of the referenced table column
+ * and 'expr' is NULL.  For an expression, 'name' is NULL and 'expr' is the
+ * expression tree.
+ */
+typedef struct StatsElem
+{
+	NodeTag		type;
+	char	   *name;			/* name of attribute to index, or NULL */
+	Node	   *expr;			/* expression to index, or NULL */
+} StatsElem;
+
 
 /* ----------------------
  *		Alter Statistics Statement
@@ -3579,7 +3618,9 @@ typedef enum AlterSubscriptionType
 {
 	ALTER_SUBSCRIPTION_OPTIONS,
 	ALTER_SUBSCRIPTION_CONNECTION,
-	ALTER_SUBSCRIPTION_PUBLICATION,
+	ALTER_SUBSCRIPTION_SET_PUBLICATION,
+	ALTER_SUBSCRIPTION_ADD_PUBLICATION,
+	ALTER_SUBSCRIPTION_DROP_PUBLICATION,
 	ALTER_SUBSCRIPTION_REFRESH,
 	ALTER_SUBSCRIPTION_ENABLED
 } AlterSubscriptionType;

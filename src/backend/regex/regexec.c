@@ -77,6 +77,9 @@ struct dfa
 	chr		   *lastpost;		/* location of last cache-flushed success */
 	chr		   *lastnopr;		/* location of last cache-flushed NOPROGRESS */
 	struct sset *search;		/* replacement-search-pointer memory */
+	int			backno;			/* if DFA for a backref, subno it refers to */
+	short		backmin;		/* min repetitions for backref */
+	short		backmax;		/* max repetitions for backref */
 	bool		ismalloced;		/* should this struct dfa be freed? */
 	bool		arraysmalloced; /* should its subsidiary arrays be freed? */
 };
@@ -154,6 +157,7 @@ static int	creviterdissect(struct vars *, struct subre *, chr *, chr *);
 static chr *longest(struct vars *, struct dfa *, chr *, chr *, int *);
 static chr *shortest(struct vars *, struct dfa *, chr *, chr *, chr *, chr **, int *);
 static int	matchuntil(struct vars *, struct dfa *, chr *, struct sset **, chr **);
+static chr *dfa_backref(struct vars *, struct dfa *, chr *, chr *, chr *, bool);
 static chr *lastcold(struct vars *, struct dfa *);
 static struct dfa *newdfa(struct vars *, struct cnfa *, struct colormap *, struct smalldfa *);
 static void freedfa(struct dfa *);
@@ -342,13 +346,23 @@ static struct dfa *
 getsubdfa(struct vars *v,
 		  struct subre *t)
 {
-	if (v->subdfas[t->id] == NULL)
+	struct dfa *d = v->subdfas[t->id];
+
+	if (d == NULL)
 	{
-		v->subdfas[t->id] = newdfa(v, &t->cnfa, &v->g->cmap, DOMALLOC);
-		if (ISERR())
+		d = newdfa(v, &t->cnfa, &v->g->cmap, DOMALLOC);
+		if (d == NULL)
 			return NULL;
+		/* set up additional info if this is a backref node */
+		if (t->op == 'b')
+		{
+			d->backno = t->backno;
+			d->backmin = t->min;
+			d->backmax = t->max;
+		}
+		v->subdfas[t->id] = d;
 	}
-	return v->subdfas[t->id];
+	return d;
 }
 
 /*
@@ -367,8 +381,7 @@ getladfa(struct vars *v,
 		struct subre *sub = &v->g->lacons[n];
 
 		v->ladfas[n] = newdfa(v, &sub->cnfa, &v->g->cmap, DOMALLOC);
-		if (ISERR())
-			return NULL;
+		/* a LACON can't contain a backref, so nothing else to do */
 	}
 	return v->ladfas[n];
 }
@@ -393,8 +406,8 @@ find(struct vars *v,
 
 	/* first, a shot with the search RE */
 	s = newdfa(v, &v->g->search, cm, &v->dfa1);
-	assert(!(ISERR() && s != NULL));
-	NOERR();
+	if (s == NULL)
+		return v->err;
 	MDEBUG(("\nsearch at %ld\n", LOFF(v->start)));
 	cold = NULL;
 	close = shortest(v, s, v->search_start, v->search_start, v->stop,
@@ -421,8 +434,8 @@ find(struct vars *v,
 	cold = NULL;
 	MDEBUG(("between %ld and %ld\n", LOFF(open), LOFF(close)));
 	d = newdfa(v, cnfa, cm, &v->dfa1);
-	assert(!(ISERR() && d != NULL));
-	NOERR();
+	if (d == NULL)
+		return v->err;
 	for (begin = open; begin <= close; begin++)
 	{
 		MDEBUG(("\nfind trying at %ld\n", LOFF(begin)));
@@ -478,11 +491,11 @@ cfind(struct vars *v,
 	int			ret;
 
 	s = newdfa(v, &v->g->search, cm, &v->dfa1);
-	NOERR();
+	if (s == NULL)
+		return v->err;
 	d = newdfa(v, cnfa, cm, &v->dfa2);
-	if (ISERR())
+	if (d == NULL)
 	{
-		assert(d == NULL);
 		freedfa(s);
 		return v->err;
 	}
@@ -927,6 +940,9 @@ crevcondissect(struct vars *v,
 
 /*
  * cbrdissect - dissect match for backref node
+ *
+ * The backref match might already have been verified by dfa_backref(),
+ * but we don't know that for sure so must check it here.
  */
 static int						/* regexec return code */
 cbrdissect(struct vars *v,

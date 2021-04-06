@@ -264,7 +264,7 @@ F401	Extended joined table	02	FULL OUTER JOIN	YES
 F401	Extended joined table	04	CROSS JOIN	YES	
 F402	Named column joins for LOBs, arrays, and multisets			YES	
 F403	Partitioned joined tables			NO	
-F404	Range variable for common column names			NO	
+F404	Range variable for common column names			YES	
 F411	Time zone specification			YES	differences regarding literal interpretation
 F421	National character			YES	
 F431	Read-only scrollable cursors			YES	
@@ -398,7 +398,7 @@ S301	Enhanced UNNEST			YES
 S401	Distinct types based on array types			NO	
 S402	Distinct types based on distinct types			NO	
 S403	ARRAY_MAX_CARDINALITY			NO	
-S404	TRIM_ARRAY			NO	
+S404	TRIM_ARRAY			YES	
 T011	Timestamp in Information Schema			NO	
 T021	BINARY and VARBINARY data types			NO	
 T022	Advanced support for BINARY and VARBINARY data types			NO	
@@ -482,7 +482,7 @@ T351	Bracketed SQL comments (/*...*/ comments)			YES
 T431	Extended grouping capabilities			YES	
 T432	Nested and concatenated GROUPING SETS			YES	
 T433	Multiargument GROUPING function			YES	
-T434	GROUP BY DISTINCT			NO	
+T434	GROUP BY DISTINCT			YES	
 T441	ABS and MOD functions			YES	
 T461	Symmetric BETWEEN predicate			YES	
 T471	Result sets return value			NO	

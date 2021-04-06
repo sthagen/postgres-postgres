@@ -82,7 +82,7 @@
  *
  * subplan_resultrel_htab
  *		Hash table to store subplan ResultRelInfos by Oid.  This is used to
- *		cache ResultRelInfos from subplans of an UPDATE ModifyTable node;
+ *		cache ResultRelInfos from targets of an UPDATE ModifyTable node;
  *		NULL in other cases.  Some of these may be useful for tuple routing
  *		to save having to build duplicates.
  *
@@ -527,12 +527,12 @@ ExecHashSubPlanResultRelsByOid(ModifyTableState *mtstate,
 	ctl.entrysize = sizeof(SubplanResultRelHashElem);
 	ctl.hcxt = CurrentMemoryContext;
 
-	htab = hash_create("PartitionTupleRouting table", mtstate->mt_nplans,
+	htab = hash_create("PartitionTupleRouting table", mtstate->mt_nrels,
 					   &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	proute->subplan_resultrel_htab = htab;
 
 	/* Hash all subplans by their Oid */
-	for (i = 0; i < mtstate->mt_nplans; i++)
+	for (i = 0; i < mtstate->mt_nrels; i++)
 	{
 		ResultRelInfo *rri = &mtstate->resultRelInfo[i];
 		bool		found;
@@ -569,6 +569,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 					  int partidx)
 {
 	ModifyTable *node = (ModifyTable *) mtstate->ps.plan;
+	Oid			partOid = dispatch->partdesc->oids[partidx];
 	Relation	partrel;
 	int			firstVarno = mtstate->resultRelInfo[0].ri_RangeTableIndex;
 	Relation	firstResultRel = mtstate->resultRelInfo[0].ri_RelationDesc;
@@ -579,7 +580,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 
 	oldcxt = MemoryContextSwitchTo(proute->memcxt);
 
-	partrel = table_open(dispatch->partdesc->oids[partidx], RowExclusiveLock);
+	partrel = table_open(partOid, RowExclusiveLock);
 
 	leaf_part_rri = makeNode(ResultRelInfo);
 	InitResultRelInfo(leaf_part_rri,
@@ -627,10 +628,10 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		 */
 		Assert((node->operation == CMD_INSERT &&
 				list_length(node->withCheckOptionLists) == 1 &&
-				list_length(node->plans) == 1) ||
+				list_length(node->resultRelations) == 1) ||
 			   (node->operation == CMD_UPDATE &&
 				list_length(node->withCheckOptionLists) ==
-				list_length(node->plans)));
+				list_length(node->resultRelations)));
 
 		/*
 		 * Use the WCO list of the first plan as a reference to calculate
@@ -686,10 +687,10 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		/* See the comment above for WCO lists. */
 		Assert((node->operation == CMD_INSERT &&
 				list_length(node->returningLists) == 1 &&
-				list_length(node->plans) == 1) ||
+				list_length(node->resultRelations) == 1) ||
 			   (node->operation == CMD_UPDATE &&
 				list_length(node->returningLists) ==
-				list_length(node->plans)));
+				list_length(node->resultRelations)));
 
 		/*
 		 * Use the RETURNING list of the first plan as a reference to
@@ -1065,9 +1066,21 @@ ExecInitPartitionDispatchInfo(EState *estate,
 	int			dispatchidx;
 	MemoryContext oldcxt;
 
+	/*
+	 * For data modification, it is better that executor does not include
+	 * partitions being detached, except in snapshot-isolation mode.  This
+	 * means that a read-committed transaction immediately gets a "no
+	 * partition for tuple" error when a tuple is inserted into a partition
+	 * that's being detached concurrently, but a transaction in repeatable-
+	 * read mode can still use the partition.  Note that because partition
+	 * detach uses ShareLock on the partition (which conflicts with DML),
+	 * we're certain that the detach won't be able to complete until any
+	 * inserting transaction is done.
+	 */
 	if (estate->es_partition_directory == NULL)
 		estate->es_partition_directory =
-			CreatePartitionDirectory(estate->es_query_cxt);
+			CreatePartitionDirectory(estate->es_query_cxt,
+									 IsolationUsesXactSnapshot());
 
 	oldcxt = MemoryContextSwitchTo(proute->memcxt);
 
@@ -1645,9 +1658,10 @@ ExecCreatePartitionPruneState(PlanState *planstate,
 	ListCell   *lc;
 	int			i;
 
+	/* Executor must always include detached partitions */
 	if (estate->es_partition_directory == NULL)
 		estate->es_partition_directory =
-			CreatePartitionDirectory(estate->es_query_cxt);
+			CreatePartitionDirectory(estate->es_query_cxt, true);
 
 	n_part_hierarchies = list_length(partitionpruneinfo->prune_infos);
 	Assert(n_part_hierarchies > 0);
@@ -1713,9 +1727,12 @@ ExecCreatePartitionPruneState(PlanState *planstate,
 												partrel);
 
 			/*
-			 * Initialize the subplan_map and subpart_map.  Since detaching a
-			 * partition requires AccessExclusiveLock, no partitions can have
-			 * disappeared, nor can the bounds for any partition have changed.
+			 * Initialize the subplan_map and subpart_map.
+			 *
+			 * Because we request detached partitions to be included, and
+			 * detaching waits for old transactions, it is safe to assume that
+			 * no partitions have disappeared since this query was planned.
+			 *
 			 * However, new partitions may have been added.
 			 */
 			Assert(partdesc->nparts >= pinfo->nparts);

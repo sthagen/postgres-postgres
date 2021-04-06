@@ -407,13 +407,15 @@ pg_import_system_collations(PG_FUNCTION_ARGS)
 	Oid			nspid = PG_GETARG_OID(0);
 	int			ncreated = 0;
 
-	/* silence compiler warning if we have no locale implementation at all */
-	(void) nspid;
-
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("must be superuser to import system collations")));
+
+	if (!SearchSysCacheExists1(NAMESPACEOID, ObjectIdGetDatum(nspid)))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_SCHEMA),
+				 errmsg("schema with OID %u does not exist", nspid)));
 
 	/* Load collations known to libc, using "locale -a" to enumerate them */
 #ifdef READ_LOCALE_A_OUTPUT
@@ -575,7 +577,7 @@ pg_import_system_collations(PG_FUNCTION_ARGS)
 	 * We use uloc_countAvailable()/uloc_getAvailable() rather than
 	 * ucol_countAvailable()/ucol_getAvailable().  The former returns a full
 	 * set of language+region combinations, whereas the latter only returns
-	 * language+region combinations of they are distinct from the language's
+	 * language+region combinations if they are distinct from the language's
 	 * base collation.  So there might not be a de-DE or en-GB, which would be
 	 * confusing.
 	 */

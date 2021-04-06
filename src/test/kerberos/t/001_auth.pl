@@ -20,7 +20,7 @@ use Time::HiRes qw(usleep);
 
 if ($ENV{with_gssapi} eq 'yes')
 {
-	plan tests => 34;
+	plan tests => 32;
 }
 else
 {
@@ -170,10 +170,7 @@ $node->append_conf(
 	'postgresql.conf', qq{
 listen_addresses = '$hostaddr'
 krb_server_keyfile = '$keytab'
-logging_collector = on
 log_connections = on
-# these ensure stability of test results:
-log_rotation_age = 0
 lc_messages = 'C'
 });
 $node->start;
@@ -185,56 +182,39 @@ note "running tests";
 # Test connection success or failure, and if success, that query returns true.
 sub test_access
 {
-	my ($node, $role, $query, $expected_res, $gssencmode, $test_name, $expect_log_msg) = @_;
+	my ($node, $role, $query, $expected_res, $gssencmode, $test_name,
+		$expect_log_msg)
+	  = @_;
 
 	# need to connect over TCP/IP for Kerberos
-	my ($res, $stdoutres, $stderrres) = $node->psql(
-		'postgres',
-		"$query",
-		extra_params => [
-			'-XAtd',
-			$node->connstr('postgres')
-			  . " host=$host hostaddr=$hostaddr $gssencmode",
-			'-U',
-			$role
-		]);
+	my $connstr = $node->connstr('postgres')
+	  . " user=$role host=$host hostaddr=$hostaddr $gssencmode";
 
-	# If we get a query result back, it should be true.
-	if ($res == $expected_res and $res eq 0)
+	if ($expected_res eq 0)
 	{
-		is($stdoutres, "t", $test_name);
+		# The result is assumed to match "true", or "t", here.
+		$node->connect_ok(
+			$connstr, $test_name,
+			sql             => $query,
+			expected_stdout => qr/^t$/);
 	}
 	else
 	{
-		is($res, $expected_res, $test_name);
+		$node->connect_fails($connstr, $test_name);
 	}
 
 	# Verify specified log message is logged in the log file.
 	if ($expect_log_msg ne '')
 	{
-		my $current_logfiles = slurp_file($node->data_dir . '/current_logfiles');
-		note "current_logfiles = $current_logfiles";
-		like($current_logfiles, qr|^stderr log/postgresql-.*log$|,
-			 'current_logfiles is sane');
-
-		my $lfname = $current_logfiles;
-		$lfname =~ s/^stderr //;
-		chomp $lfname;
-
-		# might need to retry if logging collector process is slow...
-		my $max_attempts = 180 * 10;
-		my $first_logfile;
-		for (my $attempts = 0; $attempts < $max_attempts; $attempts++)
-		{
-			$first_logfile = slurp_file($node->data_dir . '/' . $lfname);
-			last if $first_logfile =~ m/\Q$expect_log_msg\E/;
-			usleep(100_000);
-		}
+		my $first_logfile = slurp_file($node->logfile);
 
 		like($first_logfile, qr/\Q$expect_log_msg\E/,
 			 'found expected log file content');
 	}
 
+	# Clean up any existing contents in the node's log file so as
+	# future tests don't step on each other's generated contents.
+	truncate $node->logfile, 0;
 	return;
 }
 
@@ -244,20 +224,13 @@ sub test_query
 	my ($node, $role, $query, $expected, $gssencmode, $test_name) = @_;
 
 	# need to connect over TCP/IP for Kerberos
-	my ($res, $stdoutres, $stderrres) = $node->psql(
-		'postgres',
-		"$query",
-		extra_params => [
-			'-XAtd',
-			$node->connstr('postgres')
-			  . " host=$host hostaddr=$hostaddr $gssencmode",
-			'-U',
-			$role
-		]);
+	my $connstr = $node->connstr('postgres')
+	  . " user=$role host=$host hostaddr=$hostaddr $gssencmode";
 
-	is($res, 0, $test_name);
-	like($stdoutres, $expected, $test_name);
-	is($stderrres, "", $test_name);
+	$node->connect_ok(
+		$connstr, $test_name,
+		sql             => $query,
+		expected_stdout => $expected);
 	return;
 }
 

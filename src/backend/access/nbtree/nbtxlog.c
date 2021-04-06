@@ -113,7 +113,7 @@ _bt_restore_meta(XLogReaderState *record, uint8 block_id)
 	/* Cannot log BTREE_MIN_VERSION index metapage without upgrade */
 	Assert(md->btm_version >= BTREE_NOVAC_VERSION);
 	md->btm_last_cleanup_num_delpages = xlrec->last_cleanup_num_delpages;
-	md->btm_last_cleanup_num_heap_tuples = xlrec->last_cleanup_num_heap_tuples;
+	md->btm_last_cleanup_num_heap_tuples = -1.0;
 	md->btm_allequalimage = xlrec->allequalimage;
 
 	pageop = (BTPageOpaque) PageGetSpecialPointer(metapg);
@@ -818,7 +818,7 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 	safexid = xlrec->safexid;
 
 	/* No leaftopparent for level 0 (leaf page) or level 1 target */
-	Assert(xlrec->leaftopparent == InvalidBlockNumber || level > 1);
+	Assert(!BlockNumberIsValid(xlrec->leaftopparent) || level > 1);
 
 	/*
 	 * In normal operation, we would lock all the pages this WAL record

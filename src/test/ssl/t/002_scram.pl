@@ -53,41 +53,40 @@ $common_connstr =
   "dbname=trustdb sslmode=require sslcert=invalid sslrootcert=invalid hostaddr=$SERVERHOSTADDR";
 
 # Default settings
-test_connect_ok($common_connstr, "user=ssltestuser",
+$node->connect_ok(
+	"$common_connstr user=ssltestuser",
 	"Basic SCRAM authentication with SSL");
 
 # Test channel_binding
-test_connect_fails(
-	$common_connstr,
-	"user=ssltestuser channel_binding=invalid_value",
-	qr/invalid channel_binding value: "invalid_value"/,
-	"SCRAM with SSL and channel_binding=invalid_value");
-test_connect_ok(
-	$common_connstr,
-	"user=ssltestuser channel_binding=disable",
+$node->connect_fails(
+	"$common_connstr user=ssltestuser channel_binding=invalid_value",
+	"SCRAM with SSL and channel_binding=invalid_value",
+	expected_stderr => qr/invalid channel_binding value: "invalid_value"/);
+$node->connect_ok("$common_connstr user=ssltestuser channel_binding=disable",
 	"SCRAM with SSL and channel_binding=disable");
 if ($supports_tls_server_end_point)
 {
-	test_connect_ok(
-		$common_connstr,
-		"user=ssltestuser channel_binding=require",
+	$node->connect_ok(
+		"$common_connstr user=ssltestuser channel_binding=require",
 		"SCRAM with SSL and channel_binding=require");
 }
 else
 {
-	test_connect_fails(
-		$common_connstr,
-		"user=ssltestuser channel_binding=require",
-		qr/channel binding is required, but server did not offer an authentication method that supports channel binding/,
-		"SCRAM with SSL and channel_binding=require");
+	$node->connect_fails(
+		"$common_connstr user=ssltestuser channel_binding=require",
+		"SCRAM with SSL and channel_binding=require",
+		expected_stderr =>
+		  qr/channel binding is required, but server did not offer an authentication method that supports channel binding/
+	);
 }
 
 # Now test when the user has an MD5-encrypted password; should fail
-test_connect_fails(
-	$common_connstr,
-	"user=md5testuser channel_binding=require",
-	qr/channel binding required but not supported by server's authentication request/,
-	"MD5 with SSL and channel_binding=require");
+$node->connect_fails(
+	"$common_connstr user=md5testuser channel_binding=require",
+	"MD5 with SSL and channel_binding=require",
+	expected_stderr =>
+	  qr/channel binding required but not supported by server's authentication request/
+);
 
 # Now test with auth method 'cert' by connecting to 'certdb'. Should fail,
 # because channel binding is not performed.  Note that ssl/client.key may
@@ -96,11 +95,12 @@ test_connect_fails(
 my $client_tmp_key = "ssl/client_scram_tmp.key";
 copy("ssl/client.key", $client_tmp_key);
 chmod 0600, $client_tmp_key;
-test_connect_fails(
-	"sslcert=ssl/client.crt sslkey=$client_tmp_key sslrootcert=invalid hostaddr=$SERVERHOSTADDR",
-	"dbname=certdb user=ssltestuser channel_binding=require",
-	qr/channel binding required, but server authenticated client without channel binding/,
-	"Cert authentication and channel_binding=require");
+$node->connect_fails(
+	"sslcert=ssl/client.crt sslkey=$client_tmp_key sslrootcert=invalid hostaddr=$SERVERHOSTADDR dbname=certdb user=ssltestuser channel_binding=require",
+	"Cert authentication and channel_binding=require",
+	expected_stderr =>
+	  qr/channel binding required, but server authenticated client without channel binding/
+);
 
 # clean up
 unlink($client_tmp_key);

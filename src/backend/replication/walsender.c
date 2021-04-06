@@ -938,7 +938,8 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 	if (cmd->kind == REPLICATION_KIND_PHYSICAL)
 	{
 		ReplicationSlotCreate(cmd->slotname, false,
-							  cmd->temporary ? RS_TEMPORARY : RS_PERSISTENT);
+							  cmd->temporary ? RS_TEMPORARY : RS_PERSISTENT,
+							  false);
 	}
 	else
 	{
@@ -952,7 +953,8 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 		 * they get dropped on error as well.
 		 */
 		ReplicationSlotCreate(cmd->slotname, true,
-							  cmd->temporary ? RS_TEMPORARY : RS_EPHEMERAL);
+							  cmd->temporary ? RS_TEMPORARY : RS_EPHEMERAL,
+							  cmd->two_phase);
 	}
 
 	if (cmd->kind == REPLICATION_KIND_LOGICAL)
@@ -3353,7 +3355,7 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 		memset(nulls, 0, sizeof(nulls));
 		values[0] = Int32GetDatum(pid);
 
-		if (!is_member_of_role(GetUserId(), DEFAULT_ROLE_READ_ALL_STATS))
+		if (!is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_STATS))
 		{
 			/*
 			 * Only superusers and members of pg_read_all_stats can see

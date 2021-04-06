@@ -1278,6 +1278,7 @@ SELCT 1/0;<!-- this typo is intentional -->
     <varname>server_encoding</varname>,
     <varname>client_encoding</varname>,
     <varname>application_name</varname>,
+    <varname>default_transaction_read_only</varname>,
     <varname>in_hot_standby</varname>,
     <varname>is_superuser</varname>,
     <varname>session_authorization</varname>,
@@ -1293,7 +1294,8 @@ SELCT 1/0;<!-- this typo is intentional -->
     <varname>IntervalStyle</varname> was not reported by releases before 8.4;
     <varname>application_name</varname> was not reported by releases before
     9.0;
-    <varname>in_hot_standby</varname> was not reported by releases before
+    <varname>default_transaction_read_only</varname> and
+    <varname>in_hot_standby</varname> were not reported by releases before
     14.)
     Note that
     <varname>server_version</varname>,
@@ -6422,6 +6424,82 @@ Begin
 <listitem>
 <para>
                 Xid of the transaction.
+</para>
+</listitem>
+</varlistentry>
+
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+Message
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('M')
+</term>
+<listitem>
+<para>
+                Identifies the message as a logical decoding message.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Xid of the transaction. The XID is sent only when user has
+                requested streaming of in-progress transactions.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int8
+</term>
+<listitem>
+<para>
+                Flags; Either 0 for no flags or 1 if the logical decoding
+                message is transactional.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int64
+</term>
+<listitem>
+<para>
+                The LSN of the logical decoding message.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The prefix of the logical decoding message.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                The content of the logical decoding message.
 </para>
 </listitem>
 </varlistentry>
