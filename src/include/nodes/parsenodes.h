@@ -140,6 +140,8 @@ typedef struct Query
 	bool		hasForUpdate;	/* FOR [KEY] UPDATE/SHARE was specified */
 	bool		hasRowSecurity; /* rewriter has applied some RLS policy */
 
+	bool		isReturn;		/* is a RETURN statement */
+
 	List	   *cteList;		/* WITH list (of CommonTableExpr's) */
 
 	List	   *rtable;			/* list of range table entries */
@@ -688,14 +690,14 @@ typedef struct TableLikeClause
 typedef enum TableLikeOption
 {
 	CREATE_TABLE_LIKE_COMMENTS = 1 << 0,
-	CREATE_TABLE_LIKE_CONSTRAINTS = 1 << 1,
-	CREATE_TABLE_LIKE_DEFAULTS = 1 << 2,
-	CREATE_TABLE_LIKE_GENERATED = 1 << 3,
-	CREATE_TABLE_LIKE_IDENTITY = 1 << 4,
-	CREATE_TABLE_LIKE_INDEXES = 1 << 5,
-	CREATE_TABLE_LIKE_STATISTICS = 1 << 6,
-	CREATE_TABLE_LIKE_STORAGE = 1 << 7,
-	CREATE_TABLE_LIKE_COMPRESSION = 1 << 8,
+	CREATE_TABLE_LIKE_COMPRESSION = 1 << 1,
+	CREATE_TABLE_LIKE_CONSTRAINTS = 1 << 2,
+	CREATE_TABLE_LIKE_DEFAULTS = 1 << 3,
+	CREATE_TABLE_LIKE_GENERATED = 1 << 4,
+	CREATE_TABLE_LIKE_IDENTITY = 1 << 5,
+	CREATE_TABLE_LIKE_INDEXES = 1 << 6,
+	CREATE_TABLE_LIKE_STATISTICS = 1 << 7,
+	CREATE_TABLE_LIKE_STORAGE = 1 << 8,
 	CREATE_TABLE_LIKE_ALL = PG_INT32_MAX
 } TableLikeOption;
 
@@ -1721,6 +1723,16 @@ typedef struct SetOperationStmt
 } SetOperationStmt;
 
 
+/*
+ * RETURN statement (inside SQL function body)
+ */
+typedef struct ReturnStmt
+{
+	NodeTag		type;
+	Node	   *returnval;
+} ReturnStmt;
+
+
 /* ----------------------
  *		PL/pgSQL Assignment Statement
  *
@@ -1917,11 +1929,10 @@ typedef enum AlterTableType
 	AT_GenericOptions,			/* OPTIONS (...) */
 	AT_AttachPartition,			/* ATTACH PARTITION */
 	AT_DetachPartition,			/* DETACH PARTITION */
-	AT_DetachPartitionFinalize,	/* DETACH PARTITION FINALIZE */
+	AT_DetachPartitionFinalize, /* DETACH PARTITION FINALIZE */
 	AT_AddIdentity,				/* ADD IDENTITY */
 	AT_SetIdentity,				/* SET identity column options */
 	AT_DropIdentity,			/* DROP IDENTITY */
-	AT_AlterCollationRefreshVersion, /* ALTER COLLATION ... REFRESH VERSION */
 	AT_ReAddStatistics			/* internal to commands/tablecmds.c */
 } AlterTableType;
 
@@ -1938,7 +1949,6 @@ typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 	AlterTableType subtype;		/* Type of table alteration to apply */
 	char	   *name;			/* column, constraint, or trigger to act on,
 								 * or tablespace */
-	List	   *object;			/* collation to act on if it's a collation */
 	int16		num;			/* attribute number for columns referenced by
 								 * number */
 	RoleSpec   *newowner;
@@ -1947,6 +1957,17 @@ typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 	DropBehavior behavior;		/* RESTRICT or CASCADE for DROP cases */
 	bool		missing_ok;		/* skip error if missing? */
 } AlterTableCmd;
+
+
+/* ----------------------
+ * Alter Collation
+ * ----------------------
+ */
+typedef struct AlterCollationStmt
+{
+	NodeTag		type;
+	List	   *collname;
+} AlterCollationStmt;
 
 
 /* ----------------------
@@ -2003,18 +2024,29 @@ typedef struct GrantStmt
 } GrantStmt;
 
 /*
- * Note: ObjectWithArgs carries only the types of the input parameters of the
- * function.  So it is sufficient to identify an existing function, but it
- * is not enough info to define a function nor to call it.
+ * ObjectWithArgs represents a function/procedure/operator name plus parameter
+ * identification.
+ *
+ * objargs includes only the types of the input parameters of the object.
+ * In some contexts, that will be all we have, and it's enough to look up
+ * objects according to the traditional Postgres rules (i.e., when only input
+ * arguments matter).
+ *
+ * objfuncargs, if not NIL, carries the full specification of the parameter
+ * list, including parameter mode annotations.
+ *
+ * Some grammar productions can set args_unspecified = true instead of
+ * providing parameter info.  In this case, lookup will succeed only if
+ * the object name is unique.  Note that otherwise, NIL parameter lists
+ * mean zero arguments.
  */
 typedef struct ObjectWithArgs
 {
 	NodeTag		type;
 	List	   *objname;		/* qualified name of function/operator */
-	List	   *objargs;		/* list of Typename nodes */
-	bool		args_unspecified;	/* argument list was omitted, so name must
-									 * be unique (note that objargs == NIL
-									 * means zero args) */
+	List	   *objargs;		/* list of Typename nodes (input args only) */
+	List	   *objfuncargs;	/* list of FunctionParameter nodes */
+	bool		args_unspecified;	/* argument list was omitted? */
 } ObjectWithArgs;
 
 /*
@@ -2774,7 +2806,8 @@ typedef struct SecLabelStmt
 #define CURSOR_OPT_SCROLL		0x0002	/* SCROLL explicitly given */
 #define CURSOR_OPT_NO_SCROLL	0x0004	/* NO SCROLL explicitly given */
 #define CURSOR_OPT_INSENSITIVE	0x0008	/* INSENSITIVE */
-#define CURSOR_OPT_HOLD			0x0010	/* WITH HOLD */
+#define CURSOR_OPT_ASENSITIVE	0x0010	/* ASENSITIVE */
+#define CURSOR_OPT_HOLD			0x0020	/* WITH HOLD */
 /* these planner-control flags do not correspond to any SQL grammar: */
 #define CURSOR_OPT_FAST_PLAN	0x0100	/* prefer fast-start plan */
 #define CURSOR_OPT_GENERIC_PLAN 0x0200	/* force use of generic plan */
@@ -2879,8 +2912,8 @@ typedef struct CreateStatsStmt
 	List	   *exprs;			/* expressions to build statistics on */
 	List	   *relations;		/* rels to build stats on (list of RangeVar) */
 	char	   *stxcomment;		/* comment to apply to stats, or NULL */
-	bool		if_not_exists;	/* do nothing if stats name already exists */
 	bool		transformed;	/* true when transformStatsStmt is finished */
+	bool		if_not_exists;	/* do nothing if stats name already exists */
 } CreateStatsStmt;
 
 /*
@@ -2923,6 +2956,7 @@ typedef struct CreateFunctionStmt
 	List	   *parameters;		/* a list of FunctionParameter */
 	TypeName   *returnType;		/* the return type */
 	List	   *options;		/* a list of DefElem */
+	Node	   *sql_body;
 } CreateFunctionStmt;
 
 typedef enum FunctionParameterMode
@@ -2932,7 +2966,9 @@ typedef enum FunctionParameterMode
 	FUNC_PARAM_OUT = 'o',		/* output only */
 	FUNC_PARAM_INOUT = 'b',		/* both */
 	FUNC_PARAM_VARIADIC = 'v',	/* variadic (always input) */
-	FUNC_PARAM_TABLE = 't'		/* table function output column */
+	FUNC_PARAM_TABLE = 't',		/* table function output column */
+	/* this is not used in pg_proc: */
+	FUNC_PARAM_DEFAULT = 'd'	/* default; effectively same as IN */
 } FunctionParameterMode;
 
 typedef struct FunctionParameter
@@ -2975,13 +3011,19 @@ typedef struct InlineCodeBlock
 
 /* ----------------------
  *		CALL statement
+ *
+ * OUT-mode arguments are removed from the transformed funcexpr.  The outargs
+ * list contains copies of the expressions for all output arguments, in the
+ * order of the procedure's declared arguments.  (outargs is never evaluated,
+ * but is useful to the caller as a reference for what to assign to.)
  * ----------------------
  */
 typedef struct CallStmt
 {
 	NodeTag		type;
 	FuncCall   *funccall;		/* from the parser */
-	FuncExpr   *funcexpr;		/* transformed */
+	FuncExpr   *funcexpr;		/* transformed call, with only input args */
+	List	   *outargs;		/* transformed output-argument expressions */
 } CallStmt;
 
 typedef struct CallContext

@@ -180,7 +180,6 @@ typedef struct _dumpOptions
 
 	int			sequence_data;	/* dump sequence data even in schema-only mode */
 	int			do_nothing;
-	int			coll_unknown;
 } DumpOptions;
 
 /*
@@ -209,8 +208,6 @@ typedef struct Archive
 
 	/* other important stuff */
 	char	   *searchpath;		/* search_path to set during restore */
-	char	   *default_toast_compression;	/* default TOAST compression to
-											 * set during restore */
 	char	   *use_role;		/* Issue SET ROLE to this */
 
 	/* error handling */

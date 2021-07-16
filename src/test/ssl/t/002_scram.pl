@@ -1,3 +1,6 @@
+
+# Copyright (c) 2021, PostgreSQL Global Development Group
+
 # Test SCRAM authentication and TLS channel binding types
 
 use strict;
@@ -27,7 +30,7 @@ my $SERVERHOSTCIDR = '127.0.0.1/32';
 my $supports_tls_server_end_point =
   check_pg_config("#define HAVE_X509_GET_SIGNATURE_NID 1");
 
-my $number_of_tests = $supports_tls_server_end_point ? 9 : 10;
+my $number_of_tests = $supports_tls_server_end_point ? 11 : 12;
 
 # Allocation of base connection string shared among multiple tests.
 my $common_connstr;
@@ -101,6 +104,14 @@ $node->connect_fails(
 	expected_stderr =>
 	  qr/channel binding required, but server authenticated client without channel binding/
 );
+
+# Certificate verification at the connection level should still work fine.
+$node->connect_ok(
+	"sslcert=ssl/client.crt sslkey=$client_tmp_key sslrootcert=invalid hostaddr=$SERVERHOSTADDR dbname=verifydb user=ssltestuser",
+	"SCRAM with clientcert=verify-full",
+	log_like => [
+		qr/connection authenticated: identity="ssltestuser" method=scram-sha-256/
+	]);
 
 # clean up
 unlink($client_tmp_key);

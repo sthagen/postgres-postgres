@@ -414,7 +414,7 @@ perform_base_backup(basebackup_options *opt)
 			if (ti->path == NULL)
 			{
 				struct stat statbuf;
-				bool	sendtblspclinks = true;
+				bool		sendtblspclinks = true;
 
 				/* In the main tar, include the backup_label first... */
 				sendFileWithContent(BACKUP_LABEL_FILE, labelfile->data,
@@ -1676,7 +1676,7 @@ sendFile(const char *readfilename, const char *tarfilename,
 		{
 			ereport(WARNING,
 					(errmsg("could not verify checksum in file \"%s\", block "
-							"%d: read buffer size %d and page size %d "
+							"%u: read buffer size %d and page size %d "
 							"differ",
 							readfilename, blkno, (int) cnt, BLCKSZ)));
 			verify_checksum = false;
@@ -1749,7 +1749,7 @@ sendFile(const char *readfilename, const char *tarfilename,
 						if (checksum_failures <= 5)
 							ereport(WARNING,
 									(errmsg("checksum verification failed in "
-											"file \"%s\", block %d: calculated "
+											"file \"%s\", block %u: calculated "
 											"%X but expected %X",
 											readfilename, blkno, checksum,
 											phdr->pd_checksum)));

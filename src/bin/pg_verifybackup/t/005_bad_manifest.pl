@@ -1,3 +1,6 @@
+
+# Copyright (c) 2021, PostgreSQL Global Development Group
+
 # Test the behavior of pg_verifybackup when the backup manifest has
 # problems.
 
@@ -13,7 +16,7 @@ my $tempdir = TestLib::tempdir;
 
 test_bad_manifest(
 	'input string ended unexpectedly',
-	qr/could not parse backup manifest: The input string ended unexpectedly/,
+	qr/could not parse backup manifest: parsing failed/,
 	<<EOM);
 {
 EOM

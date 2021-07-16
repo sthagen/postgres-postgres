@@ -61,7 +61,7 @@ static LLVMValueRef build_EvalXFuncInt(LLVMBuilderRef b, LLVMModuleRef mod,
 									   const char *funcname,
 									   LLVMValueRef v_state,
 									   ExprEvalStep *op,
-									   int natts, LLVMValueRef v_args[]);
+									   int natts, LLVMValueRef *v_args);
 static LLVMValueRef create_LifetimeEnd(LLVMModuleRef mod);
 
 /* macro making it easier to call ExecEval* functions */
@@ -1836,6 +1836,12 @@ llvm_compile_expr(ExprState *state)
 				LLVMBuildBr(b, opblocks[opno + 1]);
 				break;
 
+			case EEOP_HASHED_SCALARARRAYOP:
+				build_EvalXFunc(b, mod, "ExecEvalHashedScalarArrayOp",
+								v_state, op, v_econtext);
+				LLVMBuildBr(b, opblocks[opno + 1]);
+				break;
+
 			case EEOP_XMLEXPR:
 				build_EvalXFunc(b, mod, "ExecEvalXmlExpr",
 								v_state, op);
@@ -2453,7 +2459,7 @@ BuildV1Call(LLVMJitContext *context, LLVMBuilderRef b,
 static LLVMValueRef
 build_EvalXFuncInt(LLVMBuilderRef b, LLVMModuleRef mod, const char *funcname,
 				   LLVMValueRef v_state, ExprEvalStep *op,
-				   int nargs, LLVMValueRef v_args[])
+				   int nargs, LLVMValueRef *v_args)
 {
 	LLVMValueRef v_fn = llvm_pg_func(mod, funcname);
 	LLVMValueRef *params;

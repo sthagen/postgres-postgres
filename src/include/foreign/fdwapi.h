@@ -87,10 +87,10 @@ typedef TupleTableSlot *(*ExecForeignInsert_function) (EState *estate,
 													   TupleTableSlot *planSlot);
 
 typedef TupleTableSlot **(*ExecForeignBatchInsert_function) (EState *estate,
-													   ResultRelInfo *rinfo,
-													   TupleTableSlot **slots,
-													   TupleTableSlot **planSlots,
-													   int *numSlots);
+															 ResultRelInfo *rinfo,
+															 TupleTableSlot **slots,
+															 TupleTableSlot **planSlots,
+															 int *numSlots);
 
 typedef int (*GetForeignModifyBatchSize_function) (ResultRelInfo *rinfo);
 
@@ -159,6 +159,10 @@ typedef bool (*AnalyzeForeignTable_function) (Relation relation,
 
 typedef List *(*ImportForeignSchema_function) (ImportForeignSchemaStmt *stmt,
 											   Oid serverOid);
+
+typedef void (*ExecForeignTruncate_function) (List *rels,
+											  DropBehavior behavior,
+											  bool restart_seqs);
 
 typedef Size (*EstimateDSMForeignScan_function) (ForeignScanState *node,
 												 ParallelContext *pcxt);
@@ -254,6 +258,9 @@ typedef struct FdwRoutine
 
 	/* Support functions for IMPORT FOREIGN SCHEMA */
 	ImportForeignSchema_function ImportForeignSchema;
+
+	/* Support functions for TRUNCATE */
+	ExecForeignTruncate_function ExecForeignTruncate;
 
 	/* Support functions for parallelism under Gather node */
 	IsForeignScanParallelSafe_function IsForeignScanParallelSafe;

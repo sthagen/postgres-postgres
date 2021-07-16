@@ -27,6 +27,7 @@
 #include "catalog/pg_db_role_setting.h"
 #include "commands/comment.h"
 #include "commands/dbcommands.h"
+#include "commands/defrem.h"
 #include "commands/seclabel.h"
 #include "commands/user.h"
 #include "libpq/crypt.h"
@@ -128,10 +129,7 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 		if (strcmp(defel->defname, "password") == 0)
 		{
 			if (dpassword)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dpassword = defel;
 		}
 		else if (strcmp(defel->defname, "sysid") == 0)
@@ -142,109 +140,73 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 		else if (strcmp(defel->defname, "superuser") == 0)
 		{
 			if (dissuper)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dissuper = defel;
 		}
 		else if (strcmp(defel->defname, "inherit") == 0)
 		{
 			if (dinherit)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dinherit = defel;
 		}
 		else if (strcmp(defel->defname, "createrole") == 0)
 		{
 			if (dcreaterole)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dcreaterole = defel;
 		}
 		else if (strcmp(defel->defname, "createdb") == 0)
 		{
 			if (dcreatedb)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dcreatedb = defel;
 		}
 		else if (strcmp(defel->defname, "canlogin") == 0)
 		{
 			if (dcanlogin)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dcanlogin = defel;
 		}
 		else if (strcmp(defel->defname, "isreplication") == 0)
 		{
 			if (disreplication)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			disreplication = defel;
 		}
 		else if (strcmp(defel->defname, "connectionlimit") == 0)
 		{
 			if (dconnlimit)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dconnlimit = defel;
 		}
 		else if (strcmp(defel->defname, "addroleto") == 0)
 		{
 			if (daddroleto)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			daddroleto = defel;
 		}
 		else if (strcmp(defel->defname, "rolemembers") == 0)
 		{
 			if (drolemembers)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			drolemembers = defel;
 		}
 		else if (strcmp(defel->defname, "adminmembers") == 0)
 		{
 			if (dadminmembers)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dadminmembers = defel;
 		}
 		else if (strcmp(defel->defname, "validUntil") == 0)
 		{
 			if (dvalidUntil)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dvalidUntil = defel;
 		}
 		else if (strcmp(defel->defname, "bypassrls") == 0)
 		{
 			if (dbypassRLS)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			dbypassRLS = defel;
 		}
 		else
@@ -528,7 +490,7 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
  * "ALTER ROLE role ROLE rolenames", we don't document it.
  */
 Oid
-AlterRole(AlterRoleStmt *stmt)
+AlterRole(ParseState *pstate, AlterRoleStmt *stmt)
 {
 	Datum		new_record[Natts_pg_authid];
 	bool		new_record_nulls[Natts_pg_authid];
@@ -577,90 +539,68 @@ AlterRole(AlterRoleStmt *stmt)
 		if (strcmp(defel->defname, "password") == 0)
 		{
 			if (dpassword)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			dpassword = defel;
 		}
 		else if (strcmp(defel->defname, "superuser") == 0)
 		{
 			if (dissuper)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			dissuper = defel;
 		}
 		else if (strcmp(defel->defname, "inherit") == 0)
 		{
 			if (dinherit)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			dinherit = defel;
 		}
 		else if (strcmp(defel->defname, "createrole") == 0)
 		{
 			if (dcreaterole)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			dcreaterole = defel;
 		}
 		else if (strcmp(defel->defname, "createdb") == 0)
 		{
 			if (dcreatedb)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			dcreatedb = defel;
 		}
 		else if (strcmp(defel->defname, "canlogin") == 0)
 		{
 			if (dcanlogin)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			dcanlogin = defel;
 		}
 		else if (strcmp(defel->defname, "isreplication") == 0)
 		{
 			if (disreplication)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			disreplication = defel;
 		}
 		else if (strcmp(defel->defname, "connectionlimit") == 0)
 		{
 			if (dconnlimit)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			dconnlimit = defel;
 		}
 		else if (strcmp(defel->defname, "rolemembers") == 0 &&
 				 stmt->action != 0)
 		{
 			if (drolemembers)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			drolemembers = defel;
 		}
 		else if (strcmp(defel->defname, "validUntil") == 0)
 		{
 			if (dvalidUntil)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			dvalidUntil = defel;
 		}
 		else if (strcmp(defel->defname, "bypassrls") == 0)
 		{
 			if (dbypassRLS)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			dbypassRLS = defel;
 		}
 		else
@@ -1501,10 +1441,10 @@ AddRoleMems(const char *rolename, Oid roleid,
 	 * situation-dependent member.  There's no technical need for this
 	 * restriction.  (One could lift it and take the further step of making
 	 * pg_database_ownercheck() equivalent to has_privs_of_role(roleid,
-	 * ROLE_DATABASE_OWNER), in which case explicit,
-	 * situation-independent members could act as the owner of any database.)
+	 * ROLE_PG_DATABASE_OWNER), in which case explicit, situation-independent
+	 * members could act as the owner of any database.)
 	 */
-	if (roleid == ROLE_DATABASE_OWNER)
+	if (roleid == ROLE_PG_DATABASE_OWNER)
 		ereport(ERROR,
 				errmsg("role \"%s\" cannot have explicit members", rolename));
 
@@ -1555,7 +1495,7 @@ AddRoleMems(const char *rolename, Oid roleid,
 		 * shared object.  (The effect of such ownership is that any owner of
 		 * another database can act as the owner of affected shared objects.)
 		 */
-		if (memberid == ROLE_DATABASE_OWNER)
+		if (memberid == ROLE_PG_DATABASE_OWNER)
 			ereport(ERROR,
 					errmsg("role \"%s\" cannot be a member of any role",
 						   get_rolespec_name(memberRole)));

@@ -36,8 +36,7 @@ typedef enum DependencyType
 	DEPENDENCY_PARTITION_PRI = 'P',
 	DEPENDENCY_PARTITION_SEC = 'S',
 	DEPENDENCY_EXTENSION = 'e',
-	DEPENDENCY_AUTO_EXTENSION = 'x',
-	DEPENDENCY_PIN = 'p'
+	DEPENDENCY_AUTO_EXTENSION = 'x'
 } DependencyType;
 
 /*
@@ -47,27 +46,21 @@ typedef enum DependencyType
  * unless the dependent object is dropped at the same time.  There are some
  * additional rules however:
  *
- * (a) For a SHARED_DEPENDENCY_PIN entry, there is no dependent object --
- * rather, the referenced object is an essential part of the system.  This
- * applies to the initdb-created superuser.  Entries of this type are only
- * created by initdb; objects in this category don't need further pg_shdepend
- * entries if more objects come to depend on them.
- *
- * (b) a SHARED_DEPENDENCY_OWNER entry means that the referenced object is
+ * (a) a SHARED_DEPENDENCY_OWNER entry means that the referenced object is
  * the role owning the dependent object.  The referenced object must be
  * a pg_authid entry.
  *
- * (c) a SHARED_DEPENDENCY_ACL entry means that the referenced object is
+ * (b) a SHARED_DEPENDENCY_ACL entry means that the referenced object is
  * a role mentioned in the ACL field of the dependent object.  The referenced
  * object must be a pg_authid entry.  (SHARED_DEPENDENCY_ACL entries are not
  * created for the owner of an object; hence two objects may be linked by
  * one or the other, but not both, of these dependency types.)
  *
- * (d) a SHARED_DEPENDENCY_POLICY entry means that the referenced object is
+ * (c) a SHARED_DEPENDENCY_POLICY entry means that the referenced object is
  * a role mentioned in a policy object.  The referenced object must be a
  * pg_authid entry.
  *
- * (e) a SHARED_DEPENDENCY_TABLESPACE entry means that the referenced
+ * (d) a SHARED_DEPENDENCY_TABLESPACE entry means that the referenced
  * object is a tablespace mentioned in a relation without storage.  The
  * referenced object must be a pg_tablespace entry.  (Relations that have
  * storage don't need this: they are protected by the existence of a physical
@@ -78,7 +71,6 @@ typedef enum DependencyType
  */
 typedef enum SharedDependencyType
 {
-	SHARED_DEPENDENCY_PIN = 'p',
 	SHARED_DEPENDENCY_OWNER = 'o',
 	SHARED_DEPENDENCY_ACL = 'a',
 	SHARED_DEPENDENCY_POLICY = 'r',
@@ -167,8 +159,7 @@ extern void recordDependencyOnSingleRelExpr(const ObjectAddress *depender,
 											Node *expr, Oid relId,
 											DependencyType behavior,
 											DependencyType self_behavior,
-											bool reverse_self,
-											bool record_version);
+											bool reverse_self);
 
 extern ObjectClass getObjectClass(const ObjectAddress *object);
 
@@ -188,30 +179,16 @@ extern void sort_object_addresses(ObjectAddresses *addrs);
 
 extern void free_object_addresses(ObjectAddresses *addrs);
 
-typedef bool(*VisitDependenciesOfCB) (const ObjectAddress *otherObject,
-									  const char *version,
-									  char **new_version,
-									  void *data);
-
-extern void visitDependenciesOf(const ObjectAddress *object,
-								VisitDependenciesOfCB callback,
-								void *data);
-
 /* in pg_depend.c */
 
 extern void recordDependencyOn(const ObjectAddress *depender,
 							   const ObjectAddress *referenced,
 							   DependencyType behavior);
 
-extern void recordDependencyOnCollations(ObjectAddress *myself,
-										 List *collations,
-										 bool record_version);
-
 extern void recordMultipleDependencies(const ObjectAddress *depender,
 									   const ObjectAddress *referenced,
 									   int nreferenced,
-									   DependencyType behavior,
-									   bool record_version);
+									   DependencyType behavior);
 
 extern void recordDependencyOnCurrentExtension(const ObjectAddress *object,
 											   bool isReplace);
@@ -232,6 +209,7 @@ extern long changeDependencyFor(Oid classId, Oid objectId,
 
 extern long changeDependenciesOf(Oid classId, Oid oldObjectId,
 								 Oid newObjectId);
+
 extern long changeDependenciesOn(Oid refClassId, Oid oldRefObjectId,
 								 Oid newRefObjectId);
 

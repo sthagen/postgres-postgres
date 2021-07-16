@@ -142,6 +142,8 @@ typedef struct _dumpableObject
 typedef struct _namespaceInfo
 {
 	DumpableObject dobj;
+	bool		create;			/* CREATE SCHEMA, or just set owner? */
+	Oid			nspowner;
 	char	   *rolname;		/* name of owner, or empty string */
 	char	   *nspacl;
 	char	   *rnspacl;
@@ -376,8 +378,6 @@ typedef struct _indxInfo
 	int			indnattrs;		/* total number of index attributes */
 	Oid		   *indkeys;		/* In spite of the name 'indkeys' this field
 								 * contains both key and nonkey attributes */
-	char	   *inddependcollnames; /* FQ names of depended-on collations */
-	char	   *inddependcollversions;	/* versions of the above */
 	bool		indisclustered;
 	bool		indisreplident;
 	Oid			parentidx;		/* if a partition, parent index OID */
@@ -639,6 +639,7 @@ typedef struct _SubscriptionInfo
 	char	   *subslotname;
 	char	   *subbinary;
 	char	   *substream;
+	char	   *subtwophasestate;
 	char	   *subsynccommit;
 	char	   *subpublications;
 } SubscriptionInfo;

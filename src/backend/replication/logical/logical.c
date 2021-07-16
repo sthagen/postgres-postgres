@@ -207,7 +207,7 @@ StartupDecodingContext(List *output_plugin_options,
 	ctx->reorder = ReorderBufferAllocate();
 	ctx->snapshot_builder =
 		AllocateSnapshotBuilder(ctx->reorder, xmin_horizon, start_lsn,
-								need_full_snapshot, slot->data.initial_consistent_point);
+								need_full_snapshot, slot->data.two_phase_at);
 
 	ctx->reorder->private_data = ctx;
 
@@ -432,10 +432,12 @@ CreateInitDecodingContext(const char *plugin,
 	MemoryContextSwitchTo(old_context);
 
 	/*
-	 * We allow decoding of prepared transactions iff the two_phase option is
-	 * enabled at the time of slot creation.
+	 * We allow decoding of prepared transactions when the two_phase is
+	 * enabled at the time of slot creation, or when the two_phase option is
+	 * given at the streaming start, provided the plugin supports all the
+	 * callbacks for two-phase.
 	 */
-	ctx->twophase &= MyReplicationSlot->data.two_phase;
+	ctx->twophase &= slot->data.two_phase;
 
 	ctx->reorder->output_rewrites = ctx->options.receive_rewrites;
 
@@ -538,10 +540,22 @@ CreateDecodingContext(XLogRecPtr start_lsn,
 	MemoryContextSwitchTo(old_context);
 
 	/*
-	 * We allow decoding of prepared transactions iff the two_phase option is
-	 * enabled at the time of slot creation.
+	 * We allow decoding of prepared transactions when the two_phase is
+	 * enabled at the time of slot creation, or when the two_phase option is
+	 * given at the streaming start, provided the plugin supports all the
+	 * callbacks for two-phase.
 	 */
-	ctx->twophase &= MyReplicationSlot->data.two_phase;
+	ctx->twophase &= (slot->data.two_phase || ctx->twophase_opt_given);
+
+	/* Mark slot to allow two_phase decoding if not already marked */
+	if (ctx->twophase && !slot->data.two_phase)
+	{
+		slot->data.two_phase = true;
+		slot->data.two_phase_at = start_lsn;
+		ReplicationSlotMarkDirty();
+		ReplicationSlotSave();
+		SnapBuildSetTwoPhaseAt(ctx->snapshot_builder, start_lsn);
+	}
 
 	ctx->reorder->output_rewrites = ctx->options.receive_rewrites;
 
@@ -602,7 +616,8 @@ DecodingContextFindStartpoint(LogicalDecodingContext *ctx)
 
 	SpinLockAcquire(&slot->mutex);
 	slot->data.confirmed_flush = ctx->reader->EndRecPtr;
-	slot->data.initial_consistent_point = ctx->reader->EndRecPtr;
+	if (slot->data.two_phase)
+		slot->data.two_phase_at = ctx->reader->EndRecPtr;
 	SpinLockRelease(&slot->mutex);
 }
 
@@ -865,7 +880,8 @@ begin_prepare_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn)
 	if (ctx->callbacks.begin_prepare_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical replication at prepare time requires begin_prepare_cb callback")));
+				 errmsg("logical replication at prepare time requires a %s callback",
+						"begin_prepare_cb")));
 
 	/* do the actual work: call callback */
 	ctx->callbacks.begin_prepare_cb(ctx, txn);
@@ -908,7 +924,8 @@ prepare_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	if (ctx->callbacks.prepare_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical replication at prepare time requires prepare_cb callback")));
+				 errmsg("logical replication at prepare time requires a %s callback",
+						"prepare_cb")));
 
 	/* do the actual work: call callback */
 	ctx->callbacks.prepare_cb(ctx, txn, prepare_lsn);
@@ -951,7 +968,8 @@ commit_prepared_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	if (ctx->callbacks.commit_prepared_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical replication at prepare time requires commit_prepared_cb callback")));
+				 errmsg("logical replication at prepare time requires a %s callback",
+						"commit_prepared_cb")));
 
 	/* do the actual work: call callback */
 	ctx->callbacks.commit_prepared_cb(ctx, txn, commit_lsn);
@@ -995,7 +1013,8 @@ rollback_prepared_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	if (ctx->callbacks.rollback_prepared_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical replication at prepare time requires rollback_prepared_cb callback")));
+				 errmsg("logical replication at prepare time requires a %s callback",
+						"rollback_prepared_cb")));
 
 	/* do the actual work: call callback */
 	ctx->callbacks.rollback_prepared_cb(ctx, txn, prepare_end_lsn,
@@ -1217,7 +1236,8 @@ stream_start_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	if (ctx->callbacks.stream_start_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical streaming requires a stream_start_cb callback")));
+				 errmsg("logical streaming requires a %s callback",
+						"stream_start_cb")));
 
 	ctx->callbacks.stream_start_cb(ctx, txn);
 
@@ -1263,7 +1283,8 @@ stream_stop_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	if (ctx->callbacks.stream_stop_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical streaming requires a stream_stop_cb callback")));
+				 errmsg("logical streaming requires a %s callback",
+						"stream_stop_cb")));
 
 	ctx->callbacks.stream_stop_cb(ctx, txn);
 
@@ -1302,7 +1323,8 @@ stream_abort_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	if (ctx->callbacks.stream_abort_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical streaming requires a stream_abort_cb callback")));
+				 errmsg("logical streaming requires a %s callback",
+						"stream_abort_cb")));
 
 	ctx->callbacks.stream_abort_cb(ctx, txn, abort_lsn);
 
@@ -1345,7 +1367,8 @@ stream_prepare_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	if (ctx->callbacks.stream_prepare_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical streaming at prepare time requires a stream_prepare_cb callback")));
+				 errmsg("logical streaming at prepare time requires a %s callback",
+						"stream_prepare_cb")));
 
 	ctx->callbacks.stream_prepare_cb(ctx, txn, prepare_lsn);
 
@@ -1384,7 +1407,8 @@ stream_commit_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	if (ctx->callbacks.stream_commit_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical streaming requires a stream_commit_cb callback")));
+				 errmsg("logical streaming requires a %s callback",
+						"stream_commit_cb")));
 
 	ctx->callbacks.stream_commit_cb(ctx, txn, commit_lsn);
 
@@ -1430,7 +1454,8 @@ stream_change_cb_wrapper(ReorderBuffer *cache, ReorderBufferTXN *txn,
 	if (ctx->callbacks.stream_change_cb == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical streaming requires a stream_change_cb callback")));
+				 errmsg("logical streaming requires a %s callback",
+						"stream_change_cb")));
 
 	ctx->callbacks.stream_change_cb(ctx, txn, relation, change);
 
@@ -1763,30 +1788,41 @@ void
 UpdateDecodingStats(LogicalDecodingContext *ctx)
 {
 	ReorderBuffer *rb = ctx->reorder;
+	PgStat_StatReplSlotEntry repSlotStat;
 
-	/*
-	 * Nothing to do if we haven't spilled or streamed anything since the last
-	 * time the stats has been sent.
-	 */
-	if (rb->spillBytes <= 0 && rb->streamBytes <= 0)
+	/* Nothing to do if we don't have any replication stats to be sent. */
+	if (rb->spillBytes <= 0 && rb->streamBytes <= 0 && rb->totalBytes <= 0)
 		return;
 
-	elog(DEBUG2, "UpdateDecodingStats: updating stats %p %lld %lld %lld %lld %lld %lld",
+	elog(DEBUG2, "UpdateDecodingStats: updating stats %p %lld %lld %lld %lld %lld %lld %lld %lld",
 		 rb,
 		 (long long) rb->spillTxns,
 		 (long long) rb->spillCount,
 		 (long long) rb->spillBytes,
 		 (long long) rb->streamTxns,
 		 (long long) rb->streamCount,
-		 (long long) rb->streamBytes);
+		 (long long) rb->streamBytes,
+		 (long long) rb->totalTxns,
+		 (long long) rb->totalBytes);
 
-	pgstat_report_replslot(NameStr(ctx->slot->data.name),
-						   rb->spillTxns, rb->spillCount, rb->spillBytes,
-						   rb->streamTxns, rb->streamCount, rb->streamBytes);
+	namestrcpy(&repSlotStat.slotname, NameStr(ctx->slot->data.name));
+	repSlotStat.spill_txns = rb->spillTxns;
+	repSlotStat.spill_count = rb->spillCount;
+	repSlotStat.spill_bytes = rb->spillBytes;
+	repSlotStat.stream_txns = rb->streamTxns;
+	repSlotStat.stream_count = rb->streamCount;
+	repSlotStat.stream_bytes = rb->streamBytes;
+	repSlotStat.total_txns = rb->totalTxns;
+	repSlotStat.total_bytes = rb->totalBytes;
+
+	pgstat_report_replslot(&repSlotStat);
+
 	rb->spillTxns = 0;
 	rb->spillCount = 0;
 	rb->spillBytes = 0;
 	rb->streamTxns = 0;
 	rb->streamCount = 0;
 	rb->streamBytes = 0;
+	rb->totalTxns = 0;
+	rb->totalBytes = 0;
 }

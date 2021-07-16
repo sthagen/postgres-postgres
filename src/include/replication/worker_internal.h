@@ -62,7 +62,7 @@ typedef struct LogicalRepWorker
 extern MemoryContext ApplyContext;
 
 /* libpqreceiver connection */
-extern struct WalReceiverConn *wrconn;
+extern struct WalReceiverConn *LogRepWorkerWalRcvConn;
 
 /* Worker and subscription objects. */
 extern Subscription *MySubscription;
@@ -85,6 +85,9 @@ extern int	logicalrep_sync_worker_count(Oid subid);
 extern void ReplicationOriginNameForTablesync(Oid suboid, Oid relid,
 											  char *originname, int szorgname);
 extern char *LogicalRepSyncTableStart(XLogRecPtr *origin_startpos);
+
+extern bool AllTablesyncsReady(void);
+extern void UpdateTwoPhaseState(Oid suboid, char new_state);
 
 void		process_syncing_tables(XLogRecPtr current_lsn);
 void		invalidate_syncing_table_states(Datum arg, int cacheid,

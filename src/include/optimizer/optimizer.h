@@ -146,12 +146,15 @@ extern bool contain_volatile_functions_not_nextval(Node *clause);
 
 extern Node *eval_const_expressions(PlannerInfo *root, Node *node);
 
+extern void convert_saop_to_hashed_saop(Node *node);
+
 extern Node *estimate_expression_value(PlannerInfo *root, Node *node);
 
 extern Expr *evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
 						   Oid result_collation);
 
-extern List *expand_function_arguments(List *args, Oid result_type,
+extern List *expand_function_arguments(List *args, bool include_out_arguments,
+									   Oid result_type,
 									   struct HeapTupleData *func_tuple);
 
 /* in util/predtest.c: */

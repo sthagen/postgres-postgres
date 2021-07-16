@@ -910,6 +910,22 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       </para></entry>
      </row>
 
+    <row>
+     <entry role="catalog_table_entry"><para role="column_definition">
+      <structfield>query_id</structfield> <type>bigint</type>
+     </para>
+     <para>
+      Identifier of this backend's most recent query. If
+      <structfield>state</structfield> is <literal>active</literal> this
+      field shows the identifier of the currently executing query. In
+      all other states, it shows the identifier of last query that was
+      executed.  Query identifiers are not computed by default so this
+      field will be null unless <xref linkend="guc-compute-query-id"/>
+      parameter is enabled or a third-party module that computes query
+      identifiers is configured.
+     </para></entry>
+    </row>
+
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>query</structfield> <type>text</type>
@@ -1569,6 +1585,10 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry>Waiting for subplan nodes of an <literal>Append</literal> plan
        node to be ready.</entry>
      </row>
+    <row>
+      <entry><literal>BackendTermination</literal></entry>
+      <entry>Waiting for the termination of another backend.</entry>
+     </row>
      <row>
       <entry><literal>BackupWaitWalArchive</literal></entry>
       <entry>Waiting for WAL files required for a backup to be successfully
@@ -2222,6 +2242,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry><literal>VacuumDelay</literal></entry>
       <entry>Waiting in a cost-based vacuum delay point.</entry>
      </row>
+     <row>
+      <entry><literal>VacuumTruncate</literal></entry>
+      <entry>Waiting to acquire an exclusive lock to truncate off any
+       empty pages at the end of a table vacuumed.</entry>
+     </row>
     </tbody>
    </tgroup>
   </table>
@@ -2681,10 +2706,34 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
         <structfield>stream_bytes</structfield><type>bigint</type>
        </para>
        <para>
-        Amount of decoded in-progress transaction data streamed to the decoding
-        output plugin while decoding changes from WAL for this slot. This and other
-        streaming counters for this slot can be used to gauge the network I/O which
-        occurred during logical decoding and allow tuning <literal>logical_decoding_work_mem</literal>.
+        Amount of transaction data decoded for streaming in-progress
+        transactions to the decoding output plugin while decoding changes from
+        WAL for this slot. This and other streaming counters for this slot can
+        be used to tune <literal>logical_decoding_work_mem</literal>.
+       </para>
+      </entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>total_txns</structfield> <type>bigint</type>
+       </para>
+       <para>
+        Number of decoded transactions sent to the decoding output plugin for
+        this slot. This counts toplevel transactions only, and is not incremented
+        for subtransactions. Note that this includes the transactions that are
+        streamed and/or spilled.
+       </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>total_bytes</structfield><type>bigint</type>
+       </para>
+       <para>
+        Amount of transaction data decoded for sending transactions to the
+        decoding output plugin while decoding changes from WAL for this slot.
+        Note that this includes data that is streamed and/or spilled.
        </para>
       </entry>
      </row>
@@ -3668,7 +3717,7 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
        <structfield>tup_returned</structfield> <type>bigint</type>
       </para>
       <para>
-       Number of rows returned by queries in this database
+       Number of live rows fetched by sequential scans and index entries returned by index scans in this database
       </para></entry>
      </row>
 
@@ -3677,7 +3726,7 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
        <structfield>tup_fetched</structfield> <type>bigint</type>
       </para>
       <para>
-       Number of rows fetched by queries in this database
+       Number of live rows fetched by index scans in this database
       </para></entry>
      </row>
 
@@ -5788,7 +5837,7 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
       </para>
       <para>
        When creating an index on a partitioned table, this column is set to
-       the number of partitions on which the index has been completed.
+       the number of partitions on which the index has been created.
        This field is <literal>0</literal> during a <literal>REINDEX</literal>.
       </para></entry>
      </row>

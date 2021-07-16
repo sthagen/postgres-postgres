@@ -104,7 +104,7 @@ typedef struct CopyToStateData
 typedef struct
 {
 	DestReceiver pub;			/* publicly-known function pointers */
-	CopyToState	cstate;			/* CopyToStateData for the command */
+	CopyToState cstate;			/* CopyToStateData for the command */
 	uint64		processed;		/* # of tuples processed */
 } DR_copy;
 
@@ -348,7 +348,7 @@ BeginCopyTo(ParseState *pstate,
 			List *attnamelist,
 			List *options)
 {
-	CopyToState	cstate;
+	CopyToState cstate;
 	bool		pipe = (filename == NULL);
 	TupleDesc	tupDesc;
 	int			num_phys_attrs;
@@ -415,7 +415,7 @@ BeginCopyTo(ParseState *pstate,
 	oldcontext = MemoryContextSwitchTo(cstate->copycontext);
 
 	/* Extract options from the statement node tree */
-	ProcessCopyOptions(pstate, &cstate->opts, false /* is_from */, options);
+	ProcessCopyOptions(pstate, &cstate->opts, false /* is_from */ , options);
 
 	/* Process the source/target relation or query */
 	if (rel)
@@ -438,14 +438,8 @@ BeginCopyTo(ParseState *pstate,
 		/*
 		 * Run parse analysis and rewrite.  Note this also acquires sufficient
 		 * locks on the source table(s).
-		 *
-		 * Because the parser and planner tend to scribble on their input, we
-		 * make a preliminary copy of the source querytree.  This prevents
-		 * problems in the case that the COPY is in a portal or plpgsql
-		 * function and is executed repeatedly.  (See also the same hack in
-		 * DECLARE CURSOR and PREPARE.)  XXX FIXME someday.
 		 */
-		rewritten = pg_analyze_and_rewrite(copyObject(raw_query),
+		rewritten = pg_analyze_and_rewrite(raw_query,
 										   pstate->p_sourcetext, NULL, 0,
 										   NULL);
 
@@ -512,7 +506,7 @@ BeginCopyTo(ParseState *pstate,
 							 CURSOR_OPT_PARALLEL_OK, NULL);
 
 		/*
-		 * With row level security and a user using "COPY relation TO", we
+		 * With row-level security and a user using "COPY relation TO", we
 		 * have to convert the "COPY relation TO" to a query-based COPY (eg:
 		 * "COPY (SELECT * FROM relation) TO"), to allow the rewriter to add
 		 * in any RLS clauses.
@@ -793,7 +787,7 @@ DoCopyTo(CopyToState cstate)
 	else
 		tupDesc = cstate->queryDesc->tupDesc;
 	num_phys_attrs = tupDesc->natts;
-	cstate->opts.null_print_client = cstate->opts.null_print; /* default */
+	cstate->opts.null_print_client = cstate->opts.null_print;	/* default */
 
 	/* We use fe_msgbuf as a per-row buffer regardless of copy_dest */
 	cstate->fe_msgbuf = makeStringInfo();
@@ -850,8 +844,8 @@ DoCopyTo(CopyToState cstate)
 		 */
 		if (cstate->need_transcoding)
 			cstate->opts.null_print_client = pg_server_to_any(cstate->opts.null_print,
-														 cstate->opts.null_print_len,
-														 cstate->file_encoding);
+															  cstate->opts.null_print_len,
+															  cstate->file_encoding);
 
 		/* if a header has been requested send the line */
 		if (cstate->opts.header_line)
@@ -1265,7 +1259,7 @@ static bool
 copy_dest_receive(TupleTableSlot *slot, DestReceiver *self)
 {
 	DR_copy    *myState = (DR_copy *) self;
-	CopyToState	cstate = myState->cstate;
+	CopyToState cstate = myState->cstate;
 
 	/* Send the data */
 	CopyOneRowTo(cstate, slot);

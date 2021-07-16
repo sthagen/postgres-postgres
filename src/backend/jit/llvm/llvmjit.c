@@ -769,9 +769,9 @@ llvm_compile_module(LLVMJitContext *context)
 
 	ereport(DEBUG1,
 			(errmsg_internal("time to inline: %.3fs, opt: %.3fs, emit: %.3fs",
-					INSTR_TIME_GET_DOUBLE(context->base.instr.inlining_counter),
-					INSTR_TIME_GET_DOUBLE(context->base.instr.optimization_counter),
-					INSTR_TIME_GET_DOUBLE(context->base.instr.emission_counter)),
+							 INSTR_TIME_GET_DOUBLE(context->base.instr.inlining_counter),
+							 INSTR_TIME_GET_DOUBLE(context->base.instr.optimization_counter),
+							 INSTR_TIME_GET_DOUBLE(context->base.instr.emission_counter)),
 			 errhidestmt(true),
 			 errhidecontext(true)));
 }
@@ -1094,7 +1094,7 @@ llvm_resolve_symbol(const char *symname, void *ctx)
 
 static LLVMErrorRef
 llvm_resolve_symbols(LLVMOrcDefinitionGeneratorRef GeneratorObj, void *Ctx,
-					 LLVMOrcLookupStateRef *LookupState, LLVMOrcLookupKind Kind,
+					 LLVMOrcLookupStateRef * LookupState, LLVMOrcLookupKind Kind,
 					 LLVMOrcJITDylibRef JD, LLVMOrcJITDylibLookupFlags JDLookupFlags,
 					 LLVMOrcCLookupSet LookupSet, size_t LookupSetSize)
 {
@@ -1106,6 +1106,9 @@ llvm_resolve_symbols(LLVMOrcDefinitionGeneratorRef GeneratorObj, void *Ctx,
 	{
 		const char *name = LLVMOrcSymbolStringPoolEntryStr(LookupSet[i].Name);
 
+#if LLVM_VERSION_MAJOR > 12
+		LLVMOrcRetainSymbolStringPoolEntry(LookupSet[i].Name);
+#endif
 		symbols[i].Name = LookupSet[i].Name;
 		symbols[i].Sym.Address = llvm_resolve_symbol(name, NULL);
 		symbols[i].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;

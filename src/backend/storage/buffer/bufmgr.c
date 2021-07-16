@@ -589,9 +589,6 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 	Assert(RelationIsValid(reln));
 	Assert(BlockNumberIsValid(blockNum));
 
-	/* Open it at the smgr level if not already done */
-	RelationOpenSmgr(reln);
-
 	if (RelationUsesLocalBuffers(reln))
 	{
 		/* see comments in ReadBufferExtended */
@@ -601,15 +598,93 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 					 errmsg("cannot access temporary tables of other sessions")));
 
 		/* pass it off to localbuf.c */
-		return PrefetchLocalBuffer(reln->rd_smgr, forkNum, blockNum);
+		return PrefetchLocalBuffer(RelationGetSmgr(reln), forkNum, blockNum);
 	}
 	else
 	{
 		/* pass it to the shared buffer version */
-		return PrefetchSharedBuffer(reln->rd_smgr, forkNum, blockNum);
+		return PrefetchSharedBuffer(RelationGetSmgr(reln), forkNum, blockNum);
 	}
 }
 
+/*
+ * ReadRecentBuffer -- try to pin a block in a recently observed buffer
+ *
+ * Compared to ReadBuffer(), this avoids a buffer mapping lookup when it's
+ * successful.  Return true if the buffer is valid and still has the expected
+ * tag.  In that case, the buffer is pinned and the usage count is bumped.
+ */
+bool
+ReadRecentBuffer(RelFileNode rnode, ForkNumber forkNum, BlockNumber blockNum,
+				 Buffer recent_buffer)
+{
+	BufferDesc *bufHdr;
+	BufferTag	tag;
+	uint32		buf_state;
+	bool		have_private_ref;
+
+	Assert(BufferIsValid(recent_buffer));
+
+	ResourceOwnerEnlargeBuffers(CurrentResourceOwner);
+	ReservePrivateRefCountEntry();
+	INIT_BUFFERTAG(tag, rnode, forkNum, blockNum);
+
+	if (BufferIsLocal(recent_buffer))
+	{
+		bufHdr = GetBufferDescriptor(-recent_buffer - 1);
+		buf_state = pg_atomic_read_u32(&bufHdr->state);
+
+		/* Is it still valid and holding the right tag? */
+		if ((buf_state & BM_VALID) && BUFFERTAGS_EQUAL(tag, bufHdr->tag))
+		{
+			/* Bump local buffer's ref and usage counts. */
+			ResourceOwnerRememberBuffer(CurrentResourceOwner, recent_buffer);
+			LocalRefCount[-recent_buffer - 1]++;
+			if (BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
+				pg_atomic_write_u32(&bufHdr->state,
+									buf_state + BUF_USAGECOUNT_ONE);
+
+			return true;
+		}
+	}
+	else
+	{
+		bufHdr = GetBufferDescriptor(recent_buffer - 1);
+		have_private_ref = GetPrivateRefCount(recent_buffer) > 0;
+
+		/*
+		 * Do we already have this buffer pinned with a private reference?  If
+		 * so, it must be valid and it is safe to check the tag without
+		 * locking.  If not, we have to lock the header first and then check.
+		 */
+		if (have_private_ref)
+			buf_state = pg_atomic_read_u32(&bufHdr->state);
+		else
+			buf_state = LockBufHdr(bufHdr);
+
+		if ((buf_state & BM_VALID) && BUFFERTAGS_EQUAL(tag, bufHdr->tag))
+		{
+			/*
+			 * It's now safe to pin the buffer.  We can't pin first and ask
+			 * questions later, because because it might confuse code paths
+			 * like InvalidateBuffer() if we pinned a random non-matching
+			 * buffer.
+			 */
+			if (have_private_ref)
+				PinBuffer(bufHdr, NULL);	/* bump pin count */
+			else
+				PinBuffer_Locked(bufHdr);	/* pin for first time */
+
+			return true;
+		}
+
+		/* If we locked the header above, now unlock. */
+		if (!have_private_ref)
+			UnlockBufHdr(bufHdr, buf_state);
+	}
+
+	return false;
+}
 
 /*
  * ReadBuffer -- a shorthand for ReadBufferExtended, for reading from main
@@ -669,9 +744,6 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 	bool		hit;
 	Buffer		buf;
 
-	/* Open it at the smgr level if not already done */
-	RelationOpenSmgr(reln);
-
 	/*
 	 * Reject attempts to read non-local temporary relations; we would be
 	 * likely to get wrong data since we have no visibility into the owning
@@ -687,7 +759,7 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 	 * miss.
 	 */
 	pgstat_count_buffer_read(reln);
-	buf = ReadBuffer_common(reln->rd_smgr, reln->rd_rel->relpersistence,
+	buf = ReadBuffer_common(RelationGetSmgr(reln), reln->rd_rel->relpersistence,
 							forkNum, blockNum, mode, strategy, &hit);
 	if (hit)
 		pgstat_count_buffer_hit(reln);
@@ -2871,10 +2943,7 @@ RelationGetNumberOfBlocksInFork(Relation relation, ForkNumber forkNum)
 		case RELKIND_SEQUENCE:
 		case RELKIND_INDEX:
 		case RELKIND_PARTITIONED_INDEX:
-			/* Open it at the smgr level if not already done */
-			RelationOpenSmgr(relation);
-
-			return smgrnblocks(relation->rd_smgr, forkNum);
+			return smgrnblocks(RelationGetSmgr(relation), forkNum);
 
 		case RELKIND_RELATION:
 		case RELKIND_TOASTVALUE:
@@ -2993,7 +3062,7 @@ DropRelFileNodeBuffers(SMgrRelation smgr_reln, ForkNumber *forkNum,
 	int			j;
 	RelFileNodeBackend rnode;
 	BlockNumber nForkBlock[MAX_FORKNUM];
-	uint64 		nBlocksToInvalidate = 0;
+	uint64		nBlocksToInvalidate = 0;
 
 	rnode = smgr_reln->smgr_rnode;
 
@@ -3117,7 +3186,7 @@ DropRelFileNodesAllBuffers(SMgrRelation *smgr_reln, int nnodes)
 	int			n = 0;
 	SMgrRelation *rels;
 	BlockNumber (*block)[MAX_FORKNUM + 1];
-	uint64 		nBlocksToInvalidate = 0;
+	uint64		nBlocksToInvalidate = 0;
 	RelFileNode *nodes;
 	bool		cached = true;
 	bool		use_bsearch;
@@ -3449,9 +3518,6 @@ FlushRelationBuffers(Relation rel)
 	int			i;
 	BufferDesc *bufHdr;
 
-	/* Open rel at the smgr level if not already done */
-	RelationOpenSmgr(rel);
-
 	if (RelationUsesLocalBuffers(rel))
 	{
 		for (i = 0; i < NLocBuffer; i++)
@@ -3476,7 +3542,7 @@ FlushRelationBuffers(Relation rel)
 
 				PageSetChecksumInplace(localpage, bufHdr->tag.blockNum);
 
-				smgrwrite(rel->rd_smgr,
+				smgrwrite(RelationGetSmgr(rel),
 						  bufHdr->tag.forkNum,
 						  bufHdr->tag.blockNum,
 						  localpage,
@@ -3517,7 +3583,7 @@ FlushRelationBuffers(Relation rel)
 		{
 			PinBuffer_Locked(bufHdr);
 			LWLockAcquire(BufferDescriptorGetContentLock(bufHdr), LW_SHARED);
-			FlushBuffer(bufHdr, rel->rd_smgr);
+			FlushBuffer(bufHdr, RelationGetSmgr(rel));
 			LWLockRelease(BufferDescriptorGetContentLock(bufHdr));
 			UnpinBuffer(bufHdr, true);
 		}

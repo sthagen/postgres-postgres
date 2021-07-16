@@ -521,7 +521,7 @@ gen_salt(type text [, iter_count integer ]) returns text
    </listitem>
    <listitem>
     <para>
-     An SHA1 hash of the random prefix and data is appended.
+     A SHA1 hash of the random prefix and data is appended.
     </para>
    </listitem>
    <listitem>
@@ -1410,7 +1410,7 @@ gen_random_uuid() returns uuid
       <entry>KAME kame/sys/crypto</entry>
      </row>
      <row>
-      <entry>SHA256/384/512 </entry>
+      <entry>SHA256/384/512</entry>
       <entry>Aaron D. Gifford</entry>
       <entry>OpenBSD sys/crypto</entry>
      </row>

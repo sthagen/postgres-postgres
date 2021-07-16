@@ -77,7 +77,6 @@ _bt_restore_page(Page page, char *from, int len)
 		if (PageAddItem(page, items[i], itemsizes[i], nitems - i,
 						false, false) == InvalidOffsetNumber)
 			elog(PANIC, "_bt_restore_page: cannot add item to page");
-		from += itemsz;
 	}
 }
 
@@ -898,8 +897,8 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 		 * top parent link when deleting leafbuf because it's the last page
 		 * we'll delete in the subtree undergoing deletion.
 		 */
-		Buffer				leafbuf;
-		IndexTupleData		trunctuple;
+		Buffer		leafbuf;
+		IndexTupleData trunctuple;
 
 		Assert(!isleaf);
 

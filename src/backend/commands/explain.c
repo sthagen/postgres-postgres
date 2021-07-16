@@ -24,6 +24,7 @@
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "parser/analyze.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/bufmgr.h"
@@ -108,8 +109,8 @@ static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_incremental_sort_info(IncrementalSortState *incrsortstate,
 									   ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
-static void show_resultcache_info(ResultCacheState *rcstate, List *ancestors,
-								  ExplainState *es);
+static void show_memoize_info(MemoizeState *mstate, List *ancestors,
+							  ExplainState *es);
 static void show_hashagg_info(AggState *hashstate, ExplainState *es);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
 								ExplainState *es);
@@ -165,6 +166,8 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 {
 	ExplainState *es = NewExplainState();
 	TupOutputState *tstate;
+	JumbleState *jstate = NULL;
+	Query	   *query;
 	List	   *rewritten;
 	ListCell   *lc;
 	bool		timing_set = false;
@@ -241,19 +244,20 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 	/* if the summary was not set explicitly, set default value */
 	es->summary = (summary_set) ? es->summary : es->analyze;
 
+	query = castNode(Query, stmt->query);
+	if (IsQueryIdEnabled())
+		jstate = JumbleQuery(query, pstate->p_sourcetext);
+
+	if (post_parse_analyze_hook)
+		(*post_parse_analyze_hook) (pstate, query, jstate);
+
 	/*
 	 * Parse analysis was done already, but we still have to run the rule
 	 * rewriter.  We do not do AcquireRewriteLocks: we assume the query either
 	 * came straight from the parser, or suitable locks were acquired by
 	 * plancache.c.
-	 *
-	 * Because the rewriter and planner tend to scribble on the input, we make
-	 * a preliminary copy of the source querytree.  This prevents problems in
-	 * the case that the EXPLAIN is in a portal or plpgsql function and is
-	 * executed repeatedly.  (See also the same hack in DECLARE CURSOR and
-	 * PREPARE.)  XXX FIXME someday.
 	 */
-	rewritten = QueryRewrite(castNode(Query, copyObject(stmt->query)));
+	rewritten = QueryRewrite(castNode(Query, stmt->query));
 
 	/* emit opening boilerplate */
 	ExplainBeginOutput(es);
@@ -417,7 +421,8 @@ ExplainOneQuery(Query *query, int cursorOptions,
  * "into" is NULL unless we are explaining the contents of a CreateTableAsStmt.
  *
  * This is exported because it's called back from prepare.c in the
- * EXPLAIN EXECUTE case.
+ * EXPLAIN EXECUTE case.  In that case, we'll be dealing with a statement
+ * that's in the plan cache, so we have to ensure we don't modify it.
  */
 void
 ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
@@ -431,8 +436,7 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 	{
 		/*
 		 * We have to rewrite the contained SELECT and then pass it back to
-		 * ExplainOneQuery.  It's probably not really necessary to copy the
-		 * contained parsetree another time, but let's be safe.
+		 * ExplainOneQuery.  Copy to be safe in the EXPLAIN EXECUTE case.
 		 */
 		CreateTableAsStmt *ctas = (CreateTableAsStmt *) utilityStmt;
 		List	   *rewritten;
@@ -448,7 +452,7 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 			else if (ctas->objtype == OBJECT_MATVIEW)
 				ExplainDummyGroup("CREATE MATERIALIZED VIEW", NULL, es);
 			else
-				elog(ERROR,	"unexpected object type: %d",
+				elog(ERROR, "unexpected object type: %d",
 					 (int) ctas->objtype);
 			return;
 		}
@@ -599,6 +603,14 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 
 	/* Create textual dump of plan tree */
 	ExplainPrintPlan(es, queryDesc);
+
+	if (es->verbose && plannedstmt->queryId != UINT64CONST(0))
+	{
+		char		buf[MAXINT8LEN + 1];
+
+		pg_lltoa(plannedstmt->queryId, buf);
+		ExplainPropertyText("Query Identifier", buf, es);
+	}
 
 	/* Show buffer usage in planning */
 	if (bufusage)
@@ -1286,8 +1298,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_Material:
 			pname = sname = "Materialize";
 			break;
-		case T_ResultCache:
-			pname = sname = "Result Cache";
+		case T_Memoize:
+			pname = sname = "Memoize";
 			break;
 		case T_Sort:
 			pname = sname = "Sort";
@@ -1613,9 +1625,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		{
 			if (es->timing)
 			{
-				ExplainPropertyFloat("Actual Startup Time", "s", startup_ms,
+				ExplainPropertyFloat("Actual Startup Time", "ms", startup_ms,
 									 3, es);
-				ExplainPropertyFloat("Actual Total Time", "s", total_ms,
+				ExplainPropertyFloat("Actual Total Time", "ms", total_ms,
 									 3, es);
 			}
 			ExplainPropertyFloat("Actual Rows", NULL, rows, 0, es);
@@ -2001,9 +2013,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_Hash:
 			show_hash_info(castNode(HashState, planstate), es);
 			break;
-		case T_ResultCache:
-			show_resultcache_info(castNode(ResultCacheState, planstate),
-								  ancestors, es);
+		case T_Memoize:
+			show_memoize_info(castNode(MemoizeState, planstate), ancestors,
+							  es);
 			break;
 		default:
 			break;
@@ -3073,13 +3085,12 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 }
 
 /*
- * Show information on result cache hits/misses/evictions and memory usage.
+ * Show information on memoize hits/misses/evictions and memory usage.
  */
 static void
-show_resultcache_info(ResultCacheState *rcstate, List *ancestors,
-					  ExplainState *es)
+show_memoize_info(MemoizeState *mstate, List *ancestors, ExplainState *es)
 {
-	Plan	   *plan = ((PlanState *) rcstate)->plan;
+	Plan	   *plan = ((PlanState *) mstate)->plan;
 	ListCell   *lc;
 	List	   *context;
 	StringInfoData keystr;
@@ -3090,7 +3101,7 @@ show_resultcache_info(ResultCacheState *rcstate, List *ancestors,
 	initStringInfo(&keystr);
 
 	/*
-	 * It's hard to imagine having a result cache with fewer than 2 RTEs, but
+	 * It's hard to imagine having a memoize node with fewer than 2 RTEs, but
 	 * let's just keep the same useprefix logic as elsewhere in this file.
 	 */
 	useprefix = list_length(es->rtable) > 1 || es->verbose;
@@ -3100,7 +3111,7 @@ show_resultcache_info(ResultCacheState *rcstate, List *ancestors,
 									   plan,
 									   ancestors);
 
-	foreach(lc, ((ResultCache *) plan)->param_exprs)
+	foreach(lc, ((Memoize *) plan)->param_exprs)
 	{
 		Node	   *expr = (Node *) lfirst(lc);
 
@@ -3126,23 +3137,23 @@ show_resultcache_info(ResultCacheState *rcstate, List *ancestors,
 	if (!es->analyze)
 		return;
 
-	/*
-	 * mem_peak is only set when we freed memory, so we must use mem_used when
-	 * mem_peak is 0.
-	 */
-	if (rcstate->stats.mem_peak > 0)
-		memPeakKb = (rcstate->stats.mem_peak + 1023) / 1024;
-	else
-		memPeakKb = (rcstate->mem_used + 1023) / 1024;
-
-	if (rcstate->stats.cache_misses > 0)
+	if (mstate->stats.cache_misses > 0)
 	{
+		/*
+		 * mem_peak is only set when we freed memory, so we must use mem_used
+		 * when mem_peak is 0.
+		 */
+		if (mstate->stats.mem_peak > 0)
+			memPeakKb = (mstate->stats.mem_peak + 1023) / 1024;
+		else
+			memPeakKb = (mstate->mem_used + 1023) / 1024;
+
 		if (es->format != EXPLAIN_FORMAT_TEXT)
 		{
-			ExplainPropertyInteger("Cache Hits", NULL, rcstate->stats.cache_hits, es);
-			ExplainPropertyInteger("Cache Misses", NULL, rcstate->stats.cache_misses, es);
-			ExplainPropertyInteger("Cache Evictions", NULL, rcstate->stats.cache_evictions, es);
-			ExplainPropertyInteger("Cache Overflows", NULL, rcstate->stats.cache_overflows, es);
+			ExplainPropertyInteger("Cache Hits", NULL, mstate->stats.cache_hits, es);
+			ExplainPropertyInteger("Cache Misses", NULL, mstate->stats.cache_misses, es);
+			ExplainPropertyInteger("Cache Evictions", NULL, mstate->stats.cache_evictions, es);
+			ExplainPropertyInteger("Cache Overflows", NULL, mstate->stats.cache_overflows, es);
 			ExplainPropertyInteger("Peak Memory Usage", "kB", memPeakKb, es);
 		}
 		else
@@ -3150,32 +3161,39 @@ show_resultcache_info(ResultCacheState *rcstate, List *ancestors,
 			ExplainIndentText(es);
 			appendStringInfo(es->str,
 							 "Hits: " UINT64_FORMAT "  Misses: " UINT64_FORMAT "  Evictions: " UINT64_FORMAT "  Overflows: " UINT64_FORMAT "  Memory Usage: " INT64_FORMAT "kB\n",
-							 rcstate->stats.cache_hits,
-							 rcstate->stats.cache_misses,
-							 rcstate->stats.cache_evictions,
-							 rcstate->stats.cache_overflows,
+							 mstate->stats.cache_hits,
+							 mstate->stats.cache_misses,
+							 mstate->stats.cache_evictions,
+							 mstate->stats.cache_overflows,
 							 memPeakKb);
 		}
 	}
 
-	if (rcstate->shared_info == NULL)
+	if (mstate->shared_info == NULL)
 		return;
 
 	/* Show details from parallel workers */
-	for (int n = 0; n < rcstate->shared_info->num_workers; n++)
+	for (int n = 0; n < mstate->shared_info->num_workers; n++)
 	{
-		ResultCacheInstrumentation *si;
+		MemoizeInstrumentation *si;
 
-		si = &rcstate->shared_info->sinstrument[n];
+		si = &mstate->shared_info->sinstrument[n];
+
+		/*
+		 * Skip workers that didn't do any work.  We needn't bother checking
+		 * for cache hits as a miss will always occur before a cache hit.
+		 */
+		if (si->cache_misses == 0)
+			continue;
 
 		if (es->workers_state)
 			ExplainOpenWorker(n, es);
 
 		/*
-		 * Since the worker's ResultCacheState.mem_used field is unavailable
-		 * to us, ExecEndResultCache will have set the
-		 * ResultCacheInstrumentation.mem_peak field for us.  No need to do
-		 * the zero checks like we did for the serial case above.
+		 * Since the worker's MemoizeState.mem_used field is unavailable to
+		 * us, ExecEndMemoize will have set the
+		 * MemoizeInstrumentation.mem_peak field for us.  No need to do the
+		 * zero checks like we did for the serial case above.
 		 */
 		memPeakKb = (si->mem_peak + 1023) / 1024;
 
@@ -3273,7 +3291,7 @@ show_hashagg_info(AggState *aggstate, ExplainState *es)
 			if (aggstate->hash_batches_used > 1)
 			{
 				appendStringInfo(es->str, "  Disk Usage: " UINT64_FORMAT "kB",
-					aggstate->hash_disk_used);
+								 aggstate->hash_disk_used);
 			}
 		}
 
@@ -3501,17 +3519,17 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 			{
 				appendStringInfoString(es->str, " shared");
 				if (usage->shared_blks_hit > 0)
-					appendStringInfo(es->str, " hit=%ld",
-									 usage->shared_blks_hit);
+					appendStringInfo(es->str, " hit=%lld",
+									 (long long) usage->shared_blks_hit);
 				if (usage->shared_blks_read > 0)
-					appendStringInfo(es->str, " read=%ld",
-									 usage->shared_blks_read);
+					appendStringInfo(es->str, " read=%lld",
+									 (long long) usage->shared_blks_read);
 				if (usage->shared_blks_dirtied > 0)
-					appendStringInfo(es->str, " dirtied=%ld",
-									 usage->shared_blks_dirtied);
+					appendStringInfo(es->str, " dirtied=%lld",
+									 (long long) usage->shared_blks_dirtied);
 				if (usage->shared_blks_written > 0)
-					appendStringInfo(es->str, " written=%ld",
-									 usage->shared_blks_written);
+					appendStringInfo(es->str, " written=%lld",
+									 (long long) usage->shared_blks_written);
 				if (has_local || has_temp)
 					appendStringInfoChar(es->str, ',');
 			}
@@ -3519,17 +3537,17 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 			{
 				appendStringInfoString(es->str, " local");
 				if (usage->local_blks_hit > 0)
-					appendStringInfo(es->str, " hit=%ld",
-									 usage->local_blks_hit);
+					appendStringInfo(es->str, " hit=%lld",
+									 (long long) usage->local_blks_hit);
 				if (usage->local_blks_read > 0)
-					appendStringInfo(es->str, " read=%ld",
-									 usage->local_blks_read);
+					appendStringInfo(es->str, " read=%lld",
+									 (long long) usage->local_blks_read);
 				if (usage->local_blks_dirtied > 0)
-					appendStringInfo(es->str, " dirtied=%ld",
-									 usage->local_blks_dirtied);
+					appendStringInfo(es->str, " dirtied=%lld",
+									 (long long) usage->local_blks_dirtied);
 				if (usage->local_blks_written > 0)
-					appendStringInfo(es->str, " written=%ld",
-									 usage->local_blks_written);
+					appendStringInfo(es->str, " written=%lld",
+									 (long long) usage->local_blks_written);
 				if (has_temp)
 					appendStringInfoChar(es->str, ',');
 			}
@@ -3537,11 +3555,11 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 			{
 				appendStringInfoString(es->str, " temp");
 				if (usage->temp_blks_read > 0)
-					appendStringInfo(es->str, " read=%ld",
-									 usage->temp_blks_read);
+					appendStringInfo(es->str, " read=%lld",
+									 (long long) usage->temp_blks_read);
 				if (usage->temp_blks_written > 0)
-					appendStringInfo(es->str, " written=%ld",
-									 usage->temp_blks_written);
+					appendStringInfo(es->str, " written=%lld",
+									 (long long) usage->temp_blks_written);
 			}
 			appendStringInfoChar(es->str, '\n');
 		}
@@ -3613,11 +3631,11 @@ show_wal_usage(ExplainState *es, const WalUsage *usage)
 			appendStringInfoString(es->str, "WAL:");
 
 			if (usage->wal_records > 0)
-				appendStringInfo(es->str, " records=%ld",
-								 usage->wal_records);
+				appendStringInfo(es->str, " records=%lld",
+								 (long long) usage->wal_records);
 			if (usage->wal_fpi > 0)
-				appendStringInfo(es->str, " fpi=%ld",
-								 usage->wal_fpi);
+				appendStringInfo(es->str, " fpi=%lld",
+								 (long long) usage->wal_fpi);
 			if (usage->wal_bytes > 0)
 				appendStringInfo(es->str, " bytes=" UINT64_FORMAT,
 								 usage->wal_bytes);

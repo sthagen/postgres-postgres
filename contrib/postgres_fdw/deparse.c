@@ -56,6 +56,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+#include "commands/tablecmds.h"
 
 /*
  * Global context for foreign_expr_walker's search of an expression tree.
@@ -1778,7 +1779,8 @@ rebuildInsertSql(StringInfo buf, char *orig_query,
 				 int values_end_len, int num_cols,
 				 int num_rows)
 {
-	int			i, j;
+	int			i,
+				j;
 	int			pindex;
 	bool		first;
 
@@ -1789,8 +1791,8 @@ rebuildInsertSql(StringInfo buf, char *orig_query,
 	appendBinaryStringInfo(buf, orig_query, values_end_len);
 
 	/*
-	 * Add records to VALUES clause (we already have parameters for the
-	 * first row, so start at the right offset).
+	 * Add records to VALUES clause (we already have parameters for the first
+	 * row, so start at the right offset).
 	 */
 	pindex = num_cols + 1;
 	for (i = 0; i < num_rows; i++)
@@ -2170,6 +2172,38 @@ deparseAnalyzeSql(StringInfo buf, Relation rel, List **retrieved_attrs)
 	 */
 	appendStringInfoString(buf, " FROM ");
 	deparseRelation(buf, rel);
+}
+
+/*
+ * Construct a simple "TRUNCATE rel" statement
+ */
+void
+deparseTruncateSql(StringInfo buf,
+				   List *rels,
+				   DropBehavior behavior,
+				   bool restart_seqs)
+{
+	ListCell   *cell;
+
+	appendStringInfoString(buf, "TRUNCATE ");
+
+	foreach(cell, rels)
+	{
+		Relation	rel = lfirst(cell);
+
+		if (cell != list_head(rels))
+			appendStringInfoString(buf, ", ");
+
+		deparseRelation(buf, rel);
+	}
+
+	appendStringInfo(buf, " %s IDENTITY",
+					 restart_seqs ? "RESTART" : "CONTINUE");
+
+	if (behavior == DROP_RESTRICT)
+		appendStringInfoString(buf, " RESTRICT");
+	else if (behavior == DROP_CASCADE)
+		appendStringInfoString(buf, " CASCADE");
 }
 
 /*

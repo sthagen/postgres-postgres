@@ -22,8 +22,8 @@
  */
 #include "postgres.h"
 
-#include "storage/lmgr.h" /* for GetLockNameFromTagType */
-#include "storage/lwlock.h" /* for GetLWLockIdentifier */
+#include "storage/lmgr.h"		/* for GetLockNameFromTagType */
+#include "storage/lwlock.h"		/* for GetLWLockIdentifier */
 #include "utils/wait_event.h"
 
 
@@ -313,6 +313,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_APPEND_READY:
 			event_name = "AppendReady";
 			break;
+		case WAIT_EVENT_BACKEND_TERMINATION:
+			event_name = "BackendTermination";
+			break;
 		case WAIT_EVENT_BACKUP_WAIT_WAL_ARCHIVE:
 			event_name = "BackupWaitWalArchive";
 			break;
@@ -481,6 +484,9 @@ pgstat_get_wait_timeout(WaitEventTimeout w)
 			break;
 		case WAIT_EVENT_VACUUM_DELAY:
 			event_name = "VacuumDelay";
+			break;
+		case WAIT_EVENT_VACUUM_TRUNCATE:
+			event_name = "VacuumTruncate";
 			break;
 			/* no default case, so that compiler will warn */
 	}

@@ -1,3 +1,6 @@
+
+# Copyright (c) 2021, PostgreSQL Global Development Group
+
 package Install;
 
 #
@@ -368,8 +371,7 @@ sub GenerateTimezoneFiles
 
 	print "Generating timezone files...";
 
-	my @args = (
-		"$conf/zic/zic", '-d', "$target/share/timezone");
+	my @args = ("$conf/zic/zic", '-d', "$target/share/timezone");
 	foreach (@tzfiles)
 	{
 		my $tzfile = $_;
@@ -631,7 +633,8 @@ sub CopyIncludeFiles
 	CopyFiles(
 		'Libpq internal headers',
 		$target . '/include/internal/',
-		'src/interfaces/libpq/', 'libpq-int.h', 'pqexpbuffer.h');
+		'src/interfaces/libpq/', 'libpq-int.h', 'fe-auth-sasl.h',
+		'pqexpbuffer.h');
 
 	CopyFiles(
 		'Internal headers',

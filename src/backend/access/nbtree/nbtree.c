@@ -163,9 +163,9 @@ btbuildempty(Relation index)
 	 * this even when wal_level=minimal.
 	 */
 	PageSetChecksumInplace(metapage, BTREE_METAPAGE);
-	smgrwrite(index->rd_smgr, INIT_FORKNUM, BTREE_METAPAGE,
+	smgrwrite(RelationGetSmgr(index), INIT_FORKNUM, BTREE_METAPAGE,
 			  (char *) metapage, true);
-	log_newpage(&index->rd_smgr->smgr_rnode.node, INIT_FORKNUM,
+	log_newpage(&RelationGetSmgr(index)->smgr_rnode.node, INIT_FORKNUM,
 				BTREE_METAPAGE, metapage, true);
 
 	/*
@@ -173,7 +173,7 @@ btbuildempty(Relation index)
 	 * write did not go through shared_buffers and therefore a concurrent
 	 * checkpoint may have moved the redo pointer past our xlog record.
 	 */
-	smgrimmedsync(index->rd_smgr, INIT_FORKNUM);
+	smgrimmedsync(RelationGetSmgr(index), INIT_FORKNUM);
 }
 
 /*
@@ -1213,10 +1213,10 @@ backtrack:
 				 * as long as the callback function only considers whether the
 				 * index tuple refers to pre-cutoff heap tuples that were
 				 * certainly already pruned away during VACUUM's initial heap
-				 * scan by the time we get here. (heapam's XLOG_HEAP2_CLEAN
-				 * and XLOG_HEAP2_CLEANUP_INFO records produce conflicts using
-				 * a latestRemovedXid value for the pointed-to heap tuples, so
-				 * there is no need to produce our own conflict now.)
+				 * scan by the time we get here. (heapam's XLOG_HEAP2_PRUNE
+				 * records produce conflicts using a latestRemovedXid value
+				 * for the pointed-to heap tuples, so there is no need to
+				 * produce our own conflict now.)
 				 *
 				 * Backends with snapshots acquired after a VACUUM starts but
 				 * before it finishes could have visibility cutoff with a

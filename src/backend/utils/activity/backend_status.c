@@ -16,13 +16,13 @@
 #include "miscadmin.h"
 #include "pg_trace.h"
 #include "pgstat.h"
-#include "port/atomics.h" /* for memory barriers */
+#include "port/atomics.h"		/* for memory barriers */
 #include "storage/ipc.h"
-#include "storage/proc.h" /* for MyProc */
+#include "storage/proc.h"		/* for MyProc */
 #include "storage/sinvaladt.h"
 #include "utils/ascii.h"
 #include "utils/backend_status.h"
-#include "utils/guc.h" /* for application_name */
+#include "utils/guc.h"			/* for application_name */
 #include "utils/memutils.h"
 
 
@@ -398,6 +398,7 @@ pgstat_bestart(void)
 	lbeentry.st_state = STATE_UNDEFINED;
 	lbeentry.st_progress_command = PROGRESS_COMMAND_INVALID;
 	lbeentry.st_progress_command_target = InvalidOid;
+	lbeentry.st_query_id = UINT64CONST(0);
 
 	/*
 	 * we don't zero st_progress_param here to save cycles; nobody should
@@ -497,8 +498,8 @@ pgstat_setup_backend_status_context(void)
 {
 	if (!backendStatusSnapContext)
 		backendStatusSnapContext = AllocSetContextCreate(TopMemoryContext,
-													 "Backend Status Snapshot",
-													 ALLOCSET_SMALL_SIZES);
+														 "Backend Status Snapshot",
+														 ALLOCSET_SMALL_SIZES);
 }
 
 
@@ -544,6 +545,7 @@ pgstat_report_activity(BackendState state, const char *cmd_str)
 			beentry->st_activity_start_timestamp = 0;
 			/* st_xact_start_timestamp and wait_event_info are also disabled */
 			beentry->st_xact_start_timestamp = 0;
+			beentry->st_query_id = UINT64CONST(0);
 			proc->wait_event_info = 0;
 			PGSTAT_END_WRITE_ACTIVITY(beentry);
 		}
@@ -598,6 +600,14 @@ pgstat_report_activity(BackendState state, const char *cmd_str)
 	beentry->st_state = state;
 	beentry->st_state_start_timestamp = current_timestamp;
 
+	/*
+	 * If a new query is started, we reset the query identifier as it'll only
+	 * be known after parse analysis, to avoid reporting last query's
+	 * identifier.
+	 */
+	if (state == STATE_RUNNING)
+		beentry->st_query_id = UINT64CONST(0);
+
 	if (cmd_str != NULL)
 	{
 		memcpy((char *) beentry->st_activity_raw, cmd_str, len);
@@ -607,6 +617,46 @@ pgstat_report_activity(BackendState state, const char *cmd_str)
 
 	PGSTAT_END_WRITE_ACTIVITY(beentry);
 }
+
+/* --------
+ * pgstat_report_query_id() -
+ *
+ * Called to update top-level query identifier.
+ * --------
+ */
+void
+pgstat_report_query_id(uint64 query_id, bool force)
+{
+	volatile PgBackendStatus *beentry = MyBEEntry;
+
+	/*
+	 * if track_activities is disabled, st_query_id should already have been
+	 * reset
+	 */
+	if (!beentry || !pgstat_track_activities)
+		return;
+
+	/*
+	 * We only report the top-level query identifiers.  The stored query_id is
+	 * reset when a backend calls pgstat_report_activity(STATE_RUNNING), or
+	 * with an explicit call to this function using the force flag.  If the
+	 * saved query identifier is not zero it means that it's not a top-level
+	 * command, so ignore the one provided unless it's an explicit call to
+	 * reset the identifier.
+	 */
+	if (beentry->st_query_id != 0 && !force)
+		return;
+
+	/*
+	 * Update my status entry, following the protocol of bumping
+	 * st_changecount before and after.  We use a volatile pointer here to
+	 * ensure the compiler doesn't try to get cute.
+	 */
+	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);
+	beentry->st_query_id = query_id;
+	PGSTAT_END_WRITE_ACTIVITY(beentry);
+}
+
 
 /* ----------
  * pgstat_report_appname() -
@@ -970,6 +1020,26 @@ pgstat_get_crashed_backend_activity(int pid, char *buffer, int buflen)
 
 	/* PID not found */
 	return NULL;
+}
+
+/* ----------
+ * pgstat_get_my_query_id() -
+ *
+ * Return current backend's query identifier.
+ */
+uint64
+pgstat_get_my_query_id(void)
+{
+	if (!MyBEEntry)
+		return 0;
+
+	/*
+	 * There's no need for a lock around pgstat_begin_read_activity /
+	 * pgstat_end_read_activity here as it's only called from
+	 * pg_stat_get_activity which is already protected, or from the same
+	 * backend which means that there won't be concurrent writes.
+	 */
+	return MyBEEntry->st_query_id;
 }
 
 

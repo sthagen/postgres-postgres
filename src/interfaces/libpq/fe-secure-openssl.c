@@ -611,15 +611,20 @@ static pthread_mutex_t *pq_lockarray;
 static void
 pq_lockingcallback(int mode, int n, const char *file, int line)
 {
+	/*
+	 * There's no way to report a mutex-primitive failure, so we just Assert
+	 * in development builds, and ignore any errors otherwise.  Fortunately
+	 * this is all obsolete in modern OpenSSL.
+	 */
 	if (mode & CRYPTO_LOCK)
 	{
 		if (pthread_mutex_lock(&pq_lockarray[n]))
-			PGTHREAD_ERROR("failed to lock mutex");
+			Assert(false);
 	}
 	else
 	{
 		if (pthread_mutex_unlock(&pq_lockarray[n]))
-			PGTHREAD_ERROR("failed to unlock mutex");
+			Assert(false);
 	}
 }
 #endif							/* ENABLE_THREAD_SAFETY && HAVE_CRYPTO_LOCK */
@@ -943,8 +948,8 @@ initialize_SSL(PGconn *conn)
 
 		if ((cvstore = SSL_CTX_get_cert_store(SSL_context)) != NULL)
 		{
-			char   *fname = NULL;
-			char   *dname = NULL;
+			char	   *fname = NULL;
+			char	   *dname = NULL;
 
 			if (conn->sslcrl && strlen(conn->sslcrl) > 0)
 				fname = conn->sslcrl;
@@ -1081,6 +1086,32 @@ initialize_SSL(PGconn *conn)
 	 */
 	SSL_CTX_free(SSL_context);
 	SSL_context = NULL;
+
+	/*
+	 * Set Server Name Indication (SNI), if enabled by connection parameters.
+	 * Per RFC 6066, do not set it if the host is a literal IP address (IPv4
+	 * or IPv6).
+	 */
+	if (conn->sslsni && conn->sslsni[0])
+	{
+		const char *host = conn->connhost[conn->whichhost].host;
+
+		if (host && host[0] &&
+			!(strspn(host, "0123456789.") == strlen(host) ||
+			  strchr(host, ':')))
+		{
+			if (SSL_set_tlsext_host_name(conn->ssl, host) != 1)
+			{
+				char	   *err = SSLerrmessage(ERR_get_error());
+
+				appendPQExpBuffer(&conn->errorMessage,
+								  libpq_gettext("could not set SSL Server Name Indication (SNI): %s\n"),
+								  err);
+				SSLerrfree(err);
+				return -1;
+			}
+		}
+	}
 
 	/*
 	 * Read the SSL key. If a key is specified, treat it as an engine:key
@@ -1445,8 +1476,8 @@ pgtls_close(PGconn *conn)
 	{
 		/*
 		 * In the non-SSL case, just remove the crypto callbacks if the
-		 * connection has then loaded.  This code path has no dependency
-		 * on any pending SSL calls.
+		 * connection has then loaded.  This code path has no dependency on
+		 * any pending SSL calls.
 		 */
 		if (conn->crypto_loaded)
 			destroy_needed = true;

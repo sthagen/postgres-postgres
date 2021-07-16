@@ -42,7 +42,6 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
-#include "catalog/index.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/partition.h"
@@ -98,7 +97,7 @@
 #define MAYBE_RECOVER_RELATION_BUILD_MEMORY 1
 #else
 #define RECOVER_RELATION_BUILD_MEMORY 0
-#ifdef CLOBBER_CACHE_ENABLED
+#ifdef DISCARD_CACHES_ENABLED
 #define MAYBE_RECOVER_RELATION_BUILD_MEMORY 1
 #endif
 #endif
@@ -1012,20 +1011,20 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	 * data, reasoning that the caller's context is at worst of transaction
 	 * scope, and relcache loads shouldn't happen so often that it's essential
 	 * to recover transient data before end of statement/transaction.  However
-	 * that's definitely not true in clobber-cache test builds, and perhaps
-	 * it's not true in other cases.
+	 * that's definitely not true when debug_discard_caches is active, and
+	 * perhaps it's not true in other cases.
 	 *
-	 * When cache clobbering is enabled or when forced to by
+	 * When debug_discard_caches is active or when forced to by
 	 * RECOVER_RELATION_BUILD_MEMORY=1, arrange to allocate the junk in a
-	 * temporary context that we'll free before returning.  Make it a child
-	 * of caller's context so that it will get cleaned up appropriately if
-	 * we error out partway through.
+	 * temporary context that we'll free before returning.  Make it a child of
+	 * caller's context so that it will get cleaned up appropriately if we
+	 * error out partway through.
 	 */
 #ifdef MAYBE_RECOVER_RELATION_BUILD_MEMORY
 	MemoryContext tmpcxt = NULL;
 	MemoryContext oldcxt = NULL;
 
-	if (RECOVER_RELATION_BUILD_MEMORY || debug_invalidate_system_caches_always > 0)
+	if (RECOVER_RELATION_BUILD_MEMORY || debug_discard_caches > 0)
 	{
 		tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
 									   "RelationBuildDesc workspace",
@@ -1157,7 +1156,10 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	relation->rd_partkey = NULL;
 	relation->rd_partkeycxt = NULL;
 	relation->rd_partdesc = NULL;
+	relation->rd_partdesc_nodetached = NULL;
+	relation->rd_partdesc_nodetached_xmin = InvalidTransactionId;
 	relation->rd_pdcxt = NULL;
+	relation->rd_pddcxt = NULL;
 	relation->rd_partcheck = NIL;
 	relation->rd_partcheckvalid = false;
 	relation->rd_partcheckcxt = NULL;
@@ -1592,14 +1594,14 @@ LookupOpclassInfo(Oid operatorClassOid,
 		/* First time through: initialize the opclass cache */
 		HASHCTL		ctl;
 
+		/* Also make sure CacheMemoryContext exists */
+		if (!CacheMemoryContext)
+			CreateCacheMemoryContext();
+
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(OpClassCacheEnt);
 		OpClassCache = hash_create("Operator class cache", 64,
 								   &ctl, HASH_ELEM | HASH_BLOBS);
-
-		/* Also make sure CacheMemoryContext exists */
-		if (!CacheMemoryContext)
-			CreateCacheMemoryContext();
 	}
 
 	opcentry = (OpClassCacheEnt *) hash_search(OpClassCache,
@@ -1608,16 +1610,10 @@ LookupOpclassInfo(Oid operatorClassOid,
 
 	if (!found)
 	{
-		/* Need to allocate memory for new entry */
+		/* Initialize new entry */
 		opcentry->valid = false;	/* until known OK */
 		opcentry->numSupport = numSupport;
-
-		if (numSupport > 0)
-			opcentry->supportProcs = (RegProcedure *)
-				MemoryContextAllocZero(CacheMemoryContext,
-									   (numSupport + 1) * sizeof(RegProcedure));
-		else
-			opcentry->supportProcs = NULL;
+		opcentry->supportProcs = NULL;	/* filled below */
 	}
 	else
 	{
@@ -1625,14 +1621,16 @@ LookupOpclassInfo(Oid operatorClassOid,
 	}
 
 	/*
-	 * When testing for cache-flush hazards, we intentionally disable the
-	 * operator class cache and force reloading of the info on each call. This
-	 * is helpful because we want to test the case where a cache flush occurs
-	 * while we are loading the info, and it's very hard to provoke that if
-	 * this happens only once per opclass per backend.
+	 * When aggressively testing cache-flush hazards, we disable the operator
+	 * class cache and force reloading of the info on each call.  This models
+	 * no real-world behavior, since the cache entries are never invalidated
+	 * otherwise.  However it can be helpful for detecting bugs in the cache
+	 * loading logic itself, such as reliance on a non-nailed index.  Given
+	 * the limited use-case and the fact that this adds a great deal of
+	 * expense, we enable it only for high values of debug_discard_caches.
 	 */
-#ifdef CLOBBER_CACHE_ENABLED
-	if (debug_invalidate_system_caches_always > 0)
+#ifdef DISCARD_CACHES_ENABLED
+	if (debug_discard_caches > 2)
 		opcentry->valid = false;
 #endif
 
@@ -1640,8 +1638,15 @@ LookupOpclassInfo(Oid operatorClassOid,
 		return opcentry;
 
 	/*
-	 * Need to fill in new entry.
-	 *
+	 * Need to fill in new entry.  First allocate space, unless we already did
+	 * so in some previous attempt.
+	 */
+	if (opcentry->supportProcs == NULL && numSupport > 0)
+		opcentry->supportProcs = (RegProcedure *)
+			MemoryContextAllocZero(CacheMemoryContext,
+								   numSupport * sizeof(RegProcedure));
+
+	/*
 	 * To avoid infinite recursion during startup, force heap scans if we're
 	 * looking up info for the opclasses used by the indexes we would like to
 	 * reference here.
@@ -2103,10 +2108,16 @@ RelationClose(Relation relation)
 	 * stale partition descriptors it has.  This is unlikely, so check to see
 	 * if there are child contexts before expending a call to mcxt.c.
 	 */
-	if (RelationHasReferenceCountZero(relation) &&
-		relation->rd_pdcxt != NULL &&
-		relation->rd_pdcxt->firstchild != NULL)
-		MemoryContextDeleteChildren(relation->rd_pdcxt);
+	if (RelationHasReferenceCountZero(relation))
+	{
+		if (relation->rd_pdcxt != NULL &&
+			relation->rd_pdcxt->firstchild != NULL)
+			MemoryContextDeleteChildren(relation->rd_pdcxt);
+
+		if (relation->rd_pddcxt != NULL &&
+			relation->rd_pddcxt->firstchild != NULL)
+			MemoryContextDeleteChildren(relation->rd_pddcxt);
+	}
 
 #ifdef RELCACHE_FORCE_RELEASE
 	if (RelationHasReferenceCountZero(relation) &&
@@ -2390,6 +2401,8 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		MemoryContextDelete(relation->rd_partkeycxt);
 	if (relation->rd_pdcxt)
 		MemoryContextDelete(relation->rd_pdcxt);
+	if (relation->rd_pddcxt)
+		MemoryContextDelete(relation->rd_pddcxt);
 	if (relation->rd_partcheckcxt)
 		MemoryContextDelete(relation->rd_partcheckcxt);
 	pfree(relation);
@@ -2644,7 +2657,7 @@ RelationClearRelation(Relation relation, bool rebuild)
 			SWAPFIELD(PartitionKey, rd_partkey);
 			SWAPFIELD(MemoryContext, rd_partkeycxt);
 		}
-		if (newrel->rd_pdcxt != NULL)
+		if (newrel->rd_pdcxt != NULL || newrel->rd_pddcxt != NULL)
 		{
 			/*
 			 * We are rebuilding a partitioned relation with a non-zero
@@ -2672,13 +2685,22 @@ RelationClearRelation(Relation relation, bool rebuild)
 			 * newrel.
 			 */
 			relation->rd_partdesc = NULL;	/* ensure rd_partdesc is invalid */
+			relation->rd_partdesc_nodetached = NULL;
+			relation->rd_partdesc_nodetached_xmin = InvalidTransactionId;
 			if (relation->rd_pdcxt != NULL) /* probably never happens */
 				MemoryContextSetParent(newrel->rd_pdcxt, relation->rd_pdcxt);
 			else
 				relation->rd_pdcxt = newrel->rd_pdcxt;
+			if (relation->rd_pddcxt != NULL)
+				MemoryContextSetParent(newrel->rd_pddcxt, relation->rd_pddcxt);
+			else
+				relation->rd_pddcxt = newrel->rd_pddcxt;
 			/* drop newrel's pointers so we don't destroy it below */
 			newrel->rd_partdesc = NULL;
+			newrel->rd_partdesc_nodetached = NULL;
+			newrel->rd_partdesc_nodetached_xmin = InvalidTransactionId;
 			newrel->rd_pdcxt = NULL;
+			newrel->rd_pddcxt = NULL;
 		}
 
 #undef SWAPFIELD
@@ -5207,6 +5229,86 @@ restart:
 }
 
 /*
+ * RelationGetIdentityKeyBitmap -- get a bitmap of replica identity attribute
+ * numbers
+ *
+ * A bitmap of index attribute numbers for the configured replica identity
+ * index is returned.
+ *
+ * See also comments of RelationGetIndexAttrBitmap().
+ *
+ * This is a special purpose function used during logical replication. Here,
+ * unlike RelationGetIndexAttrBitmap(), we don't acquire a lock on the required
+ * index as we build the cache entry using a historic snapshot and all the
+ * later changes are absorbed while decoding WAL. Due to this reason, we don't
+ * need to retry here in case of a change in the set of indexes.
+ */
+Bitmapset *
+RelationGetIdentityKeyBitmap(Relation relation)
+{
+	Bitmapset  *idindexattrs = NULL;	/* columns in the replica identity */
+	Relation	indexDesc;
+	int			i;
+	Oid			replidindex;
+	MemoryContext oldcxt;
+
+	/* Quick exit if we already computed the result */
+	if (relation->rd_idattr != NULL)
+		return bms_copy(relation->rd_idattr);
+
+	/* Fast path if definitely no indexes */
+	if (!RelationGetForm(relation)->relhasindex)
+		return NULL;
+
+	/* Historic snapshot must be set. */
+	Assert(HistoricSnapshotActive());
+
+	replidindex = RelationGetReplicaIndex(relation);
+
+	/* Fall out if there is no replica identity index */
+	if (!OidIsValid(replidindex))
+		return NULL;
+
+	/* Look up the description for the replica identity index */
+	indexDesc = RelationIdGetRelation(replidindex);
+
+	if (!RelationIsValid(indexDesc))
+		elog(ERROR, "could not open relation with OID %u",
+			 relation->rd_replidindex);
+
+	/* Add referenced attributes to idindexattrs */
+	for (i = 0; i < indexDesc->rd_index->indnatts; i++)
+	{
+		int			attrnum = indexDesc->rd_index->indkey.values[i];
+
+		/*
+		 * We don't include non-key columns into idindexattrs bitmaps. See
+		 * RelationGetIndexAttrBitmap.
+		 */
+		if (attrnum != 0)
+		{
+			if (i < indexDesc->rd_index->indnkeyatts)
+				idindexattrs = bms_add_member(idindexattrs,
+											  attrnum - FirstLowInvalidHeapAttributeNumber);
+		}
+	}
+
+	RelationClose(indexDesc);
+
+	/* Don't leak the old values of these bitmaps, if any */
+	bms_free(relation->rd_idattr);
+	relation->rd_idattr = NULL;
+
+	/* Now save copy of the bitmap in the relcache entry */
+	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+	relation->rd_idattr = bms_copy(idindexattrs);
+	MemoryContextSwitchTo(oldcxt);
+
+	/* We return our original working copy for caller to play with */
+	return idindexattrs;
+}
+
+/*
  * RelationGetExclusionInfo -- get info about index's exclusion constraint
  *
  * This should be called only for an index that is known to have an
@@ -5942,7 +6044,10 @@ load_relcache_init_file(bool shared)
 		rel->rd_partkey = NULL;
 		rel->rd_partkeycxt = NULL;
 		rel->rd_partdesc = NULL;
+		rel->rd_partdesc_nodetached = NULL;
+		rel->rd_partdesc_nodetached_xmin = InvalidTransactionId;
 		rel->rd_pdcxt = NULL;
+		rel->rd_pddcxt = NULL;
 		rel->rd_partcheck = NIL;
 		rel->rd_partcheckvalid = false;
 		rel->rd_partcheckcxt = NULL;
@@ -5971,7 +6076,6 @@ load_relcache_init_file(bool shared)
 		rel->rd_idattr = NULL;
 		rel->rd_pubactions = NULL;
 		rel->rd_statvalid = false;
-		rel->rd_version_checked = false;
 		rel->rd_statlist = NIL;
 		rel->rd_fkeyvalid = false;
 		rel->rd_fkeylist = NIL;

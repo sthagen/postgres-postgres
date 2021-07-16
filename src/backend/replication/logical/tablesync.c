@@ -96,6 +96,7 @@
 
 #include "access/table.h"
 #include "access/xact.h"
+#include "catalog/indexing.h"
 #include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
@@ -114,8 +115,11 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 
 static bool table_states_valid = false;
+static List *table_states_not_ready = NIL;
+static bool FetchTableStates(bool *started_tx);
 
 StringInfo	copybuf = NULL;
 
@@ -302,8 +306,11 @@ process_syncing_tables_for_sync(XLogRecPtr current_lsn)
 								   MyLogicalRepWorker->relstate,
 								   MyLogicalRepWorker->relstate_lsn);
 
-		/* End wal streaming so wrconn can be re-used to drop the slot. */
-		walrcv_endstreaming(wrconn, &tli);
+		/*
+		 * End streaming so that LogRepWorkerWalRcvConn can be used to drop
+		 * the slot.
+		 */
+		walrcv_endstreaming(LogRepWorkerWalRcvConn, &tli);
 
 		/*
 		 * Cleanup the tablesync slot.
@@ -322,7 +329,7 @@ process_syncing_tables_for_sync(XLogRecPtr current_lsn)
 		 * otherwise, it won't be dropped till the corresponding subscription
 		 * is dropped. So passing missing_ok = false.
 		 */
-		ReplicationSlotDropAtPubNode(wrconn, syncslotname, false);
+		ReplicationSlotDropAtPubNode(LogRepWorkerWalRcvConn, syncslotname, false);
 
 		finish_sync_worker();
 	}
@@ -359,7 +366,6 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 		Oid			relid;
 		TimestampTz last_start_time;
 	};
-	static List *table_states = NIL;
 	static HTAB *last_start_times = NULL;
 	ListCell   *lc;
 	bool		started_tx = false;
@@ -367,42 +373,14 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 	Assert(!IsTransactionState());
 
 	/* We need up-to-date sync state info for subscription tables here. */
-	if (!table_states_valid)
-	{
-		MemoryContext oldctx;
-		List	   *rstates;
-		ListCell   *lc;
-		SubscriptionRelState *rstate;
-
-		/* Clean the old list. */
-		list_free_deep(table_states);
-		table_states = NIL;
-
-		StartTransactionCommand();
-		started_tx = true;
-
-		/* Fetch all non-ready tables. */
-		rstates = GetSubscriptionNotReadyRelations(MySubscription->oid);
-
-		/* Allocate the tracking info in a permanent memory context. */
-		oldctx = MemoryContextSwitchTo(CacheMemoryContext);
-		foreach(lc, rstates)
-		{
-			rstate = palloc(sizeof(SubscriptionRelState));
-			memcpy(rstate, lfirst(lc), sizeof(SubscriptionRelState));
-			table_states = lappend(table_states, rstate);
-		}
-		MemoryContextSwitchTo(oldctx);
-
-		table_states_valid = true;
-	}
+	FetchTableStates(&started_tx);
 
 	/*
 	 * Prepare a hash table for tracking last start times of workers, to avoid
 	 * immediate restarts.  We don't need it if there are no tables that need
 	 * syncing.
 	 */
-	if (table_states && !last_start_times)
+	if (table_states_not_ready && !last_start_times)
 	{
 		HASHCTL		ctl;
 
@@ -416,16 +394,38 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 	 * Clean up the hash table when we're done with all tables (just to
 	 * release the bit of memory).
 	 */
-	else if (!table_states && last_start_times)
+	else if (!table_states_not_ready && last_start_times)
 	{
 		hash_destroy(last_start_times);
 		last_start_times = NULL;
 	}
 
 	/*
+	 * Even when the two_phase mode is requested by the user, it remains as
+	 * 'pending' until all tablesyncs have reached READY state.
+	 *
+	 * When this happens, we restart the apply worker and (if the conditions
+	 * are still ok) then the two_phase tri-state will become 'enabled' at
+	 * that time.
+	 *
+	 * Note: If the subscription has no tables then leave the state as
+	 * PENDING, which allows ALTER SUBSCRIPTION ... REFRESH PUBLICATION to
+	 * work.
+	 */
+	if (MySubscription->twophasestate == LOGICALREP_TWOPHASE_STATE_PENDING &&
+		AllTablesyncsReady())
+	{
+		ereport(LOG,
+				(errmsg("logical replication apply worker for subscription \"%s\" will restart so that two_phase can be enabled",
+						MySubscription->name)));
+
+		proc_exit(0);
+	}
+
+	/*
 	 * Process all tables that are being synchronized.
 	 */
-	foreach(lc, table_states)
+	foreach(lc, table_states_not_ready)
 	{
 		SubscriptionRelState *rstate = (SubscriptionRelState *) lfirst(lc);
 
@@ -642,7 +642,7 @@ copy_read_data(void *outbuf, int minread, int maxread)
 		for (;;)
 		{
 			/* Try read the data. */
-			len = walrcv_receive(wrconn, &buf, &fd);
+			len = walrcv_receive(LogRepWorkerWalRcvConn, &buf, &fd);
 
 			CHECK_FOR_INTERRUPTS();
 
@@ -715,17 +715,20 @@ fetch_remote_table_info(char *nspname, char *relname,
 					 "   AND c.relname = %s",
 					 quote_literal_cstr(nspname),
 					 quote_literal_cstr(relname));
-	res = walrcv_exec(wrconn, cmd.data, lengthof(tableRow), tableRow);
+	res = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data,
+					  lengthof(tableRow), tableRow);
 
 	if (res->status != WALRCV_OK_TUPLES)
 		ereport(ERROR,
-				(errmsg("could not fetch table info for table \"%s.%s\" from publisher: %s",
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("could not fetch table info for table \"%s.%s\" from publisher: %s",
 						nspname, relname, res->err)));
 
 	slot = MakeSingleTupleTableSlot(res->tupledesc, &TTSOpsMinimalTuple);
 	if (!tuplestore_gettupleslot(res->tuplestore, true, false, slot))
 		ereport(ERROR,
-				(errmsg("table \"%s.%s\" not found on publisher",
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("table \"%s.%s\" not found on publisher",
 						nspname, relname)));
 
 	lrel->remoteid = DatumGetObjectId(slot_getattr(slot, 1, &isnull));
@@ -752,13 +755,16 @@ fetch_remote_table_info(char *nspname, char *relname,
 					 "   AND a.attrelid = %u"
 					 " ORDER BY a.attnum",
 					 lrel->remoteid,
-					 (walrcv_server_version(wrconn) >= 120000 ? "AND a.attgenerated = ''" : ""),
+					 (walrcv_server_version(LogRepWorkerWalRcvConn) >= 120000 ?
+					  "AND a.attgenerated = ''" : ""),
 					 lrel->remoteid);
-	res = walrcv_exec(wrconn, cmd.data, lengthof(attrRow), attrRow);
+	res = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data,
+					  lengthof(attrRow), attrRow);
 
 	if (res->status != WALRCV_OK_TUPLES)
 		ereport(ERROR,
-				(errmsg("could not fetch table info for table \"%s.%s\" from publisher: %s",
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("could not fetch table info for table \"%s.%s\" from publisher: %s",
 						nspname, relname, res->err)));
 
 	/* We don't know the number of rows coming, so allocate enough space. */
@@ -841,11 +847,12 @@ copy_table(Relation rel)
 		appendStringInfo(&cmd, " FROM %s) TO STDOUT",
 						 quote_qualified_identifier(lrel.nspname, lrel.relname));
 	}
-	res = walrcv_exec(wrconn, cmd.data, 0, NULL);
+	res = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data, 0, NULL);
 	pfree(cmd.data);
 	if (res->status != WALRCV_OK_COPY_OUT)
 		ereport(ERROR,
-				(errmsg("could not start initial contents copy for table \"%s.%s\": %s",
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("could not start initial contents copy for table \"%s.%s\": %s",
 						lrel.nspname, lrel.relname, res->err)));
 	walrcv_clear_result(res);
 
@@ -957,10 +964,12 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 	 * application_name, so that it is different from the main apply worker,
 	 * so that synchronous replication can distinguish them.
 	 */
-	wrconn = walrcv_connect(MySubscription->conninfo, true, slotname, &err);
-	if (wrconn == NULL)
+	LogRepWorkerWalRcvConn =
+		walrcv_connect(MySubscription->conninfo, true, slotname, &err);
+	if (LogRepWorkerWalRcvConn == NULL)
 		ereport(ERROR,
-				(errmsg("could not connect to the publisher: %s", err)));
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("could not connect to the publisher: %s", err)));
 
 	Assert(MyLogicalRepWorker->relstate == SUBREL_STATE_INIT ||
 		   MyLogicalRepWorker->relstate == SUBREL_STATE_DATASYNC ||
@@ -985,7 +994,7 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 		 * breakdown then it wouldn't have succeeded so trying it next time
 		 * seems like a better bet.
 		 */
-		ReplicationSlotDropAtPubNode(wrconn, slotname, true);
+		ReplicationSlotDropAtPubNode(LogRepWorkerWalRcvConn, slotname, true);
 	}
 	else if (MyLogicalRepWorker->relstate == SUBREL_STATE_FINISHEDCOPY)
 	{
@@ -1038,12 +1047,13 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 	 * ensures that both the replication slot we create (see below) and the
 	 * COPY are consistent with each other.
 	 */
-	res = walrcv_exec(wrconn,
+	res = walrcv_exec(LogRepWorkerWalRcvConn,
 					  "BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ",
 					  0, NULL);
 	if (res->status != WALRCV_OK_COMMAND)
 		ereport(ERROR,
-				(errmsg("table copy could not start transaction on publisher: %s",
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("table copy could not start transaction on publisher: %s",
 						res->err)));
 	walrcv_clear_result(res);
 
@@ -1058,7 +1068,8 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 	 * slot leading to a dangling slot on the server.
 	 */
 	HOLD_INTERRUPTS();
-	walrcv_create_slot(wrconn, slotname, false /* permanent */ ,
+	walrcv_create_slot(LogRepWorkerWalRcvConn,
+					   slotname, false /* permanent */ , false /* two_phase */ ,
 					   CRS_USE_SNAPSHOT, origin_startpos);
 	RESUME_INTERRUPTS();
 
@@ -1100,10 +1111,11 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 	copy_table(rel);
 	PopActiveSnapshot();
 
-	res = walrcv_exec(wrconn, "COMMIT", 0, NULL);
+	res = walrcv_exec(LogRepWorkerWalRcvConn, "COMMIT", 0, NULL);
 	if (res->status != WALRCV_OK_COMMAND)
 		ereport(ERROR,
-				(errmsg("table copy could not finish transaction on publisher: %s",
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("table copy could not finish transaction on publisher: %s",
 						res->err)));
 	walrcv_clear_result(res);
 
@@ -1143,4 +1155,135 @@ copy_table_done:
 	 */
 	wait_for_worker_state_change(SUBREL_STATE_CATCHUP);
 	return slotname;
+}
+
+/*
+ * Common code to fetch the up-to-date sync state info into the static lists.
+ *
+ * Returns true if subscription has 1 or more tables, else false.
+ *
+ * Note: If this function started the transaction (indicated by the parameter)
+ * then it is the caller's responsibility to commit it.
+ */
+static bool
+FetchTableStates(bool *started_tx)
+{
+	static bool has_subrels = false;
+
+	*started_tx = false;
+
+	if (!table_states_valid)
+	{
+		MemoryContext oldctx;
+		List	   *rstates;
+		ListCell   *lc;
+		SubscriptionRelState *rstate;
+
+		/* Clean the old lists. */
+		list_free_deep(table_states_not_ready);
+		table_states_not_ready = NIL;
+
+		if (!IsTransactionState())
+		{
+			StartTransactionCommand();
+			*started_tx = true;
+		}
+
+		/* Fetch all non-ready tables. */
+		rstates = GetSubscriptionNotReadyRelations(MySubscription->oid);
+
+		/* Allocate the tracking info in a permanent memory context. */
+		oldctx = MemoryContextSwitchTo(CacheMemoryContext);
+		foreach(lc, rstates)
+		{
+			rstate = palloc(sizeof(SubscriptionRelState));
+			memcpy(rstate, lfirst(lc), sizeof(SubscriptionRelState));
+			table_states_not_ready = lappend(table_states_not_ready, rstate);
+		}
+		MemoryContextSwitchTo(oldctx);
+
+		/*
+		 * Does the subscription have tables?
+		 *
+		 * If there were not-READY relations found then we know it does. But
+		 * if table_state_not_ready was empty we still need to check again to
+		 * see if there are 0 tables.
+		 */
+		has_subrels = (list_length(table_states_not_ready) > 0) ||
+			HasSubscriptionRelations(MySubscription->oid);
+
+		table_states_valid = true;
+	}
+
+	return has_subrels;
+}
+
+/*
+ * If the subscription has no tables then return false.
+ *
+ * Otherwise, are all tablesyncs READY?
+ *
+ * Note: This function is not suitable to be called from outside of apply or
+ * tablesync workers because MySubscription needs to be already initialized.
+ */
+bool
+AllTablesyncsReady(void)
+{
+	bool		started_tx = false;
+	bool		has_subrels = false;
+
+	/* We need up-to-date sync state info for subscription tables here. */
+	has_subrels = FetchTableStates(&started_tx);
+
+	if (started_tx)
+	{
+		CommitTransactionCommand();
+		pgstat_report_stat(false);
+	}
+
+	/*
+	 * Return false when there are no tables in subscription or not all tables
+	 * are in ready state; true otherwise.
+	 */
+	return has_subrels && list_length(table_states_not_ready) == 0;
+}
+
+/*
+ * Update the two_phase state of the specified subscription in pg_subscription.
+ */
+void
+UpdateTwoPhaseState(Oid suboid, char new_state)
+{
+	Relation	rel;
+	HeapTuple	tup;
+	bool		nulls[Natts_pg_subscription];
+	bool		replaces[Natts_pg_subscription];
+	Datum		values[Natts_pg_subscription];
+
+	Assert(new_state == LOGICALREP_TWOPHASE_STATE_DISABLED ||
+		   new_state == LOGICALREP_TWOPHASE_STATE_PENDING ||
+		   new_state == LOGICALREP_TWOPHASE_STATE_ENABLED);
+
+	rel = table_open(SubscriptionRelationId, RowExclusiveLock);
+	tup = SearchSysCacheCopy1(SUBSCRIPTIONOID, ObjectIdGetDatum(suboid));
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR,
+			 "cache lookup failed for subscription oid %u",
+			 suboid);
+
+	/* Form a new tuple. */
+	memset(values, 0, sizeof(values));
+	memset(nulls, false, sizeof(nulls));
+	memset(replaces, false, sizeof(replaces));
+
+	/* And update/set two_phase state */
+	values[Anum_pg_subscription_subtwophasestate - 1] = CharGetDatum(new_state);
+	replaces[Anum_pg_subscription_subtwophasestate - 1] = true;
+
+	tup = heap_modify_tuple(tup, RelationGetDescr(rel),
+							values, nulls, replaces);
+	CatalogTupleUpdate(rel, &tup->t_self, tup);
+
+	heap_freetuple(tup);
+	table_close(rel, RowExclusiveLock);
 }

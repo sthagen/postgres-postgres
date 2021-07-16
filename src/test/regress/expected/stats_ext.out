@@ -211,14 +211,18 @@ CREATE TABLE tststats.pt (a int, b int, c text) PARTITION BY RANGE (a, b);
 CREATE TABLE tststats.pt1 PARTITION OF tststats.pt FOR VALUES FROM (-10, -10) TO (10, 10);
 CREATE STATISTICS tststats.s1 ON a, b FROM tststats.t;
 CREATE STATISTICS tststats.s2 ON a, b FROM tststats.ti;
-ERROR:  relation "ti" is not a table, foreign table, or materialized view
+ERROR:  cannot define statistics for relation "ti"
+DETAIL:  This operation is not supported for indexes.
 CREATE STATISTICS tststats.s3 ON a, b FROM tststats.s;
-ERROR:  relation "s" is not a table, foreign table, or materialized view
+ERROR:  cannot define statistics for relation "s"
+DETAIL:  This operation is not supported for sequences.
 CREATE STATISTICS tststats.s4 ON a, b FROM tststats.v;
-ERROR:  relation "v" is not a table, foreign table, or materialized view
+ERROR:  cannot define statistics for relation "v"
+DETAIL:  This operation is not supported for views.
 CREATE STATISTICS tststats.s5 ON a, b FROM tststats.mv;
 CREATE STATISTICS tststats.s6 ON a, b FROM tststats.ty;
-ERROR:  relation "ty" is not a table, foreign table, or materialized view
+ERROR:  cannot define statistics for relation "ty"
+DETAIL:  This operation is not supported for composite types.
 CREATE STATISTICS tststats.s7 ON a, b FROM tststats.f;
 CREATE STATISTICS tststats.s8 ON a, b FROM tststats.pt;
 CREATE STATISTICS tststats.s9 ON a, b FROM tststats.pt1;
@@ -2938,6 +2942,25 @@ SELECT * FROM check_estimated_rows('SELECT * FROM expr_stats WHERE a = 0 AND (b 
 (1 row)
 
 DROP TABLE expr_stats;
+-- test handling of a mix of compatible and incompatible expressions
+CREATE TABLE expr_stats_incompatible_test (
+    c0 double precision,
+    c1 boolean NOT NULL
+);
+CREATE STATISTICS expr_stat_comp_1 ON c0, c1 FROM expr_stats_incompatible_test;
+INSERT INTO expr_stats_incompatible_test VALUES (1234,false), (5678,true);
+ANALYZE expr_stats_incompatible_test;
+SELECT c0 FROM ONLY expr_stats_incompatible_test WHERE
+(
+  upper('x') LIKE ('x'||('[0,1]'::int4range))
+  AND
+  (c0 IN (0, 1) OR c1)
+);
+ c0 
+----
+(0 rows)
+
+DROP TABLE expr_stats_incompatible_test;
 -- Permission tests. Users should not be able to see specific data values in
 -- the extended statistics, if they lack permission to see those values in
 -- the underlying table.

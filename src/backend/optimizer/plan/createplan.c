@@ -34,6 +34,7 @@
 #include "optimizer/placeholder.h"
 #include "optimizer/plancat.h"
 #include "optimizer/planmain.h"
+#include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/subselect.h"
 #include "optimizer/tlist.h"
@@ -91,9 +92,8 @@ static Result *create_group_result_plan(PlannerInfo *root,
 static ProjectSet *create_project_set_plan(PlannerInfo *root, ProjectSetPath *best_path);
 static Material *create_material_plan(PlannerInfo *root, MaterialPath *best_path,
 									  int flags);
-static ResultCache *create_resultcache_plan(PlannerInfo *root,
-											ResultCachePath *best_path,
-											int flags);
+static Memoize *create_memoize_plan(PlannerInfo *root, MemoizePath *best_path,
+									int flags);
 static Plan *create_unique_plan(PlannerInfo *root, UniquePath *best_path,
 								int flags);
 static Gather *create_gather_plan(PlannerInfo *root, GatherPath *best_path);
@@ -269,9 +269,6 @@ static Plan *prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
 										Oid **p_sortOperators,
 										Oid **p_collations,
 										bool **p_nullsFirst);
-static EquivalenceMember *find_ec_member_for_tle(EquivalenceClass *ec,
-												 TargetEntry *tle,
-												 Relids relids);
 static Sort *make_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
 									 Relids relids);
 static IncrementalSort *make_incrementalsort_from_pathkeys(Plan *lefttree,
@@ -280,11 +277,9 @@ static Sort *make_sort_from_groupcols(List *groupcls,
 									  AttrNumber *grpColIdx,
 									  Plan *lefttree);
 static Material *make_material(Plan *lefttree);
-static ResultCache *make_resultcache(Plan *lefttree, Oid *hashoperators,
-									 Oid *collations,
-									 List *param_exprs,
-									 bool singlerow,
-									 uint32 est_entries);
+static Memoize *make_memoize(Plan *lefttree, Oid *hashoperators,
+							 Oid *collations, List *param_exprs,
+							 bool singlerow, uint32 est_entries);
 static WindowAgg *make_windowagg(List *tlist, Index winref,
 								 int partNumCols, AttrNumber *partColIdx, Oid *partOperators, Oid *partCollations,
 								 int ordNumCols, AttrNumber *ordColIdx, Oid *ordOperators, Oid *ordCollations,
@@ -461,10 +456,10 @@ create_plan_recurse(PlannerInfo *root, Path *best_path, int flags)
 												 (MaterialPath *) best_path,
 												 flags);
 			break;
-		case T_ResultCache:
-			plan = (Plan *) create_resultcache_plan(root,
-													(ResultCachePath *) best_path,
-													flags);
+		case T_Memoize:
+			plan = (Plan *) create_memoize_plan(root,
+												(MemoizePath *) best_path,
+												flags);
 			break;
 		case T_Unique:
 			if (IsA(best_path, UpperUniquePath))
@@ -1580,16 +1575,16 @@ create_material_plan(PlannerInfo *root, MaterialPath *best_path, int flags)
 }
 
 /*
- * create_resultcache_plan
- *	  Create a ResultCache plan for 'best_path' and (recursively) plans
- *	  for its subpaths.
+ * create_memoize_plan
+ *	  Create a Memoize plan for 'best_path' and (recursively) plans for its
+ *	  subpaths.
  *
  *	  Returns a Plan node.
  */
-static ResultCache *
-create_resultcache_plan(PlannerInfo *root, ResultCachePath *best_path, int flags)
+static Memoize *
+create_memoize_plan(PlannerInfo *root, MemoizePath *best_path, int flags)
 {
-	ResultCache *plan;
+	Memoize    *plan;
 	Plan	   *subplan;
 	Oid		   *operators;
 	Oid		   *collations;
@@ -1621,8 +1616,8 @@ create_resultcache_plan(PlannerInfo *root, ResultCachePath *best_path, int flags
 		i++;
 	}
 
-	plan = make_resultcache(subplan, operators, collations, param_exprs,
-							best_path->singlerow, best_path->est_entries);
+	plan = make_memoize(subplan, operators, collations, param_exprs,
+						best_path->singlerow, best_path->est_entries);
 
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
 
@@ -1909,11 +1904,11 @@ create_gather_merge_plan(PlannerInfo *root, GatherMergePath *best_path)
 
 
 	/*
-	 * All gather merge paths should have already guaranteed the necessary sort
-	 * order either by adding an explicit sort node or by using presorted input.
-	 * We can't simply add a sort here on additional pathkeys, because we can't
-	 * guarantee the sort would be safe. For example, expressions may be
-	 * volatile or otherwise parallel unsafe.
+	 * All gather merge paths should have already guaranteed the necessary
+	 * sort order either by adding an explicit sort node or by using presorted
+	 * input. We can't simply add a sort here on additional pathkeys, because
+	 * we can't guarantee the sort would be safe. For example, expressions may
+	 * be volatile or otherwise parallel unsafe.
 	 */
 	if (!pathkeys_contained_in(pathkeys, best_path->subpath->pathkeys))
 		elog(ERROR, "gather merge input not sufficiently sorted");
@@ -1978,6 +1973,7 @@ create_projection_plan(PlannerInfo *root, ProjectionPath *best_path, int flags)
 		 */
 		subplan = create_plan_recurse(root, best_path->subpath,
 									  CP_IGNORE_TLIST);
+		Assert(is_projection_capable_plan(subplan));
 		tlist = build_path_tlist(root, &best_path->path);
 	}
 	else
@@ -2110,7 +2106,7 @@ create_sort_plan(PlannerInfo *root, SortPath *best_path, int flags)
 								  flags | CP_SMALL_TLIST);
 
 	/*
-	 * make_sort_from_pathkeys() indirectly calls find_ec_member_for_tle(),
+	 * make_sort_from_pathkeys indirectly calls find_ec_member_matching_expr,
 	 * which will ignore any child EC members that don't belong to the given
 	 * relids. Thus, if this sort path is based on a child relation, we must
 	 * pass its relids.
@@ -6017,9 +6013,6 @@ make_incrementalsort(Plan *lefttree, int numCols, int nPresortedCols,
  *
  * Returns the node which is to be the input to the Sort (either lefttree,
  * or a Result stacked atop lefttree).
- *
- * Note: Restrictions on what expressions are safely sortable may also need to
- * be added to find_em_expr_usable_for_sorting_rel.
  */
 static Plan *
 prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
@@ -6089,7 +6082,7 @@ prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
 			tle = get_tle_by_resno(tlist, reqColIdx[numsortkeys]);
 			if (tle)
 			{
-				em = find_ec_member_for_tle(ec, tle, relids);
+				em = find_ec_member_matching_expr(ec, tle->expr, relids);
 				if (em)
 				{
 					/* found expr at right place in tlist */
@@ -6120,7 +6113,7 @@ prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
 			foreach(j, tlist)
 			{
 				tle = (TargetEntry *) lfirst(j);
-				em = find_ec_member_for_tle(ec, tle, relids);
+				em = find_ec_member_matching_expr(ec, tle->expr, relids);
 				if (em)
 				{
 					/* found expr already in tlist */
@@ -6134,56 +6127,12 @@ prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
 		if (!tle)
 		{
 			/*
-			 * No matching tlist item; look for a computable expression. Note
-			 * that we treat Aggrefs as if they were variables; this is
-			 * necessary when attempting to sort the output from an Agg node
-			 * for use in a WindowFunc (since grouping_planner will have
-			 * treated the Aggrefs as variables, too).  Likewise, if we find a
-			 * WindowFunc in a sort expression, treat it as a variable.
+			 * No matching tlist item; look for a computable expression.
 			 */
-			Expr	   *sortexpr = NULL;
-
-			foreach(j, ec->ec_members)
-			{
-				EquivalenceMember *em = (EquivalenceMember *) lfirst(j);
-				List	   *exprvars;
-				ListCell   *k;
-
-				/*
-				 * We shouldn't be trying to sort by an equivalence class that
-				 * contains a constant, so no need to consider such cases any
-				 * further.
-				 */
-				if (em->em_is_const)
-					continue;
-
-				/*
-				 * Ignore child members unless they belong to the rel being
-				 * sorted.
-				 */
-				if (em->em_is_child &&
-					!bms_is_subset(em->em_relids, relids))
-					continue;
-
-				sortexpr = em->em_expr;
-				exprvars = pull_var_clause((Node *) sortexpr,
-										   PVC_INCLUDE_AGGREGATES |
-										   PVC_INCLUDE_WINDOWFUNCS |
-										   PVC_INCLUDE_PLACEHOLDERS);
-				foreach(k, exprvars)
-				{
-					if (!tlist_member_ignore_relabel(lfirst(k), tlist))
-						break;
-				}
-				list_free(exprvars);
-				if (!k)
-				{
-					pk_datatype = em->em_datatype;
-					break;		/* found usable expression */
-				}
-			}
-			if (!j)
+			em = find_computable_ec_member(NULL, ec, tlist, relids, false);
+			if (!em)
 				elog(ERROR, "could not find pathkey item to sort");
+			pk_datatype = em->em_datatype;
 
 			/*
 			 * Do we need to insert a Result node?
@@ -6203,7 +6152,7 @@ prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
 			/*
 			 * Add resjunk entry to input's tlist
 			 */
-			tle = makeTargetEntry(sortexpr,
+			tle = makeTargetEntry(copyObject(em->em_expr),
 								  list_length(tlist) + 1,
 								  NULL,
 								  true);
@@ -6240,56 +6189,6 @@ prepare_sort_from_pathkeys(Plan *lefttree, List *pathkeys,
 	*p_nullsFirst = nullsFirst;
 
 	return lefttree;
-}
-
-/*
- * find_ec_member_for_tle
- *		Locate an EquivalenceClass member matching the given TLE, if any
- *
- * Child EC members are ignored unless they belong to given 'relids'.
- */
-static EquivalenceMember *
-find_ec_member_for_tle(EquivalenceClass *ec,
-					   TargetEntry *tle,
-					   Relids relids)
-{
-	Expr	   *tlexpr;
-	ListCell   *lc;
-
-	/* We ignore binary-compatible relabeling on both ends */
-	tlexpr = tle->expr;
-	while (tlexpr && IsA(tlexpr, RelabelType))
-		tlexpr = ((RelabelType *) tlexpr)->arg;
-
-	foreach(lc, ec->ec_members)
-	{
-		EquivalenceMember *em = (EquivalenceMember *) lfirst(lc);
-		Expr	   *emexpr;
-
-		/*
-		 * We shouldn't be trying to sort by an equivalence class that
-		 * contains a constant, so no need to consider such cases any further.
-		 */
-		if (em->em_is_const)
-			continue;
-
-		/*
-		 * Ignore child members unless they belong to the rel being sorted.
-		 */
-		if (em->em_is_child &&
-			!bms_is_subset(em->em_relids, relids))
-			continue;
-
-		/* Match if same expression (after stripping relabel) */
-		emexpr = em->em_expr;
-		while (emexpr && IsA(emexpr, RelabelType))
-			emexpr = ((RelabelType *) emexpr)->arg;
-
-		if (equal(emexpr, tlexpr))
-			return em;
-	}
-
-	return NULL;
 }
 
 /*
@@ -6515,11 +6414,11 @@ materialize_finished_plan(Plan *subplan)
 	return matplan;
 }
 
-static ResultCache *
-make_resultcache(Plan *lefttree, Oid *hashoperators, Oid *collations,
-				 List *param_exprs, bool singlerow, uint32 est_entries)
+static Memoize *
+make_memoize(Plan *lefttree, Oid *hashoperators, Oid *collations,
+			 List *param_exprs, bool singlerow, uint32 est_entries)
 {
-	ResultCache *node = makeNode(ResultCache);
+	Memoize    *node = makeNode(Memoize);
 	Plan	   *plan = &node->plan;
 
 	plan->targetlist = lefttree->targetlist;
@@ -6753,7 +6652,7 @@ make_unique_from_pathkeys(Plan *lefttree, List *pathkeys, int numCols)
 			foreach(j, plan->targetlist)
 			{
 				tle = (TargetEntry *) lfirst(j);
-				em = find_ec_member_for_tle(ec, tle, NULL);
+				em = find_ec_member_matching_expr(ec, tle->expr, NULL);
 				if (em)
 				{
 					/* found expr already in tlist */
@@ -7009,6 +6908,7 @@ make_modifytable(PlannerInfo *root, Plan *subplan,
 	{
 		node->onConflictAction = ONCONFLICT_NONE;
 		node->onConflictSet = NIL;
+		node->onConflictCols = NIL;
 		node->onConflictWhere = NULL;
 		node->arbiterIndexes = NIL;
 		node->exclRelRTI = 0;
@@ -7017,7 +6917,16 @@ make_modifytable(PlannerInfo *root, Plan *subplan,
 	else
 	{
 		node->onConflictAction = onconflict->action;
+
+		/*
+		 * Here we convert the ON CONFLICT UPDATE tlist, if any, to the
+		 * executor's convention of having consecutive resno's.  The actual
+		 * target column numbers are saved in node->onConflictCols.  (This
+		 * could be done earlier, but there seems no need to.)
+		 */
 		node->onConflictSet = onconflict->onConflictSet;
+		node->onConflictCols =
+			extract_update_targetlist_colnos(node->onConflictSet);
 		node->onConflictWhere = onconflict->onConflictWhere;
 
 		/*
@@ -7123,7 +7032,7 @@ is_projection_capable_path(Path *path)
 	{
 		case T_Hash:
 		case T_Material:
-		case T_ResultCache:
+		case T_Memoize:
 		case T_Sort:
 		case T_IncrementalSort:
 		case T_Unique:
@@ -7133,6 +7042,10 @@ is_projection_capable_path(Path *path)
 		case T_ModifyTable:
 		case T_MergeAppend:
 		case T_RecursiveUnion:
+			return false;
+		case T_CustomScan:
+			if (castNode(CustomPath, path)->flags & CUSTOMPATH_SUPPORT_PROJECTION)
+				return true;
 			return false;
 		case T_Append:
 
@@ -7169,7 +7082,7 @@ is_projection_capable_plan(Plan *plan)
 	{
 		case T_Hash:
 		case T_Material:
-		case T_ResultCache:
+		case T_Memoize:
 		case T_Sort:
 		case T_Unique:
 		case T_SetOp:
@@ -7179,6 +7092,10 @@ is_projection_capable_plan(Plan *plan)
 		case T_Append:
 		case T_MergeAppend:
 		case T_RecursiveUnion:
+			return false;
+		case T_CustomScan:
+			if (((CustomScan *) plan)->flags & CUSTOMPATH_SUPPORT_PROJECTION)
+				return true;
 			return false;
 		case T_ProjectSet:
 
