@@ -291,12 +291,10 @@ typedef enum NodeTag
 	/*
 	 * TAGS FOR VALUE NODES (value.h)
 	 */
-	T_Value,
 	T_Integer,
 	T_Float,
 	T_String,
 	T_BitString,
-	T_Null,
 
 	/*
 	 * TAGS FOR LIST NODES (pg_list.h)
@@ -490,6 +488,7 @@ typedef enum NodeTag
 	T_PartitionRangeDatum,
 	T_PartitionCmd,
 	T_VacuumRelation,
+	T_PublicationTable,
 
 	/*
 	 * TAGS FOR REPLICATION GRAMMAR PARSE NODES (replnodes.h)
