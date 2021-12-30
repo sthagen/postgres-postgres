@@ -778,6 +778,7 @@ FormData_pg_partitioned_table
 FormData_pg_policy
 FormData_pg_proc
 FormData_pg_publication
+FormData_pg_publication_namespace
 FormData_pg_publication_rel
 FormData_pg_range
 FormData_pg_replication_origin
@@ -834,6 +835,7 @@ Form_pg_partitioned_table
 Form_pg_policy
 Form_pg_proc
 Form_pg_publication
+Form_pg_publication_namespace
 Form_pg_publication_rel
 Form_pg_range
 Form_pg_replication_origin
@@ -1093,6 +1095,7 @@ ImportForeignSchemaStmt
 ImportForeignSchemaType
 ImportForeignSchema_function
 ImportQual
+InProgressEnt
 IncludeWal
 InclusionOpaque
 IncrementVarSublevelsUp_context
@@ -1302,13 +1305,9 @@ LPVOID
 LPWSTR
 LSEG
 LUID
-LVDeadTuples
 LVPagePruneState
-LVParallelState
 LVRelState
 LVSavedErrInfo
-LVShared
-LVSharedIndStats
 LWLock
 LWLockHandle
 LWLockMode
@@ -1771,7 +1770,10 @@ PTIterationArray
 PTOKEN_PRIVILEGES
 PTOKEN_USER
 PUTENVPROC
+PVIndStats
+PvIndVacStatus
 PVOID
+PVShared
 PX_Alias
 PX_Cipher
 PX_Combo
@@ -1805,6 +1807,7 @@ ParallelSlotResultHandler
 ParallelState
 ParallelTableScanDesc
 ParallelTableScanDescData
+ParallelVacuumState
 ParallelWorkerContext
 ParallelWorkerInfo
 Param
@@ -1940,6 +1943,8 @@ PgStat_MsgResetsharedcounter
 PgStat_MsgResetsinglecounter
 PgStat_MsgResetslrucounter
 PgStat_MsgSLRU
+PgStat_MsgSubscriptionPurge
+PgStat_MsgSubWorkerError
 PgStat_MsgTabpurge
 PgStat_MsgTabstat
 PgStat_MsgTempFile
@@ -1951,6 +1956,8 @@ PgStat_Single_Reset_Type
 PgStat_StatDBEntry
 PgStat_StatFuncEntry
 PgStat_StatReplSlotEntry
+PgStat_StatSubWorkerEntry
+PgStat_StatSubWorkerKey
 PgStat_StatTabEntry
 PgStat_SubXactStatus
 PgStat_TableCounts
@@ -2046,8 +2053,11 @@ PsqlSettings
 Publication
 PublicationActions
 PublicationInfo
+PublicationObjSpec
+PublicationObjSpecType
 PublicationPartOpt
 PublicationRelInfo
+PublicationSchemaInfo
 PublicationTable
 PullFilter
 PullFilterOps
@@ -2128,6 +2138,7 @@ ReadBufferMode
 ReadBytePtrType
 ReadExtraTocPtrType
 ReadFunc
+ReadReplicationSlotCmd
 ReassignOwnedStmt
 RecheckForeignScan_function
 RecordCacheEntry
@@ -2787,6 +2798,7 @@ UserMapping
 UserOpts
 VacAttrStats
 VacAttrStatsP
+VacDeadItems
 VacErrPhase
 VacOptValue
 VacuumParams
@@ -2851,6 +2863,7 @@ WaitEventTimeout
 WaitPMResult
 WalCloseMethod
 WalCompression
+WalCompressionMethod
 WalLevel
 WalRcvData
 WalRcvExecResult

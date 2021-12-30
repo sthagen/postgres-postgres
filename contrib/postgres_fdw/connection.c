@@ -104,7 +104,7 @@ static bool pgfdw_cancel_query(PGconn *conn);
 static bool pgfdw_exec_cleanup_query(PGconn *conn, const char *query,
 									 bool ignore_errors);
 static bool pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
-									 PGresult **result);
+									 PGresult **result, bool *timed_out);
 static void pgfdw_abort_cleanup(ConnCacheEntry *entry, const char *sql,
 								bool toplevel);
 static bool UserMappingPasswordRequired(UserMapping *user);
@@ -348,6 +348,7 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 	{
 		const char **keywords;
 		const char **values;
+		char	   *appname = NULL;
 		int			n;
 
 		/*
@@ -381,6 +382,39 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 			keywords[n] = "application_name";
 			values[n] = pgfdw_application_name;
 			n++;
+		}
+
+		/*
+		 * Search the parameter arrays to find application_name setting, and
+		 * replace escape sequences in it with status information if found.
+		 * The arrays are searched backwards because the last value is used if
+		 * application_name is repeatedly set.
+		 */
+		for (int i = n - 1; i >= 0; i--)
+		{
+			if (strcmp(keywords[i], "application_name") == 0 &&
+				*(values[i]) != '\0')
+			{
+				/*
+				 * Use this application_name setting if it's not empty string
+				 * even after any escape sequences in it are replaced.
+				 */
+				appname = process_pgfdw_appname(values[i]);
+				if (appname[0] != '\0')
+				{
+					values[i] = appname;
+					break;
+				}
+
+				/*
+				 * This empty application_name is not used, so we set
+				 * values[i] to NULL and keep searching the array to find the
+				 * next one.
+				 */
+				values[i] = NULL;
+				pfree(appname);
+				appname = NULL;
+			}
 		}
 
 		/* Use "postgres_fdw" as fallback_application_name */
@@ -452,6 +486,8 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 		/* Prepare new session for use */
 		configure_remote_session(conn);
 
+		if (appname != NULL)
+			pfree(appname);
 		pfree(keywords);
 		pfree(values);
 	}
@@ -824,7 +860,8 @@ pgfdw_report_error(int elevel, PGresult *res, PGconn *conn,
 
 		ereport(elevel,
 				(errcode(sqlstate),
-				 message_primary ? errmsg_internal("%s", message_primary) :
+				 (message_primary != NULL && message_primary[0] != '\0') ?
+				 errmsg_internal("%s", message_primary) :
 				 errmsg("could not obtain message string for remote error"),
 				 message_detail ? errdetail_internal("%s", message_detail) : 0,
 				 message_hint ? errhint("%s", message_hint) : 0,
@@ -1137,6 +1174,11 @@ pgfdw_reject_incomplete_xact_state_change(ConnCacheEntry *entry)
  * and ignore the result.  Returns true if we successfully cancel the query
  * and discard any pending result, and false if not.
  *
+ * It's not a huge problem if we throw an ERROR here, but if we get into error
+ * recursion trouble, we'll end up slamming the connection shut, which will
+ * necessitate failing the entire toplevel transaction even if subtransactions
+ * were used.  Try to use WARNING where we can.
+ *
  * XXX: if the query was one sent by fetch_more_data_begin(), we could get the
  * query text from the pendingAreq saved in the per-connection state, then
  * report the query using it.
@@ -1148,6 +1190,7 @@ pgfdw_cancel_query(PGconn *conn)
 	char		errbuf[256];
 	PGresult   *result = NULL;
 	TimestampTz endtime;
+	bool		timed_out;
 
 	/*
 	 * If it takes too long to cancel the query and discard the result, assume
@@ -1174,8 +1217,19 @@ pgfdw_cancel_query(PGconn *conn)
 	}
 
 	/* Get and discard the result of the query. */
-	if (pgfdw_get_cleanup_result(conn, endtime, &result))
+	if (pgfdw_get_cleanup_result(conn, endtime, &result, &timed_out))
+	{
+		if (timed_out)
+			ereport(WARNING,
+					(errmsg("could not get result of cancel request due to timeout")));
+		else
+			ereport(WARNING,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("could not get result of cancel request: %s",
+							pchomp(PQerrorMessage(conn)))));
+
 		return false;
+	}
 	PQclear(result);
 
 	return true;
@@ -1187,12 +1241,18 @@ pgfdw_cancel_query(PGconn *conn)
  * If the query is executed successfully but returns an error, the return
  * value is true if and only if ignore_errors is set.  If the query can't be
  * sent or times out, the return value is false.
+ *
+ * It's not a huge problem if we throw an ERROR here, but if we get into error
+ * recursion trouble, we'll end up slamming the connection shut, which will
+ * necessitate failing the entire toplevel transaction even if subtransactions
+ * were used.  Try to use WARNING where we can.
  */
 static bool
 pgfdw_exec_cleanup_query(PGconn *conn, const char *query, bool ignore_errors)
 {
 	PGresult   *result = NULL;
 	TimestampTz endtime;
+	bool		timed_out;
 
 	/*
 	 * If it takes too long to execute a cleanup query, assume the connection
@@ -1213,8 +1273,17 @@ pgfdw_exec_cleanup_query(PGconn *conn, const char *query, bool ignore_errors)
 	}
 
 	/* Get the result of the query. */
-	if (pgfdw_get_cleanup_result(conn, endtime, &result))
+	if (pgfdw_get_cleanup_result(conn, endtime, &result, &timed_out))
+	{
+		if (timed_out)
+			ereport(WARNING,
+					(errmsg("could not get query result due to timeout"),
+					 query ? errcontext("remote SQL command: %s", query) : 0));
+		else
+			pgfdw_report_error(WARNING, NULL, conn, false, query);
+
 		return false;
+	}
 
 	/* Issue a warning if not successful. */
 	if (PQresultStatus(result) != PGRES_COMMAND_OK)
@@ -1233,20 +1302,19 @@ pgfdw_exec_cleanup_query(PGconn *conn, const char *query, bool ignore_errors)
  * be a query that was initiated as part of transaction abort to get the remote
  * side back to the appropriate state.
  *
- * It's not a huge problem if we throw an ERROR here, but if we get into error
- * recursion trouble, we'll end up slamming the connection shut, which will
- * necessitate failing the entire toplevel transaction even if subtransactions
- * were used.  Try to use WARNING where we can.
- *
  * endtime is the time at which we should give up and assume the remote
- * side is dead.  Returns true if the timeout expired, otherwise false.
- * Sets *result except in case of a timeout.
+ * side is dead.  Returns true if the timeout expired or connection trouble
+ * occurred, false otherwise.  Sets *result except in case of a timeout.
+ * Sets timed_out to true only when the timeout expired.
  */
 static bool
-pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime, PGresult **result)
+pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime, PGresult **result,
+						 bool *timed_out)
 {
-	volatile bool timed_out = false;
+	volatile bool failed = false;
 	PGresult   *volatile last_res = NULL;
+
+	*timed_out = false;
 
 	/* In what follows, do not leak any PGresults on an error. */
 	PG_TRY();
@@ -1265,7 +1333,8 @@ pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime, PGresult **result)
 				cur_timeout = TimestampDifferenceMilliseconds(now, endtime);
 				if (cur_timeout <= 0)
 				{
-					timed_out = true;
+					*timed_out = true;
+					failed = true;
 					goto exit;
 				}
 
@@ -1284,8 +1353,8 @@ pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime, PGresult **result)
 				{
 					if (!PQconsumeInput(conn))
 					{
-						/* connection trouble; treat the same as a timeout */
-						timed_out = true;
+						/* connection trouble */
+						failed = true;
 						goto exit;
 					}
 				}
@@ -1307,11 +1376,11 @@ exit:	;
 	}
 	PG_END_TRY();
 
-	if (timed_out)
+	if (failed)
 		PQclear(last_res);
 	else
 		*result = last_res;
-	return timed_out;
+	return failed;
 }
 
 /*

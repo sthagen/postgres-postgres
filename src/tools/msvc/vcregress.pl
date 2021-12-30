@@ -30,6 +30,13 @@ my $tmp_installdir = "$topdir/tmp_install";
 do './src/tools/msvc/config_default.pl';
 do './src/tools/msvc/config.pl' if (-f 'src/tools/msvc/config.pl');
 
+# These values are defaults that can be overridden by the calling environment
+# (see buildenv.pl processing below).
+# c.f. src/Makefile.global.in and configure.ac
+$ENV{GZIP_PROGRAM} ||= 'gzip';
+$ENV{LZ4} ||= 'lz4';
+$ENV{TAR} ||= 'tar';
+
 # buildenv.pl is for specifying the build environment settings
 # it should contain lines like:
 # $ENV{PATH} = "c:/path/to/bison/bin;$ENV{PATH}";
@@ -58,6 +65,14 @@ copy("$Config/refint/refint.dll",                 "src/test/regress");
 copy("$Config/autoinc/autoinc.dll",               "src/test/regress");
 copy("$Config/regress/regress.dll",               "src/test/regress");
 copy("$Config/dummy_seclabel/dummy_seclabel.dll", "src/test/regress");
+
+# Configuration settings used by TAP tests
+$ENV{with_ssl} = $config->{openssl} ? 'openssl' : 'no';
+$ENV{with_ldap} = $config->{ldap} ? 'yes' : 'no';
+$ENV{with_icu} = $config->{icu} ? 'yes' : 'no';
+$ENV{with_gssapi} = $config->{gss} ? 'yes' : 'no';
+$ENV{with_krb_srvnam} = $config->{krb_srvnam} || 'postgres';
+$ENV{with_readline} = 'no';
 
 $ENV{PATH} = "$topdir/$Config/libpq;$ENV{PATH}";
 
@@ -248,6 +263,9 @@ sub tap_check
 	$ENV{REGRESS_SHLIB} = "$topdir/src/test/regress/regress.dll";
 
 	$ENV{TESTDIR} = "$dir";
+	my $module = basename $dir;
+	# add the module build dir as the second element in the PATH
+	$ENV{PATH} =~ s!;!;$topdir/$Config/$module;!;
 
 	rmtree('tmp_check');
 	system(@args);
@@ -630,7 +648,9 @@ sub upgradecheck
 	print "\nSetting up new cluster\n\n";
 	standard_initdb() or exit 1;
 	print "\nRunning pg_upgrade\n\n";
-	@args = ('pg_upgrade', '-d', "$data.old", '-D', $data, '-b', $bindir);
+	@args = (
+		'pg_upgrade', '-d', "$data.old", '-D', $data, '-b', $bindir,
+		'--no-sync');
 	system(@args) == 0 or exit 1;
 	print "\nStarting new cluster\n\n";
 	@args = ('pg_ctl', '-l', "$logdir/postmaster2.log", 'start');
@@ -723,18 +743,13 @@ sub fetchTests
 		if ($m =~ /contrib\/pgcrypto/)
 		{
 
-			# pgcrypto is special since the tests depend on the
+			# pgcrypto is special since some tests depend on the
 			# configuration of the build
 
-			my $cftests =
-			  $config->{openssl}
-			  ? GetTests("OSSL_TESTS", $m)
-			  : GetTests("INT_TESTS",  $m);
 			my $pgptests =
 			  $config->{zlib}
 			  ? GetTests("ZLIB_TST",     $m)
 			  : GetTests("ZLIB_OFF_TST", $m);
-			$t =~ s/\$\(CF_TESTS\)/$cftests/;
 			$t =~ s/\$\(CF_PGP_TESTS\)/$pgptests/;
 		}
 	}

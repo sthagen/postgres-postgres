@@ -71,6 +71,7 @@
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/startup.h"
 #include "postmaster/syslogger.h"
 #include "postmaster/walwriter.h"
 #include "replication/logicallauncher.h"
@@ -1033,7 +1034,8 @@ static struct config_bool ConfigureNamesBool[] =
 	{
 		{"enable_incremental_sort", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of incremental sort steps."),
-			NULL
+			NULL,
+			GUC_EXPLAIN
 		},
 		&enable_incremental_sort,
 		true,
@@ -1222,7 +1224,7 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 	{
 		{"ssl_passphrase_command_supports_reload", PGC_SIGHUP, CONN_AUTH_SSL,
-			gettext_noop("Also use ssl_passphrase_command during server reload."),
+			gettext_noop("Controls whether ssl_passphrase_command is called during server reload."),
 			NULL
 		},
 		&ssl_passphrase_command_supports_reload,
@@ -1348,7 +1350,7 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&log_checkpoints,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 	{
@@ -2129,8 +2131,8 @@ static struct config_int ConfigureNamesInt[] =
 {
 	{
 		{"archive_timeout", PGC_SIGHUP, WAL_ARCHIVING,
-			gettext_noop("Forces a switch to the next WAL file if a "
-						 "new file has not been started within N seconds."),
+			gettext_noop("Sets the amount of time to wait before forcing a "
+						 "switch to the next WAL file."),
 			NULL,
 			GUC_UNIT_S
 		},
@@ -2140,7 +2142,8 @@ static struct config_int ConfigureNamesInt[] =
 	},
 	{
 		{"post_auth_delay", PGC_BACKEND, DEVELOPER_OPTIONS,
-			gettext_noop("Waits N seconds on connection startup after authentication."),
+			gettext_noop("Sets the amount of time to wait after "
+						 "authentication on connection startup."),
 			gettext_noop("This allows attaching a debugger to the process."),
 			GUC_NOT_IN_SAMPLE | GUC_UNIT_S
 		},
@@ -2760,7 +2763,8 @@ static struct config_int ConfigureNamesInt[] =
 	{
 		/* Not for general use */
 		{"pre_auth_delay", PGC_SIGHUP, DEVELOPER_OPTIONS,
-			gettext_noop("Waits N seconds on connection startup before authentication."),
+			gettext_noop("Sets the amount of time to wait before "
+						 "authentication on connection startup."),
 			gettext_noop("This allows attaching a debugger to the process."),
 			GUC_NOT_IN_SAMPLE | GUC_UNIT_S
 		},
@@ -2817,11 +2821,12 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"checkpoint_warning", PGC_SIGHUP, WAL_CHECKPOINTS,
-			gettext_noop("Enables warnings if checkpoint segments are filled more "
-						 "frequently than this."),
+			gettext_noop("Sets the maximum time before warning if checkpoints "
+						 "triggered by WAL volume happen too frequently."),
 			gettext_noop("Write a message to the server log if checkpoints "
-						 "caused by the filling of checkpoint segment files happens more "
-						 "frequently than this number of seconds. Zero turns off the warning."),
+						 "caused by the filling of WAL segment files happen more "
+						 "frequently than this amount of time. "
+						 "Zero turns off the warning."),
 			GUC_UNIT_S
 		},
 		&CheckPointWarning,
@@ -2943,8 +2948,8 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"commit_siblings", PGC_USERSET, WAL_SETTINGS,
-			gettext_noop("Sets the minimum concurrent open transactions before performing "
-						 "commit_delay."),
+			gettext_noop("Sets the minimum number of concurrent open transactions "
+						 "required before performing commit_delay."),
 			NULL
 		},
 		&CommitSiblings,
@@ -2998,13 +3003,14 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_MS
 		},
 		&Log_autovacuum_min_duration,
-		-1, -1, INT_MAX,
+		600000, -1, INT_MAX,
 		NULL, NULL, NULL
 	},
 
 	{
 		{"log_parameter_max_length", PGC_SUSET, LOGGING_WHAT,
-			gettext_noop("When logging statements, limit logged parameter values to first N bytes."),
+			gettext_noop("Sets the maximum length in bytes of data logged for bind "
+						 "parameter values when logging statements."),
 			gettext_noop("-1 to print values in full."),
 			GUC_UNIT_BYTE
 		},
@@ -3015,7 +3021,8 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"log_parameter_max_length_on_error", PGC_USERSET, LOGGING_WHAT,
-			gettext_noop("When reporting an error, limit logged parameter values to first N bytes."),
+			gettext_noop("Sets the maximum length in bytes of data logged for bind "
+						 "parameter values when logging statements, on error."),
 			gettext_noop("-1 to print values in full."),
 			GUC_UNIT_BYTE
 		},
@@ -3141,7 +3148,8 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"log_rotation_age", PGC_SIGHUP, LOGGING_WHERE,
-			gettext_noop("Automatic log file rotation will occur after N minutes."),
+			gettext_noop("Sets the amount of time to wait before forcing "
+						 "log file rotation."),
 			NULL,
 			GUC_UNIT_MIN
 		},
@@ -3152,7 +3160,8 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"log_rotation_size", PGC_SIGHUP, LOGGING_WHERE,
-			gettext_noop("Automatic log file rotation will occur after N kilobytes."),
+			gettext_noop("Sets the maximum size a log file can reach before "
+						 "being rotated."),
 			NULL,
 			GUC_UNIT_KB
 		},
@@ -3297,10 +3306,7 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&autovacuum_freeze_max_age,
 
-		/*
-		 * see pg_resetwal and vacuum_failsafe_age if you change the
-		 * upper-limit value.
-		 */
+		/* see vacuum_failsafe_age if you change the upper-limit value. */
 		200000000, 100000, 2000000000,
 		NULL, NULL, NULL
 	},
@@ -3402,7 +3408,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"ssl_renegotiation_limit", PGC_USERSET, CONN_AUTH_SSL,
+		{"ssl_renegotiation_limit", PGC_USERSET, COMPAT_OPTIONS_PREVIOUS,
 			gettext_noop("SSL renegotiation is no longer supported; this can only be 0."),
 			NULL,
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE,
@@ -3568,6 +3574,18 @@ static struct config_int ConfigureNamesInt[] =
 		&client_connection_check_interval,
 		0, 0, INT_MAX,
 		check_client_connection_check_interval, NULL, NULL
+	},
+
+	{
+		{"log_startup_progress_interval", PGC_SIGHUP, LOGGING_WHEN,
+			gettext_noop("Time between progress updates for "
+						 "long-running startup operations."),
+			gettext_noop("0 turns this feature off."),
+			GUC_UNIT_MS,
+		},
+		&log_startup_progress_interval,
+		10000, 0, INT_MAX,
+		NULL, NULL, NULL
 	},
 
 	/* End-of-list marker */
@@ -4660,7 +4678,7 @@ static struct config_enum ConfigureNamesEnum[] =
 
 	{
 		{"compute_query_id", PGC_SUSET, STATS_MONITORING,
-			gettext_noop("Compute query identifiers."),
+			gettext_noop("Enables in-core computation of query identifiers."),
 			NULL
 		},
 		&compute_query_id,
@@ -4824,7 +4842,8 @@ static struct config_enum ConfigureNamesEnum[] =
 		{"trace_recovery_messages", PGC_SIGHUP, DEVELOPER_OPTIONS,
 			gettext_noop("Enables logging of recovery-related debugging information."),
 			gettext_noop("Each level includes all the levels that follow it. The later"
-						 " the level, the fewer messages are sent.")
+						 " the level, the fewer messages are sent."),
+			GUC_NOT_IN_SAMPLE,
 		},
 		&trace_recovery_messages,
 
@@ -9170,6 +9189,9 @@ reapply_stacked_values(struct config_generic *variable,
 	}
 }
 
+/*
+ * Functions for extensions to call to define their custom GUC variables.
+ */
 void
 DefineCustomBoolVariable(const char *name,
 						 const char *short_desc,
@@ -9309,6 +9331,10 @@ DefineCustomEnumVariable(const char *name,
 	define_custom_variable(&var->gen);
 }
 
+/*
+ * Extensions should call this after they've defined all of their custom
+ * GUCs, to help catch misspelled config-file entries.
+ */
 void
 EmitWarningsOnPlaceholders(const char *className)
 {
@@ -12372,7 +12398,7 @@ check_recovery_target_xid(char **newval, void **extra, GucSource source)
 		TransactionId *myextra;
 
 		errno = 0;
-		xid = (TransactionId) pg_strtouint64(*newval, NULL, 0);
+		xid = (TransactionId) strtou64(*newval, NULL, 0);
 		if (errno == EINVAL || errno == ERANGE)
 			return false;
 

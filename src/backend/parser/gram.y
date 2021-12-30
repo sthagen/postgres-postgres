@@ -141,6 +141,19 @@ typedef struct GroupClause
 	List   *list;
 } GroupClause;
 
+/* Private structs for the result of key_actions and key_action productions */
+typedef struct KeyAction
+{
+	char action;
+	List *cols;
+} KeyAction;
+
+typedef struct KeyActions
+{
+	KeyAction *updateAction;
+	KeyAction *deleteAction;
+} KeyActions;
+
 /* ConstraintAttributeSpec yields an integer bitmask of these flags: */
 #define CAS_NOT_DEFERRABLE			0x01
 #define CAS_DEFERRABLE				0x02
@@ -195,12 +208,17 @@ static Node *makeXmlExpr(XmlExprOp op, char *name, List *named_args,
 static List *mergeTableFuncParameters(List *func_args, List *columns);
 static TypeName *TableFuncTypeName(List *columns);
 static RangeVar *makeRangeVarFromAnyName(List *names, int position, core_yyscan_t yyscanner);
+static RangeVar *makeRangeVarFromQualifiedName(char *name, List *rels,
+											   int location,
+											   core_yyscan_t yyscanner);
 static void SplitColQualList(List *qualList,
 							 List **constraintList, CollateClause **collClause,
 							 core_yyscan_t yyscanner);
 static void processCASbits(int cas_bits, int location, const char *constrType,
 			   bool *deferrable, bool *initdeferred, bool *not_valid,
 			   bool *no_inherit, core_yyscan_t yyscanner);
+static void preprocess_pubobj_list(List *pubobjspec_list,
+								   core_yyscan_t yyscanner);
 static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 %}
@@ -256,9 +274,12 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	PartitionSpec		*partspec;
 	PartitionBoundSpec	*partboundspec;
 	RoleSpec			*rolespec;
+	PublicationObjSpec	*publicationobjectspec;
 	struct SelectLimit	*selectlimit;
 	SetQuantifier	 setquantifier;
 	struct GroupClause  *groupclause;
+	struct KeyActions	*keyactions;
+	struct KeyAction	*keyaction;
 }
 
 %type <node>	stmt toplevel_stmt schema_stmt routine_body_stmt
@@ -425,14 +446,13 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				transform_element_list transform_type_list
 				TriggerTransitions TriggerReferencing
 				vacuum_relation_list opt_vacuum_relation_list
-				drop_option_list publication_table_list
+				drop_option_list pub_obj_list
 
 %type <node>	opt_routine_body
 %type <groupclause> group_clause
 %type <list>	group_by_list
 %type <node>	group_by_item empty_grouping_set rollup_clause cube_clause
 %type <node>	grouping_sets_clause
-%type <node>	opt_publication_for_tables publication_for_tables publication_table
 
 %type <list>	opt_fdw_options fdw_options
 %type <defelt>	fdw_option
@@ -517,6 +537,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <node>	table_ref
 %type <jexpr>	joined_table
 %type <range>	relation_expr
+%type <range>	extended_relation_expr
 %type <range>	relation_expr_opt_alias
 %type <node>	tablesample_clause opt_repeatable_clause
 %type <target>	target_el set_target insert_column_item
@@ -553,6 +574,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <str>		createdb_opt_name plassign_target
 %type <node>	var_value zone_value
 %type <rolespec> auth_ident RoleSpec opt_granted_by
+%type <publicationobjectspec> PublicationObjSpec
 
 %type <keyword> unreserved_keyword type_func_name_keyword
 %type <keyword> col_name_keyword reserved_keyword
@@ -563,7 +585,9 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <str>		column_compression opt_column_compression
 %type <list>	ColQualList
 %type <node>	ColConstraint ColConstraintElem ConstraintAttr
-%type <ival>	key_actions key_delete key_match key_update key_action
+%type <ival>	key_match
+%type <keyaction> key_delete key_update key_action
+%type <keyactions> key_actions
 %type <ival>	ConstraintAttributeSpec ConstraintAttributeElem
 %type <str>		ExistingIndex
 
@@ -3683,8 +3707,9 @@ ColConstraintElem:
 					n->fk_attrs = NIL;
 					n->pk_attrs = $3;
 					n->fk_matchtype = $4;
-					n->fk_upd_action = (char) ($5 >> 8);
-					n->fk_del_action = (char) ($5 & 0xFF);
+					n->fk_upd_action = ($5)->updateAction->action;
+					n->fk_del_action = ($5)->deleteAction->action;
+					n->fk_del_set_cols = ($5)->deleteAction->cols;
 					n->skip_validation = false;
 					n->initially_valid = true;
 					$$ = (Node *)n;
@@ -3894,8 +3919,9 @@ ConstraintElem:
 					n->fk_attrs = $4;
 					n->pk_attrs = $8;
 					n->fk_matchtype = $9;
-					n->fk_upd_action = (char) ($10 >> 8);
-					n->fk_del_action = (char) ($10 & 0xFF);
+					n->fk_upd_action = ($10)->updateAction->action;
+					n->fk_del_action = ($10)->deleteAction->action;
+					n->fk_del_set_cols = ($10)->deleteAction->cols;
 					processCASbits($11, @11, "FOREIGN KEY",
 								   &n->deferrable, &n->initdeferred,
 								   &n->skip_validation, NULL,
@@ -3973,37 +3999,106 @@ OptWhereClause:
 			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
-/*
- * We combine the update and delete actions into one value temporarily
- * for simplicity of parsing, and then break them down again in the
- * calling production.  update is in the left 8 bits, delete in the right.
- * Note that NOACTION is the default.
- */
 key_actions:
 			key_update
-				{ $$ = ($1 << 8) | (FKCONSTR_ACTION_NOACTION & 0xFF); }
+				{
+					KeyActions *n = palloc(sizeof(KeyActions));
+					n->updateAction = $1;
+					n->deleteAction = palloc(sizeof(KeyAction));
+					n->deleteAction->action = FKCONSTR_ACTION_NOACTION;
+					n->deleteAction->cols = NIL;
+					$$ = n;
+				}
 			| key_delete
-				{ $$ = (FKCONSTR_ACTION_NOACTION << 8) | ($1 & 0xFF); }
+				{
+					KeyActions *n = palloc(sizeof(KeyActions));
+					n->updateAction = palloc(sizeof(KeyAction));
+					n->updateAction->action = FKCONSTR_ACTION_NOACTION;
+					n->updateAction->cols = NIL;
+					n->deleteAction = $1;
+					$$ = n;
+				}
 			| key_update key_delete
-				{ $$ = ($1 << 8) | ($2 & 0xFF); }
+				{
+					KeyActions *n = palloc(sizeof(KeyActions));
+					n->updateAction = $1;
+					n->deleteAction = $2;
+					$$ = n;
+				}
 			| key_delete key_update
-				{ $$ = ($2 << 8) | ($1 & 0xFF); }
+				{
+					KeyActions *n = palloc(sizeof(KeyActions));
+					n->updateAction = $2;
+					n->deleteAction = $1;
+					$$ = n;
+				}
 			| /*EMPTY*/
-				{ $$ = (FKCONSTR_ACTION_NOACTION << 8) | (FKCONSTR_ACTION_NOACTION & 0xFF); }
+				{
+					KeyActions *n = palloc(sizeof(KeyActions));
+					n->updateAction = palloc(sizeof(KeyAction));
+					n->updateAction->action = FKCONSTR_ACTION_NOACTION;
+					n->updateAction->cols = NIL;
+					n->deleteAction = palloc(sizeof(KeyAction));
+					n->deleteAction->action = FKCONSTR_ACTION_NOACTION;
+					n->deleteAction->cols = NIL;
+					$$ = n;
+				}
 		;
 
-key_update: ON UPDATE key_action		{ $$ = $3; }
+key_update: ON UPDATE key_action
+				{
+					if (($3)->cols)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("a column list with %s is only supported for ON DELETE actions",
+										($3)->action == FKCONSTR_ACTION_SETNULL ? "SET NULL" : "SET DEFAULT"),
+								 parser_errposition(@1)));
+					$$ = $3;
+				}
 		;
 
-key_delete: ON DELETE_P key_action		{ $$ = $3; }
+key_delete: ON DELETE_P key_action
+				{
+					$$ = $3;
+				}
 		;
 
 key_action:
-			NO ACTION					{ $$ = FKCONSTR_ACTION_NOACTION; }
-			| RESTRICT					{ $$ = FKCONSTR_ACTION_RESTRICT; }
-			| CASCADE					{ $$ = FKCONSTR_ACTION_CASCADE; }
-			| SET NULL_P				{ $$ = FKCONSTR_ACTION_SETNULL; }
-			| SET DEFAULT				{ $$ = FKCONSTR_ACTION_SETDEFAULT; }
+			NO ACTION
+				{
+					KeyAction *n = palloc(sizeof(KeyAction));
+					n->action = FKCONSTR_ACTION_NOACTION;
+					n->cols = NIL;
+					$$ = n;
+				}
+			| RESTRICT
+				{
+					KeyAction *n = palloc(sizeof(KeyAction));
+					n->action = FKCONSTR_ACTION_RESTRICT;
+					n->cols = NIL;
+					$$ = n;
+				}
+			| CASCADE
+				{
+					KeyAction *n = palloc(sizeof(KeyAction));
+					n->action = FKCONSTR_ACTION_CASCADE;
+					n->cols = NIL;
+					$$ = n;
+				}
+			| SET NULL_P opt_column_list
+				{
+					KeyAction *n = palloc(sizeof(KeyAction));
+					n->action = FKCONSTR_ACTION_SETNULL;
+					n->cols = $3;
+					$$ = n;
+				}
+			| SET DEFAULT opt_column_list
+				{
+					KeyAction *n = palloc(sizeof(KeyAction));
+					n->action = FKCONSTR_ACTION_SETDEFAULT;
+					n->cols = $3;
+					$$ = n;
+				}
 		;
 
 OptInherit: INHERITS '(' qualified_name_list ')'	{ $$ = $3; }
@@ -7189,6 +7284,7 @@ RevokeRoleStmt:
 					n->admin_opt = false;
 					n->granted_roles = $2;
 					n->grantee_roles = $4;
+					n->grantor = $5;
 					n->behavior = $6;
 					$$ = (Node*)n;
 				}
@@ -7199,6 +7295,7 @@ RevokeRoleStmt:
 					n->admin_opt = true;
 					n->granted_roles = $5;
 					n->grantee_roles = $7;
+					n->grantor = $8;
 					n->behavior = $9;
 					$$ = (Node*)n;
 				}
@@ -9591,69 +9688,131 @@ AlterOwnerStmt: ALTER AGGREGATE aggregate_with_argtypes OWNER TO RoleSpec
 
 /*****************************************************************************
  *
- * CREATE PUBLICATION name [ FOR TABLE ] [ WITH options ]
+ * CREATE PUBLICATION name [WITH options]
+ *
+ * CREATE PUBLICATION FOR ALL TABLES [WITH options]
+ *
+ * CREATE PUBLICATION FOR pub_obj [, ...] [WITH options]
+ *
+ * pub_obj is one of:
+ *
+ *		TABLE table [, ...]
+ *		ALL TABLES IN SCHEMA schema [, ...]
  *
  *****************************************************************************/
 
 CreatePublicationStmt:
-			CREATE PUBLICATION name opt_publication_for_tables opt_definition
+			CREATE PUBLICATION name opt_definition
 				{
 					CreatePublicationStmt *n = makeNode(CreatePublicationStmt);
 					n->pubname = $3;
-					n->options = $5;
-					if ($4 != NULL)
-					{
-						/* FOR TABLE */
-						if (IsA($4, List))
-							n->tables = (List *)$4;
-						/* FOR ALL TABLES */
-						else
-							n->for_all_tables = true;
-					}
+					n->options = $4;
+					$$ = (Node *)n;
+				}
+			| CREATE PUBLICATION name FOR ALL TABLES opt_definition
+				{
+					CreatePublicationStmt *n = makeNode(CreatePublicationStmt);
+					n->pubname = $3;
+					n->options = $7;
+					n->for_all_tables = true;
+					$$ = (Node *)n;
+				}
+			| CREATE PUBLICATION name FOR pub_obj_list opt_definition
+				{
+					CreatePublicationStmt *n = makeNode(CreatePublicationStmt);
+					n->pubname = $3;
+					n->options = $6;
+					n->pubobjects = (List *)$5;
+					preprocess_pubobj_list(n->pubobjects, yyscanner);
 					$$ = (Node *)n;
 				}
 		;
 
-opt_publication_for_tables:
-			publication_for_tables					{ $$ = $1; }
-			| /* EMPTY */							{ $$ = NULL; }
-		;
-
-publication_for_tables:
-			FOR TABLE publication_table_list
+/*
+ * FOR TABLE and FOR ALL TABLES IN SCHEMA specifications
+ *
+ * This rule parses publication objects with and without keyword prefixes.
+ *
+ * The actual type of the object without keyword prefix depends on the previous
+ * one with keyword prefix. It will be preprocessed in preprocess_pubobj_list().
+ *
+ * For the object without keyword prefix, we cannot just use relation_expr here,
+ * because some extended expressions in relation_expr cannot be used as a
+ * schemaname and we cannot differentiate it. So, we extract the rules from
+ * relation_expr here.
+ */
+PublicationObjSpec:
+			TABLE relation_expr
 				{
-					$$ = (Node *) $3;
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_TABLE;
+					$$->pubtable = makeNode(PublicationTable);
+					$$->pubtable->relation = $2;
 				}
-			| FOR ALL TABLES
+			| ALL TABLES IN_P SCHEMA ColId
 				{
-					$$ = (Node *) makeInteger(true);
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_TABLE_IN_SCHEMA;
+					$$->name = $5;
+					$$->location = @5;
 				}
-		;
+			| ALL TABLES IN_P SCHEMA CURRENT_SCHEMA
+				{
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_TABLE_IN_CUR_SCHEMA;
+					$$->location = @5;
+				}
+			| ColId
+				{
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_CONTINUATION;
+					$$->name = $1;
+					$$->location = @1;
+				}
+			| ColId indirection
+				{
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_CONTINUATION;
+					$$->pubtable = makeNode(PublicationTable);
+					$$->pubtable->relation = makeRangeVarFromQualifiedName($1, $2, @1, yyscanner);
+					$$->location = @1;
+				}
+			/* grammar like tablename * , ONLY tablename, ONLY ( tablename ) */
+			| extended_relation_expr
+				{
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_CONTINUATION;
+					$$->pubtable = makeNode(PublicationTable);
+					$$->pubtable->relation = $1;
+				}
+			| CURRENT_SCHEMA
+				{
+					$$ = makeNode(PublicationObjSpec);
+					$$->pubobjtype = PUBLICATIONOBJ_CONTINUATION;
+					$$->location = @1;
+				}
+				;
 
-publication_table_list:
-			publication_table
+pub_obj_list: 	PublicationObjSpec
 					{ $$ = list_make1($1); }
-		| publication_table_list ',' publication_table
-				{ $$ = lappend($1, $3); }
-		;
-
-publication_table: relation_expr
-		{
-			PublicationTable *n = makeNode(PublicationTable);
-			n->relation = $1;
-			$$ = (Node *) n;
-		}
+			| pub_obj_list ',' PublicationObjSpec
+					{ $$ = lappend($1, $3); }
 	;
 
 /*****************************************************************************
  *
  * ALTER PUBLICATION name SET ( options )
  *
- * ALTER PUBLICATION name ADD TABLE table [, table2]
+ * ALTER PUBLICATION name ADD pub_obj [, ...]
  *
- * ALTER PUBLICATION name DROP TABLE table [, table2]
+ * ALTER PUBLICATION name DROP pub_obj [, ...]
  *
- * ALTER PUBLICATION name SET TABLE table [, table2]
+ * ALTER PUBLICATION name SET pub_obj [, ...]
+ *
+ * pub_obj is one of:
+ *
+ *		TABLE table_name [, ...]
+ *		ALL TABLES IN SCHEMA schema_name [, ...]
  *
  *****************************************************************************/
 
@@ -9665,28 +9824,31 @@ AlterPublicationStmt:
 					n->options = $5;
 					$$ = (Node *)n;
 				}
-			| ALTER PUBLICATION name ADD_P TABLE publication_table_list
+			| ALTER PUBLICATION name ADD_P pub_obj_list
 				{
 					AlterPublicationStmt *n = makeNode(AlterPublicationStmt);
 					n->pubname = $3;
-					n->tables = $6;
-					n->tableAction = DEFELEM_ADD;
+					n->pubobjects = $5;
+					preprocess_pubobj_list(n->pubobjects, yyscanner);
+					n->action = DEFELEM_ADD;
 					$$ = (Node *)n;
 				}
-			| ALTER PUBLICATION name SET TABLE publication_table_list
+			| ALTER PUBLICATION name SET pub_obj_list
 				{
 					AlterPublicationStmt *n = makeNode(AlterPublicationStmt);
 					n->pubname = $3;
-					n->tables = $6;
-					n->tableAction = DEFELEM_SET;
+					n->pubobjects = $5;
+					preprocess_pubobj_list(n->pubobjects, yyscanner);
+					n->action = DEFELEM_SET;
 					$$ = (Node *)n;
 				}
-			| ALTER PUBLICATION name DROP TABLE publication_table_list
+			| ALTER PUBLICATION name DROP pub_obj_list
 				{
 					AlterPublicationStmt *n = makeNode(AlterPublicationStmt);
 					n->pubname = $3;
-					n->tables = $6;
-					n->tableAction = DEFELEM_DROP;
+					n->pubobjects = $5;
+					preprocess_pubobj_list(n->pubobjects, yyscanner);
+					n->action = DEFELEM_DROP;
 					$$ = (Node *)n;
 				}
 		;
@@ -12430,7 +12592,14 @@ relation_expr:
 					$$->inh = true;
 					$$->alias = NULL;
 				}
-			| qualified_name '*'
+			| extended_relation_expr
+				{
+					$$ = $1;
+				}
+		;
+
+extended_relation_expr:
+			qualified_name '*'
 				{
 					/* inheritance query, explicitly */
 					$$ = $1;
@@ -15104,28 +15273,7 @@ qualified_name:
 				}
 			| ColId indirection
 				{
-					check_qualified_name($2, yyscanner);
-					$$ = makeRangeVar(NULL, NULL, @1);
-					switch (list_length($2))
-					{
-						case 1:
-							$$->catalogname = NULL;
-							$$->schemaname = $1;
-							$$->relname = strVal(linitial($2));
-							break;
-						case 2:
-							$$->catalogname = $1;
-							$$->schemaname = strVal(linitial($2));
-							$$->relname = strVal(lsecond($2));
-							break;
-						default:
-							ereport(ERROR,
-									(errcode(ERRCODE_SYNTAX_ERROR),
-									 errmsg("improper qualified name (too many dotted names): %s",
-											NameListToString(lcons(makeString($1), $2))),
-									 parser_errposition(@1)));
-							break;
-					}
+					$$ = makeRangeVarFromQualifiedName($1, $2, @1, yyscanner);
 				}
 		;
 
@@ -17102,6 +17250,43 @@ makeRangeVarFromAnyName(List *names, int position, core_yyscan_t yyscanner)
 	return r;
 }
 
+/*
+ * Convert a relation_name with name and namelist to a RangeVar using
+ * makeRangeVar.
+ */
+static RangeVar *
+makeRangeVarFromQualifiedName(char *name, List *namelist, int location,
+							  core_yyscan_t yyscanner)
+{
+	RangeVar *r;
+
+	check_qualified_name(namelist, yyscanner);
+	r = makeRangeVar(NULL, NULL, location);
+
+	switch (list_length(namelist))
+	{
+		case 1:
+			r->catalogname = NULL;
+			r->schemaname = name;
+			r->relname = strVal(linitial(namelist));
+			break;
+		case 2:
+			r->catalogname = name;
+			r->schemaname = strVal(linitial(namelist));
+			r->relname = strVal(lsecond(namelist));
+			break;
+		default:
+			ereport(ERROR,
+					errcode(ERRCODE_SYNTAX_ERROR),
+					errmsg("improper qualified name (too many dotted names): %s",
+						   NameListToString(lcons(makeString(name), namelist))),
+						   parser_errposition(location));
+			break;
+	}
+
+	return r;
+}
+
 /* Separate Constraint nodes from COLLATE clauses in a ColQualList */
 static void
 SplitColQualList(List *qualList,
@@ -17207,6 +17392,74 @@ processCASbits(int cas_bits, int location, const char *constrType,
 					 errmsg("%s constraints cannot be marked NO INHERIT",
 							constrType),
 					 parser_errposition(location)));
+	}
+}
+
+/*
+ * Process pubobjspec_list to check for errors in any of the objects and
+ * convert PUBLICATIONOBJ_CONTINUATION into appropriate PublicationObjSpecType.
+ */
+static void
+preprocess_pubobj_list(List *pubobjspec_list, core_yyscan_t yyscanner)
+{
+	ListCell   *cell;
+	PublicationObjSpec *pubobj;
+	PublicationObjSpecType prevobjtype = PUBLICATIONOBJ_CONTINUATION;
+
+	if (!pubobjspec_list)
+		return;
+
+	pubobj = (PublicationObjSpec *) linitial(pubobjspec_list);
+	if (pubobj->pubobjtype == PUBLICATIONOBJ_CONTINUATION)
+		ereport(ERROR,
+				errcode(ERRCODE_SYNTAX_ERROR),
+				errmsg("TABLE/ALL TABLES IN SCHEMA should be specified before the table/schema name(s)"),
+				parser_errposition(pubobj->location));
+
+	foreach(cell, pubobjspec_list)
+	{
+		pubobj = (PublicationObjSpec *) lfirst(cell);
+
+		if (pubobj->pubobjtype == PUBLICATIONOBJ_CONTINUATION)
+			pubobj->pubobjtype = prevobjtype;
+
+		if (pubobj->pubobjtype == PUBLICATIONOBJ_TABLE)
+		{
+			/* relation name or pubtable must be set for this type of object */
+			if (!pubobj->name && !pubobj->pubtable)
+				ereport(ERROR,
+						errcode(ERRCODE_SYNTAX_ERROR),
+						errmsg("invalid table name at or near"),
+						parser_errposition(pubobj->location));
+			else if (pubobj->name)
+			{
+				/* convert it to PublicationTable */
+				PublicationTable *pubtable = makeNode(PublicationTable);
+				pubtable->relation = makeRangeVar(NULL, pubobj->name,
+												  pubobj->location);
+				pubobj->pubtable = pubtable;
+				pubobj->name = NULL;
+			}
+		}
+		else if (pubobj->pubobjtype == PUBLICATIONOBJ_TABLE_IN_SCHEMA ||
+				 pubobj->pubobjtype == PUBLICATIONOBJ_TABLE_IN_CUR_SCHEMA)
+		{
+			/*
+			 * We can distinguish between the different type of schema
+			 * objects based on whether name and pubtable is set.
+			 */
+			if (pubobj->name)
+				pubobj->pubobjtype = PUBLICATIONOBJ_TABLE_IN_SCHEMA;
+			else if (!pubobj->name && !pubobj->pubtable)
+				pubobj->pubobjtype = PUBLICATIONOBJ_TABLE_IN_CUR_SCHEMA;
+			else
+				ereport(ERROR,
+						errcode(ERRCODE_SYNTAX_ERROR),
+						errmsg("invalid schema name at or near"),
+						parser_errposition(pubobj->location));
+		}
+
+		prevobjtype = pubobj->pubobjtype;
 	}
 }
 
