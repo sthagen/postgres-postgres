@@ -3,7 +3,7 @@
  * pg_publication.c
  *		publication C API manipulation
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -494,7 +494,7 @@ GetPublicationRelations(Oid pubid, PublicationPartOpt pub_partopt)
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(pubid));
 
-	scan = systable_beginscan(pubrelsrel, PublicationRelPrrelidPrpubidIndexId,
+	scan = systable_beginscan(pubrelsrel, PublicationRelPrpubidIndexId,
 							  true, NULL, 1, &scankey);
 
 	result = NIL;
