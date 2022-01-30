@@ -3,8 +3,19 @@ use strict;
 use warnings;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 4;
+use Test::More;
 use File::Basename;
+
+if (PostgreSQL::Test::Utils::has_wal_read_bug)
+{
+	# We'd prefer to use "local $TODO", but the bug causes this test file to
+	# die(), not merely to fail.
+	plan skip_all => 'filesystem bug';
+}
+else
+{
+	plan tests => 4;
+}
 
 # Initialize primary node
 my $node_primary = PostgreSQL::Test::Cluster->new('primary');
@@ -47,6 +58,7 @@ my $extra_opts = $ENV{EXTRA_REGRESS_OPTS} || "";
 system_or_bail($ENV{PG_REGRESS} . " $extra_opts " .
 			   "--dlpath=\"$dlpath\" " .
 			   "--bindir= " .
+			   "--host=" . $node_primary->host . " " .
 			   "--port=" . $node_primary->port . " " .
 			   "--schedule=../regress/parallel_schedule " .
 			   "--max-concurrent-tests=20 " .

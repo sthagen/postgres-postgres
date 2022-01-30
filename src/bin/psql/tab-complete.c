@@ -1692,6 +1692,12 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER PUBLICATION <name> ADD */
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD"))
 		COMPLETE_WITH("ALL TABLES IN SCHEMA", "TABLE");
+	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "TABLE") ||
+			 (HeadMatches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "TABLE") &&
+			  ends_with(prev_wd, ',')))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables, NULL);
+	else if (HeadMatches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "TABLE"))
+		COMPLETE_WITH(",");
 	/* ALTER PUBLICATION <name> DROP */
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "DROP"))
 		COMPLETE_WITH("ALL TABLES IN SCHEMA", "TABLE");
@@ -1746,7 +1752,7 @@ psql_completion(const char *text, int start, int end)
 
 	/* ALTER COLLATION <name> */
 	else if (Matches("ALTER", "COLLATION", MatchAny))
-		COMPLETE_WITH("OWNER TO", "RENAME TO", "SET SCHEMA");
+		COMPLETE_WITH("OWNER TO", "REFRESH VERSION", "RENAME TO", "SET SCHEMA");
 
 	/* ALTER CONVERSION <name> */
 	else if (Matches("ALTER", "CONVERSION", MatchAny))
@@ -2633,7 +2639,7 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("OWNER", "TEMPLATE", "ENCODING", "TABLESPACE",
 					  "IS_TEMPLATE",
 					  "ALLOW_CONNECTIONS", "CONNECTION LIMIT",
-					  "LC_COLLATE", "LC_CTYPE", "LOCALE");
+					  "LC_COLLATE", "LC_CTYPE", "LOCALE", "OID");
 
 	else if (Matches("CREATE", "DATABASE", MatchAny, "TEMPLATE"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_template_databases);
