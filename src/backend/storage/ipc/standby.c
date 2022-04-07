@@ -20,6 +20,7 @@
 #include "access/twophase.h"
 #include "access/xact.h"
 #include "access/xloginsert.h"
+#include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -1272,10 +1273,10 @@ LogStandbySnapshot(void)
 /*
  * Record an enhanced snapshot of running transactions into WAL.
  *
- * The definitions of RunningTransactionsData and xl_xact_running_xacts are
- * similar. We keep them separate because xl_xact_running_xacts is a
- * contiguous chunk of memory and never exists fully until it is assembled in
- * WAL. The inserted records are marked as not being important for durability,
+ * The definitions of RunningTransactionsData and xl_running_xacts are
+ * similar. We keep them separate because xl_running_xacts is a contiguous
+ * chunk of memory and never exists fully until it is assembled in WAL.
+ * The inserted records are marked as not being important for durability,
  * to avoid triggering superfluous checkpoint / archiving activity.
  */
 static XLogRecPtr

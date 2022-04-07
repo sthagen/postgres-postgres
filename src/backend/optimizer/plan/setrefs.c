@@ -115,7 +115,6 @@ static Plan *set_indexonlyscan_references(PlannerInfo *root,
 static Plan *set_subqueryscan_references(PlannerInfo *root,
 										 SubqueryScan *plan,
 										 int rtoffset);
-static bool trivial_subqueryscan(SubqueryScan *plan);
 static Plan *clean_up_removed_plan_level(Plan *parent, Plan *child);
 static void set_foreignscan_references(PlannerInfo *root,
 									   ForeignScan *fscan,
@@ -952,6 +951,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 		case T_ModifyTable:
 			{
 				ModifyTable *splan = (ModifyTable *) plan;
+				Plan	   *subplan = outerPlan(splan);
 
 				Assert(splan->plan.targetlist == NIL);
 				Assert(splan->plan.qual == NIL);
@@ -963,7 +963,6 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				if (splan->returningLists)
 				{
 					List	   *newRL = NIL;
-					Plan	   *subplan = outerPlan(splan);
 					ListCell   *lcrl,
 							   *lcrr;
 
@@ -1028,6 +1027,68 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 
 					splan->exclRelTlist =
 						fix_scan_list(root, splan->exclRelTlist, rtoffset, 1);
+				}
+
+				/*
+				 * The MERGE statement produces the target rows by performing
+				 * a right join between the target relation and the source
+				 * relation (which could be a plain relation or a subquery).
+				 * The INSERT and UPDATE actions of the MERGE statement
+				 * require access to the columns from the source relation. We
+				 * arrange things so that the source relation attributes are
+				 * available as INNER_VAR and the target relation attributes
+				 * are available from the scan tuple.
+				 */
+				if (splan->mergeActionLists != NIL)
+				{
+					ListCell   *lca,
+							   *lcr;
+
+					/*
+					 * Fix the targetList of individual action nodes so that
+					 * the so-called "source relation" Vars are referenced as
+					 * INNER_VAR.  Note that for this to work correctly during
+					 * execution, the ecxt_innertuple must be set to the tuple
+					 * obtained by executing the subplan, which is what
+					 * constitutes the "source relation".
+					 *
+					 * We leave the Vars from the result relation (i.e. the
+					 * target relation) unchanged i.e. those Vars would be
+					 * picked from the scan slot. So during execution, we must
+					 * ensure that ecxt_scantuple is setup correctly to refer
+					 * to the tuple from the target relation.
+					 */
+					indexed_tlist *itlist;
+
+					itlist = build_tlist_index(subplan->targetlist);
+
+					forboth(lca, splan->mergeActionLists,
+							lcr, splan->resultRelations)
+					{
+						List	   *mergeActionList = lfirst(lca);
+						Index		resultrel = lfirst_int(lcr);
+
+						foreach(l, mergeActionList)
+						{
+							MergeAction *action = (MergeAction *) lfirst(l);
+
+							/* Fix targetList of each action. */
+							action->targetList = fix_join_expr(root,
+															   action->targetList,
+															   NULL, itlist,
+															   resultrel,
+															   rtoffset,
+															   NUM_EXEC_TLIST(plan));
+
+							/* Fix quals too. */
+							action->qual = (Node *) fix_join_expr(root,
+																  (List *) action->qual,
+																  NULL, itlist,
+																  resultrel,
+																  rtoffset,
+																  NUM_EXEC_QUAL(plan));
+						}
+					}
 				}
 
 				splan->nominalRelation += rtoffset;
@@ -1257,13 +1318,25 @@ set_subqueryscan_references(PlannerInfo *root,
  *
  * We can delete it if it has no qual to check and the targetlist just
  * regurgitates the output of the child plan.
+ *
+ * This might be called repeatedly on a SubqueryScan node, so we cache the
+ * result in the SubqueryScan node to avoid repeated computation.
  */
-static bool
+bool
 trivial_subqueryscan(SubqueryScan *plan)
 {
 	int			attrno;
 	ListCell   *lp,
 			   *lc;
+
+	/* We might have detected this already (see mark_async_capable_plan) */
+	if (plan->scanstatus == SUBQUERY_SCAN_TRIVIAL)
+		return true;
+	if (plan->scanstatus == SUBQUERY_SCAN_NONTRIVIAL)
+		return false;
+	Assert(plan->scanstatus == SUBQUERY_SCAN_UNKNOWN);
+	/* Initially, mark the SubqueryScan as non-deletable from the plan tree */
+	plan->scanstatus = SUBQUERY_SCAN_NONTRIVIAL;
 
 	if (plan->scan.plan.qual != NIL)
 		return false;
@@ -1305,6 +1378,9 @@ trivial_subqueryscan(SubqueryScan *plan)
 
 		attrno++;
 	}
+
+	/* Re-mark the SubqueryScan as deletable from the plan tree */
+	plan->scanstatus = SUBQUERY_SCAN_TRIVIAL;
 
 	return true;
 }

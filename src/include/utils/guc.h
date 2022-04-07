@@ -271,7 +271,7 @@ extern int	temp_file_limit;
 
 extern int	num_temp_buffers;
 
-extern char *cluster_name;
+extern PGDLLIMPORT char *cluster_name;
 extern PGDLLIMPORT char *ConfigFileName;
 extern char *HbaFileName;
 extern char *IdentFileName;
@@ -354,14 +354,20 @@ extern void DefineCustomEnumVariable(const char *name,
 									 GucEnumAssignHook assign_hook,
 									 GucShowHook show_hook);
 
-extern void EmitWarningsOnPlaceholders(const char *className);
+extern void MarkGUCPrefixReserved(const char *className);
+
+/* old name for MarkGUCPrefixReserved, for backwards compatibility: */
+#define EmitWarningsOnPlaceholders(className) MarkGUCPrefixReserved(className)
 
 extern const char *GetConfigOption(const char *name, bool missing_ok,
 								   bool restrict_privileged);
 extern const char *GetConfigOptionResetString(const char *name);
 extern int	GetConfigOptionFlags(const char *name, bool missing_ok);
 extern void ProcessConfigFile(GucContext context);
+extern char *convert_GUC_name_for_parameter_acl(const char *name);
+extern bool check_GUC_name_for_parameter_acl(const char *name);
 extern void InitializeGUCOptions(void);
+extern void InitializeWalConsistencyChecking(void);
 extern bool SelectConfigFiles(const char *userDoption, const char *progname);
 extern void ResetAllOptions(void);
 extern void AtStart_GUC(void);

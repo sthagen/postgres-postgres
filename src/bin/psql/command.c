@@ -279,7 +279,7 @@ HandleSlashCmds(PsqlScanState scan_state,
  * Subroutine to actually try to execute a backslash command.
  *
  * The typical "success" result code is PSQL_CMD_SKIP_LINE, although some
- * commands return something else.  Failure results are PSQL_CMD_ERROR,
+ * commands return something else.  Failure result code is PSQL_CMD_ERROR,
  * unless PSQL_CMD_UNKNOWN is more appropriate.
  */
 static backslashResult
@@ -683,7 +683,7 @@ exec_command_copyright(PsqlScanState scan_state, bool active_branch)
 }
 
 /*
- * \crosstabview -- execute a query and display results in crosstab
+ * \crosstabview -- execute a query and display result in crosstab
  */
 static backslashResult
 exec_command_crosstabview(PsqlScanState scan_state, bool active_branch)
@@ -3667,7 +3667,6 @@ printSSLInfo(void)
 {
 	const char *protocol;
 	const char *cipher;
-	const char *bits;
 	const char *compression;
 
 	if (!PQsslInUse(pset.db))
@@ -3675,13 +3674,11 @@ printSSLInfo(void)
 
 	protocol = PQsslAttribute(pset.db, "protocol");
 	cipher = PQsslAttribute(pset.db, "cipher");
-	bits = PQsslAttribute(pset.db, "key_bits");
 	compression = PQsslAttribute(pset.db, "compression");
 
-	printf(_("SSL connection (protocol: %s, cipher: %s, bits: %s, compression: %s)\n"),
+	printf(_("SSL connection (protocol: %s, cipher: %s, compression: %s)\n"),
 		   protocol ? protocol : _("unknown"),
 		   cipher ? cipher : _("unknown"),
-		   bits ? bits : _("unknown"),
 		   (compression && strcmp(compression, "off") != 0) ? _("on") : _("off"));
 }
 
@@ -5084,7 +5081,7 @@ do_watch(PQExpBuffer query_buf, double sleep)
 					 timebuf, sleep);
 		myopt.title = title;
 
-		/* Run the query and print out the results */
+		/* Run the query and print out the result */
 		res = PSQLexecWatch(query_buf->data, &myopt, pagerpipe);
 
 		/*

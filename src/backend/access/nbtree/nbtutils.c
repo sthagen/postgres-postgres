@@ -165,6 +165,13 @@ _bt_mkscankey(Relation rel, IndexTuple itup)
 			key->anynullkeys = true;
 	}
 
+	/*
+	 * In NULLS NOT DISTINCT mode, we pretend that there are no null keys, so
+	 * that full uniqueness check is done.
+	 */
+	if (rel->rd_index->indnullsnotdistinct)
+		key->anynullkeys = false;
+
 	return key;
 }
 
@@ -1767,7 +1774,7 @@ _bt_killitems(IndexScanDesc scan)
 		}
 	}
 
-	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
+	opaque = BTPageGetOpaque(page);
 	minoff = P_FIRSTDATAKEY(opaque);
 	maxoff = PageGetMaxOffsetNumber(page);
 
@@ -2065,7 +2072,7 @@ BTreeShmemSize(void)
 	Size		size;
 
 	size = offsetof(BTVacInfo, vacuums);
-	size = add_size(size, mul_size(MaxBackends, sizeof(BTOneVacInfo)));
+	size = add_size(size, mul_size(GetMaxBackends(), sizeof(BTOneVacInfo)));
 	return size;
 }
 
@@ -2094,7 +2101,7 @@ BTreeShmemInit(void)
 		btvacinfo->cycle_ctr = (BTCycleId) time(NULL);
 
 		btvacinfo->num_vacuums = 0;
-		btvacinfo->max_vacuums = MaxBackends;
+		btvacinfo->max_vacuums = GetMaxBackends();
 	}
 	else
 		Assert(found);
@@ -2467,7 +2474,7 @@ _bt_check_natts(Relation rel, bool heapkeyspace, Page page, OffsetNumber offnum)
 {
 	int16		natts = IndexRelationGetNumberOfAttributes(rel);
 	int16		nkeyatts = IndexRelationGetNumberOfKeyAttributes(rel);
-	BTPageOpaque opaque = (BTPageOpaque) PageGetSpecialPointer(page);
+	BTPageOpaque opaque = BTPageGetOpaque(page);
 	IndexTuple	itup;
 	int			tupnatts;
 
@@ -2655,7 +2662,7 @@ _bt_check_third_page(Relation rel, Relation heap, bool needheaptidspace,
 	 * Internal page insertions cannot fail here, because that would mean that
 	 * an earlier leaf level insertion that should have failed didn't
 	 */
-	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
+	opaque = BTPageGetOpaque(page);
 	if (!P_ISLEAF(opaque))
 		elog(ERROR, "cannot insert oversized tuple of size %zu on internal page of index \"%s\"",
 			 itemsz, RelationGetRelationName(rel));

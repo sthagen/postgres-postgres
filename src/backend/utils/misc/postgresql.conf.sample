@@ -136,7 +136,7 @@
 # Caution: it is not advisable to set max_prepared_transactions nonzero unless
 # you actively intend to use prepared transactions.
 #work_mem = 4MB				# min 64kB
-#hash_mem_multiplier = 1.0		# 1-1000.0 multiplier on hash table work_mem
+#hash_mem_multiplier = 2.0		# 1-1000.0 multiplier on hash table work_mem
 #maintenance_work_mem = 64MB		# min 1MB
 #autovacuum_work_mem = -1		# min 1MB, or -1 to use maintenance_work_mem
 #logical_decoding_work_mem = 64MB	# min 64kB
@@ -220,7 +220,7 @@
 #wal_log_hints = off			# also do full page writes of non-critical updates
 					# (change requires restart)
 #wal_compression = off			# enables compression of full-page writes;
-					# off, pglz, lz4, or on
+					# off, pglz, lz4, zstd, or on
 #wal_init_zero = on			# zero-fill new WAL files
 #wal_recycle = on			# recycle WAL files
 #wal_buffers = -1			# min 32kB, -1 sets based on shared_buffers
@@ -245,6 +245,9 @@
 
 #archive_mode = off		# enables archiving; off, on, or always
 				# (change requires restart)
+#archive_library = ''		# library to use to archive a logfile segment
+				# (empty string indicates archive_command should
+				# be used)
 #archive_command = ''		# command to use to archive a logfile segment
 				# placeholders: %p = path of file to archive
 				#               %f = file name only
@@ -379,6 +382,7 @@
 #enable_seqscan = on
 #enable_sort = on
 #enable_tidscan = on
+#enable_group_by_reordering = on
 
 # - Planner Cost Constants -
 
@@ -423,6 +427,7 @@
 					# JOIN clauses
 #plan_cache_mode = auto			# auto, force_generic_plan or
 					# force_custom_plan
+#recursive_worktable_factor = 10.0	# range 0.001-1000000
 
 
 #------------------------------------------------------------------------------
@@ -600,7 +605,7 @@
 # STATISTICS
 #------------------------------------------------------------------------------
 
-# - Query and Index Statistics Collector -
+# - Cumulative Query and Index Statistics -
 
 #track_activities = on
 #track_activity_query_size = 1024	# (change requires restart)
@@ -608,7 +613,7 @@
 #track_io_timing = off
 #track_wal_io_timing = off
 #track_functions = none			# none, pl, all
-#stats_temp_directory = 'pg_stat_tmp'
+#stats_fetch_consistency = none
 
 
 # - Monitoring -

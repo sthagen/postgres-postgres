@@ -34,9 +34,11 @@
 #include <unistd.h>
 
 #include "access/tableam.h"
+#include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "catalog/catalog.h"
 #include "catalog/storage.h"
+#include "catalog/storage_xlog.h"
 #include "executor/instrument.h"
 #include "lib/binaryheap.h"
 #include "miscadmin.h"
@@ -485,6 +487,9 @@ static void FindAndDropRelFileNodeBuffers(RelFileNode rnode,
 										  ForkNumber forkNum,
 										  BlockNumber nForkBlock,
 										  BlockNumber firstDelBlock);
+static void RelationCopyStorageUsingBuffer(Relation src, Relation dst,
+										   ForkNumber forkNum,
+										   bool isunlogged);
 static void AtProcExit_Buffers(int code, Datum arg);
 static void CheckForBufferLeaks(void);
 static int	rnode_comparator(const void *p1, const void *p2);
@@ -771,23 +776,23 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
  * ReadBufferWithoutRelcache -- like ReadBufferExtended, but doesn't require
  *		a relcache entry for the relation.
  *
- * NB: At present, this function may only be used on permanent relations, which
- * is OK, because we only use it during XLOG replay.  If in the future we
- * want to use it on temporary or unlogged relations, we could pass additional
- * parameters.
+ * Pass permanent = true for a RELPERSISTENCE_PERMANENT relation, and
+ * permanent = false for a RELPERSISTENCE_UNLOGGED relation. This function
+ * cannot be used for temporary relations (and making that work might be
+ * difficult, unless we only want to read temporary relations for our own
+ * BackendId).
  */
 Buffer
 ReadBufferWithoutRelcache(RelFileNode rnode, ForkNumber forkNum,
 						  BlockNumber blockNum, ReadBufferMode mode,
-						  BufferAccessStrategy strategy)
+						  BufferAccessStrategy strategy, bool permanent)
 {
 	bool		hit;
 
 	SMgrRelation smgr = smgropen(rnode, InvalidBackendId);
 
-	Assert(InRecovery);
-
-	return ReadBuffer_common(smgr, RELPERSISTENCE_PERMANENT, forkNum, blockNum,
+	return ReadBuffer_common(smgr, permanent ? RELPERSISTENCE_PERMANENT :
+							 RELPERSISTENCE_UNLOGGED, forkNum, blockNum,
 							 mode, strategy, &hit);
 }
 
@@ -2146,7 +2151,7 @@ BufferSync(int flags)
 			if (SyncOneBuffer(buf_id, false, &wb_context) & BUF_WRITTEN)
 			{
 				TRACE_POSTGRESQL_BUFFER_SYNC_WRITTEN(buf_id);
-				PendingCheckpointerStats.m_buf_written_checkpoints++;
+				PendingCheckpointerStats.buf_written_checkpoints++;
 				num_written++;
 			}
 		}
@@ -2256,7 +2261,7 @@ BgBufferSync(WritebackContext *wb_context)
 	strategy_buf_id = StrategySyncStart(&strategy_passes, &recent_alloc);
 
 	/* Report buffer alloc counts to pgstat */
-	PendingBgWriterStats.m_buf_alloc += recent_alloc;
+	PendingBgWriterStats.buf_alloc += recent_alloc;
 
 	/*
 	 * If we're not running the LRU scan, just stop after doing the stats
@@ -2446,7 +2451,7 @@ BgBufferSync(WritebackContext *wb_context)
 			reusable_buffers++;
 			if (++num_written >= bgwriter_lru_maxpages)
 			{
-				PendingBgWriterStats.m_maxwritten_clean++;
+				PendingBgWriterStats.maxwritten_clean++;
 				break;
 			}
 		}
@@ -2454,7 +2459,7 @@ BgBufferSync(WritebackContext *wb_context)
 			reusable_buffers++;
 	}
 
-	PendingBgWriterStats.m_buf_written_clean += num_written;
+	PendingBgWriterStats.buf_written_clean += num_written;
 
 #ifdef BGW_DEBUG
 	elog(DEBUG1, "bgwriter: recent_alloc=%u smoothed=%.2f delta=%ld ahead=%d density=%.2f reusable_est=%d upcoming_est=%d scanned=%d wrote=%d reusable=%d",
@@ -3676,6 +3681,158 @@ FlushRelationsAllBuffers(SMgrRelation *smgrs, int nrels)
 }
 
 /* ---------------------------------------------------------------------
+ *		RelationCopyStorageUsingBuffer
+ *
+ *		Copy fork's data using bufmgr.  Same as RelationCopyStorage but instead
+ *		of using smgrread and smgrextend this will copy using bufmgr APIs.
+ *
+ *		Refer comments atop CreateAndCopyRelationData() for details about
+ *		'permanent' parameter.
+ * --------------------------------------------------------------------
+ */
+static void
+RelationCopyStorageUsingBuffer(Relation src, Relation dst, ForkNumber forkNum,
+							   bool permanent)
+{
+	Buffer		srcBuf;
+	Buffer		dstBuf;
+	Page		srcPage;
+	Page		dstPage;
+	bool		use_wal;
+	BlockNumber nblocks;
+	BlockNumber blkno;
+	BufferAccessStrategy bstrategy_src;
+	BufferAccessStrategy bstrategy_dst;
+
+	/*
+	 * In general, we want to write WAL whenever wal_level > 'minimal', but
+	 * we can skip it when copying any fork of an unlogged relation other
+	 * than the init fork.
+	 */
+	use_wal = XLogIsNeeded() && (permanent || forkNum == INIT_FORKNUM);
+
+	/* Get number of blocks in the source relation. */
+	nblocks = smgrnblocks(RelationGetSmgr(src), forkNum);
+
+	/* Nothing to copy; just return. */
+	if (nblocks == 0)
+		return;
+
+	/* This is a bulk operation, so use buffer access strategies. */
+	bstrategy_src = GetAccessStrategy(BAS_BULKREAD);
+	bstrategy_dst = GetAccessStrategy(BAS_BULKWRITE);
+
+	/* Iterate over each block of the source relation file. */
+	for (blkno = 0; blkno < nblocks; blkno++)
+	{
+		CHECK_FOR_INTERRUPTS();
+
+		/* Read block from source relation. */
+		srcBuf = ReadBufferWithoutRelcache(src->rd_node, forkNum, blkno,
+										   RBM_NORMAL, bstrategy_src,
+										   permanent);
+		srcPage = BufferGetPage(srcBuf);
+		if (PageIsNew(srcPage) || PageIsEmpty(srcPage))
+		{
+			ReleaseBuffer(srcBuf);
+			continue;
+		}
+
+		/* Use P_NEW to extend the destination relation. */
+		dstBuf = ReadBufferWithoutRelcache(dst->rd_node, forkNum, P_NEW,
+										   RBM_NORMAL, bstrategy_dst,
+										   permanent);
+		LockBuffer(dstBuf, BUFFER_LOCK_EXCLUSIVE);
+
+		START_CRIT_SECTION();
+
+		/* Copy page data from the source to the destination. */
+		dstPage = BufferGetPage(dstBuf);
+		memcpy(dstPage, srcPage, BLCKSZ);
+		MarkBufferDirty(dstBuf);
+
+		/* WAL-log the copied page. */
+		if (use_wal)
+			log_newpage_buffer(dstBuf, true);
+
+		END_CRIT_SECTION();
+
+		UnlockReleaseBuffer(dstBuf);
+		ReleaseBuffer(srcBuf);
+	}
+}
+
+/* ---------------------------------------------------------------------
+ *		CreateAndCopyRelationData
+ *
+ *		Create destination relation storage and copy all forks from the
+ *		source relation to the destination.
+ *
+ *		Pass permanent as true for permanent relations and false for
+ *		unlogged relations.  Currently this API is not supported for
+ *		temporary relations.
+ * --------------------------------------------------------------------
+ */
+void
+CreateAndCopyRelationData(RelFileNode src_rnode, RelFileNode dst_rnode,
+						  bool permanent)
+{
+	Relation		src_rel;
+	Relation		dst_rel;
+	char			relpersistence;
+
+	/* Set the relpersistence. */
+	relpersistence = permanent ?
+		RELPERSISTENCE_PERMANENT : RELPERSISTENCE_UNLOGGED;
+
+	/*
+	 * We can't use a real relcache entry for a relation in some other
+	 * database, but since we're only going to access the fields related
+	 * to physical storage, a fake one is good enough. If we didn't do this
+	 * and used the smgr layer directly, we would have to worry about
+	 * invalidations.
+	 */
+	src_rel = CreateFakeRelcacheEntry(src_rnode);
+	dst_rel = CreateFakeRelcacheEntry(dst_rnode);
+
+	/*
+	 * Create and copy all forks of the relation.  During create database we
+	 * have a separate cleanup mechanism which deletes complete database
+	 * directory.  Therefore, each individual relation doesn't need to be
+	 * registered for cleanup.
+	 */
+	RelationCreateStorage(dst_rnode, relpersistence, false);
+
+	/* copy main fork. */
+	RelationCopyStorageUsingBuffer(src_rel, dst_rel, MAIN_FORKNUM, permanent);
+
+	/* copy those extra forks that exist */
+	for (ForkNumber forkNum = MAIN_FORKNUM + 1;
+		 forkNum <= MAX_FORKNUM; forkNum++)
+	{
+		if (smgrexists(RelationGetSmgr(src_rel), forkNum))
+		{
+			smgrcreate(RelationGetSmgr(dst_rel), forkNum, false);
+
+			/*
+			 * WAL log creation if the relation is persistent, or this is the
+			 * init fork of an unlogged relation.
+			 */
+			if (permanent || forkNum == INIT_FORKNUM)
+				log_smgrcreate(&dst_rnode, forkNum);
+
+			/* Copy a fork's data, block by block. */
+			RelationCopyStorageUsingBuffer(src_rel, dst_rel, forkNum,
+										   permanent);
+		}
+	}
+
+	/* Release fake relcache entries. */
+	FreeFakeRelcacheEntry(src_rel);
+	FreeFakeRelcacheEntry(dst_rel);
+}
+
+/* ---------------------------------------------------------------------
  *		FlushDatabaseBuffers
  *
  *		This function writes all dirty pages of a database out to disk
@@ -3910,7 +4067,9 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 			 * essential that CreateCheckPoint waits for virtual transactions
 			 * rather than full transactionids.
 			 */
-			MyProc->delayChkpt = delayChkpt = true;
+			Assert((MyProc->delayChkpt & DELAY_CHKPT_START) == 0);
+			MyProc->delayChkpt |= DELAY_CHKPT_START;
+			delayChkpt = true;
 			lsn = XLogSaveBufferForHint(buffer, buffer_std);
 		}
 
@@ -3943,7 +4102,7 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 		UnlockBufHdr(bufHdr, buf_state);
 
 		if (delayChkpt)
-			MyProc->delayChkpt = false;
+			MyProc->delayChkpt &= ~DELAY_CHKPT_START;
 
 		if (dirtied)
 		{

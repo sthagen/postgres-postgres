@@ -31,7 +31,7 @@
 /*
  * Each page of XLOG file has a header like this:
  */
-#define XLOG_PAGE_MAGIC 0xD10E	/* can be used as WAL version indicator */
+#define XLOG_PAGE_MAGIC 0xD110	/* can be used as WAL version indicator */
 
 typedef struct XLogPageHeaderData
 {
@@ -304,7 +304,8 @@ struct XLogRecordBuffer;
  * rm_mask takes as input a page modified by the resource manager and masks
  * out bits that shouldn't be flagged by wal_consistency_checking.
  *
- * RmgrTable[] is indexed by RmgrId values (see rmgrlist.h).
+ * RmgrTable[] is indexed by RmgrId values (see rmgrlist.h). If rm_name is
+ * NULL, the corresponding RmgrTable entry is considered invalid.
  */
 typedef struct RmgrData
 {
@@ -319,7 +320,25 @@ typedef struct RmgrData
 							  struct XLogRecordBuffer *buf);
 } RmgrData;
 
-extern const RmgrData RmgrTable[];
+extern RmgrData RmgrTable[];
+extern void RmgrStartup(void);
+extern void RmgrCleanup(void);
+extern void RmgrNotFound(RmgrId rmid);
+extern void RegisterCustomRmgr(RmgrId rmid, RmgrData *rmgr);
+
+static inline bool
+RmgrIdExists(RmgrId rmid)
+{
+	return RmgrTable[rmid].rm_name != NULL;
+}
+
+static inline RmgrData
+GetRmgr(RmgrId rmid)
+{
+	if (unlikely(!RmgrIdExists(rmid)))
+		RmgrNotFound(rmid);
+	return RmgrTable[rmid];
+}
 
 /*
  * Exported to support xlog switching from checkpointer

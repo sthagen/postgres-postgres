@@ -10,7 +10,7 @@ use strict;
 use warnings;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 15;
+use Test::More;
 use Config;
 
 # Initialize primary node
@@ -107,7 +107,8 @@ $node_primary->safe_psql('postgres',
 );
 
 my $stdout_recv = $node_primary->pg_recvlogical_upto(
-	'postgres', 'test_slot', $endpos, 180,
+	'postgres', 'test_slot', $endpos,
+	$PostgreSQL::Test::Utils::timeout_default,
 	'include-xids'     => '0',
 	'skip-empty-xacts' => '1');
 chomp($stdout_recv);
@@ -119,7 +120,8 @@ $node_primary->poll_query_until('postgres',
 ) or die "slot never became inactive";
 
 $stdout_recv = $node_primary->pg_recvlogical_upto(
-	'postgres', 'test_slot', $endpos, 180,
+	'postgres', 'test_slot', $endpos,
+	$PostgreSQL::Test::Utils::timeout_default,
 	'include-xids'     => '0',
 	'skip-empty-xacts' => '1');
 chomp($stdout_recv);
@@ -200,3 +202,5 @@ ok(($logical_restart_lsn_pre cmp $logical_restart_lsn_post) == 0,
 
 # done with the node
 $node_primary->stop;
+
+done_testing();

@@ -48,6 +48,7 @@ typedef FormData_pg_sequence_data *Form_pg_sequence_data;
 typedef struct xl_seq_rec
 {
 	RelFileNode node;
+	bool		created;	/* creates a new relfilenode (CREATE/ALTER) */
 	/* SEQUENCE TUPLE DATA FOLLOWS AT THE END */
 } xl_seq_rec;
 
@@ -59,6 +60,7 @@ extern ObjectAddress DefineSequence(ParseState *pstate, CreateSeqStmt *stmt);
 extern ObjectAddress AlterSequence(ParseState *pstate, AlterSeqStmt *stmt);
 extern void DeleteSequenceTuple(Oid relid);
 extern void ResetSequence(Oid seq_relid);
+extern void SetSequence(Oid seq_relid, bool transactional, int64 last_value, int64 log_cnt, bool is_called);
 extern void ResetSequenceCaches(void);
 
 extern void seq_redo(XLogReaderState *rptr);

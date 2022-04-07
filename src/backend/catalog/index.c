@@ -614,6 +614,7 @@ UpdateIndexRelation(Oid indexoid,
 	values[Anum_pg_index_indnatts - 1] = Int16GetDatum(indexInfo->ii_NumIndexAttrs);
 	values[Anum_pg_index_indnkeyatts - 1] = Int16GetDatum(indexInfo->ii_NumIndexKeyAttrs);
 	values[Anum_pg_index_indisunique - 1] = BoolGetDatum(indexInfo->ii_Unique);
+	values[Anum_pg_index_indnullsnotdistinct - 1] = BoolGetDatum(indexInfo->ii_NullsNotDistinct);
 	values[Anum_pg_index_indisprimary - 1] = BoolGetDatum(primary);
 	values[Anum_pg_index_indisexclusion - 1] = BoolGetDatum(isexclusion);
 	values[Anum_pg_index_indimmediate - 1] = BoolGetDatum(immediate);
@@ -917,7 +918,7 @@ index_create(Relation heapRelation,
 			indexRelationId = binary_upgrade_next_index_pg_class_oid;
 			binary_upgrade_next_index_pg_class_oid = InvalidOid;
 
-			/* Overide the index relfilenode */
+			/* Override the index relfilenode */
 			if ((relkind == RELKIND_INDEX) &&
 				(!OidIsValid(binary_upgrade_next_index_pg_class_relfilenode)))
 				ereport(ERROR,
@@ -1368,6 +1369,7 @@ index_concurrently_create_copy(Relation heapRelation, Oid oldIndexId,
 							indexExprs,
 							indexPreds,
 							oldInfo->ii_Unique,
+							oldInfo->ii_NullsNotDistinct,
 							false,	/* not ready for inserts */
 							true);
 
@@ -1732,30 +1734,8 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	changeDependenciesOf(RelationRelationId, oldIndexId, newIndexId);
 	changeDependenciesOn(RelationRelationId, oldIndexId, newIndexId);
 
-	/*
-	 * Copy over statistics from old to new index
-	 */
-	{
-		PgStat_StatTabEntry *tabentry;
-
-		tabentry = pgstat_fetch_stat_tabentry(oldIndexId);
-		if (tabentry)
-		{
-			if (newClassRel->pgstat_info)
-			{
-				newClassRel->pgstat_info->t_counts.t_numscans = tabentry->numscans;
-				newClassRel->pgstat_info->t_counts.t_tuples_returned = tabentry->tuples_returned;
-				newClassRel->pgstat_info->t_counts.t_tuples_fetched = tabentry->tuples_fetched;
-				newClassRel->pgstat_info->t_counts.t_blocks_fetched = tabentry->blocks_fetched;
-				newClassRel->pgstat_info->t_counts.t_blocks_hit = tabentry->blocks_hit;
-
-				/*
-				 * The data will be sent by the next pgstat_report_stat()
-				 * call.
-				 */
-			}
-		}
-	}
+	/* copy over statistics from old to new index */
+	pgstat_copy_relation_stats(newClassRel, oldClassRel);
 
 	/* Copy data of pg_statistic from the old index to the new one */
 	CopyStatistics(oldIndexId, newIndexId);
@@ -2440,6 +2420,7 @@ BuildIndexInfo(Relation index)
 					   RelationGetIndexExpressions(index),
 					   RelationGetIndexPredicate(index),
 					   indexStruct->indisunique,
+					   indexStruct->indnullsnotdistinct,
 					   indexStruct->indisready,
 					   false);
 
@@ -2499,6 +2480,7 @@ BuildDummyIndexInfo(Relation index)
 					   RelationGetDummyIndexExpressions(index),
 					   NIL,
 					   indexStruct->indisunique,
+					   indexStruct->indnullsnotdistinct,
 					   indexStruct->indisready,
 					   false);
 
@@ -2530,6 +2512,9 @@ CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 	int			i;
 
 	if (info1->ii_Unique != info2->ii_Unique)
+		return false;
+
+	if (info1->ii_NullsNotDistinct != info2->ii_NullsNotDistinct)
 		return false;
 
 	/* indexes are only equivalent if they have the same access method */
@@ -3357,7 +3342,7 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 	state.tuplesort = tuplesort_begin_datum(INT8OID, Int8LessOperator,
 											InvalidOid, false,
 											maintenance_work_mem,
-											NULL, false);
+											NULL, TUPLESORT_NONE);
 	state.htups = state.itups = state.tups_inserted = 0;
 
 	/* ambulkdelete updates progress metrics */

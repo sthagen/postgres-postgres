@@ -3,7 +3,7 @@
  * parse_utilcmd.c
  *	  Perform parse analysis work for various utility commands
  *
- * Formerly we did this work during parse_analyze() in analyze.c.  However
+ * Formerly we did this work during parse_analyze_*() in analyze.c.  However
  * that is fairly unsafe in the presence of querytree caching, since any
  * database state that we depend on in making the transformations might be
  * obsolete by the time the utility command is executed; and utility commands
@@ -1581,6 +1581,7 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 	index->oldCreateSubid = InvalidSubTransactionId;
 	index->oldFirstRelfilenodeSubid = InvalidSubTransactionId;
 	index->unique = idxrec->indisunique;
+	index->nulls_not_distinct = idxrec->indnullsnotdistinct;
 	index->primary = idxrec->indisprimary;
 	index->transformed = true;	/* don't need transformIndexStmt */
 	index->concurrent = false;
@@ -2112,6 +2113,7 @@ transformIndexConstraints(CreateStmtContext *cxt)
 				equal(index->whereClause, priorindex->whereClause) &&
 				equal(index->excludeOpNames, priorindex->excludeOpNames) &&
 				strcmp(index->accessMethod, priorindex->accessMethod) == 0 &&
+				index->nulls_not_distinct == priorindex->nulls_not_distinct &&
 				index->deferrable == priorindex->deferrable &&
 				index->initdeferred == priorindex->initdeferred)
 			{
@@ -2178,6 +2180,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 		 * DefineIndex will check for it.
 		 */
 	}
+	index->nulls_not_distinct = constraint->nulls_not_distinct;
 	index->isconstraint = true;
 	index->deferrable = constraint->deferrable;
 	index->initdeferred = constraint->initdeferred;

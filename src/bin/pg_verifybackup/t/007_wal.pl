@@ -5,12 +5,10 @@
 
 use strict;
 use warnings;
-use Cwd;
-use Config;
 use File::Path qw(rmtree);
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 9;
+use Test::More;
 
 # Start up the server and take a backup.
 my $primary = PostgreSQL::Test::Cluster->new('primary');
@@ -76,3 +74,5 @@ $primary->command_ok([ 'pg_basebackup', '-D', $backup_path2, '--no-sync', '-cfas
 command_ok(
 	[ 'pg_verifybackup', $backup_path2 ],
 	'valid base backup with timeline > 1');
+
+done_testing();

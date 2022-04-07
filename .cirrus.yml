@@ -30,15 +30,11 @@ env:
 # What files to preserve in case tests fail
 on_failure: &on_failure
   log_artifacts:
-    path: "**/**.log"
+    paths:
+      - "**/*.log"
+      - "**/*.diffs"
+      - "**/regress_log_*"
     type: text/plain
-  regress_diffs_artifacts:
-    path: "**/**.diffs"
-    type: text/plain
-  tap_artifacts:
-    path: "**/regress_log_*"
-    type: text/plain
-
 
 task:
   name: FreeBSD - 13
@@ -77,10 +73,12 @@ task:
     chown -R postgres:postgres .
     mkdir -p ${CCACHE_DIR}
     chown -R postgres:postgres ${CCACHE_DIR}
-  setup_cores_script: |
+  setup_core_files_script: |
     mkdir -m 770 /tmp/cores
     chown root:postgres /tmp/cores
     sysctl kern.corefile='/tmp/cores/%N.%P.core'
+  setup_additional_packages_script: |
+    #pkg install -y ...
 
   # NB: Intentionally build without --with-llvm. The freebsd image size is
   # already large enough to make VM startup slow, and even without llvm
@@ -103,13 +101,14 @@ task:
         --with-ssl=openssl \
         --with-tcl --with-tclconfig=/usr/local/lib/tcl8.6/ \
         --with-uuid=bsd \
+        --with-zstd \
         \
         --with-includes=/usr/local/include \
         --with-libs=/usr/local/lib \
         \
         CC="ccache cc" \
         CXX="ccache c++" \
-        CFLAGS="-O0 -ggdb"
+        CFLAGS="-Og -ggdb"
     EOF
   build_script: su postgres -c "gmake -s -j${BUILD_JOBS} world-bin"
   upload_caches: ccache
@@ -144,6 +143,7 @@ LINUX_CONFIGURE_FEATURES: &LINUX_CONFIGURE_FEATURES >-
   --with-systemd
   --with-tcl --with-tclconfig=/usr/lib/tcl8.6/
   --with-uuid=ossp
+  --with-zstd
 
 
 task:
@@ -184,10 +184,13 @@ task:
     chown -R postgres:postgres ${CCACHE_DIR}
     echo '* - memlock 134217728' > /etc/security/limits.d/postgres.conf
     su postgres -c "ulimit -l -H && ulimit -l -S"
-  setup_cores_script: |
+  setup_core_files_script: |
     mkdir -m 770 /tmp/cores
     chown root:postgres /tmp/cores
     sysctl kernel.core_pattern='/tmp/cores/%e-%s-%p.core'
+  setup_additional_packages_script: |
+    #apt-get update
+    #DEBIAN_FRONTEND=noninteractive apt-get -y install ...
 
   configure_script: |
     su postgres <<-EOF
@@ -200,8 +203,8 @@ task:
         CC="ccache gcc" \
         CXX="ccache g++" \
         CLANG="ccache clang" \
-        CFLAGS="-O0 -ggdb" \
-        CXXFLAGS="-O0 -ggdb"
+        CFLAGS="-Og -ggdb" \
+        CXXFLAGS="-Og -ggdb"
     EOF
   build_script: su postgres -c "make -s -j${BUILD_JOBS} world-bin"
   upload_caches: ccache
@@ -237,10 +240,11 @@ task:
 
   sysinfo_script: |
     id
-    export
+    uname -a
     ulimit -a -H && ulimit -a -S
+    export
 
-  setup_cores_script:
+  setup_core_files_script:
     - mkdir ${HOME}/cores
     - sudo sysctl kern.corefile="${HOME}/cores/core.%P"
 
@@ -257,7 +261,7 @@ task:
   # packages do not need to be downloaded.
   homebrew_cache:
     folder: $HOMEBREW_CACHE
-  homebrew_install_script: |
+  setup_additional_packages_script: |
     brew install \
       ccache \
       icu4c \
@@ -268,7 +272,8 @@ task:
       openldap \
       openssl \
       python \
-      tcl-tk
+      tcl-tk \
+      zstd
 
     brew cleanup -s # to reduce cache size
   upload_caches: homebrew
@@ -280,7 +285,7 @@ task:
     INCLUDES="${brewpath}/include:${INCLUDES}"
     LIBS="${brewpath}/lib:${LIBS}"
 
-    for pkg in icu4c krb5 openldap openssl ; do
+    for pkg in icu4c krb5 openldap openssl zstd ; do
       pkgpath="${brewpath}/opt/${pkg}"
       INCLUDES="${pkgpath}/include:${INCLUDES}"
       LIBS="${pkgpath}/lib:${LIBS}"
@@ -305,6 +310,7 @@ task:
       --with-ssl=openssl \
       --with-tcl --with-tclconfig=${brewpath}/opt/tcl-tk/lib/ \
       --with-uuid=e2fs \
+      --with-zstd \
       \
       --prefix=${HOME}/install \
       --with-includes="${INCLUDES}" \
@@ -313,8 +319,8 @@ task:
       CC="ccache cc" \
       CXX="ccache c++" \
       CLANG="ccache ${brewpath}/llvm/bin/ccache" \
-      CFLAGS="-O0 -ggdb" \
-      CXXFLAGS="-O0 -ggdb" \
+      CFLAGS="-Og -ggdb" \
+      CXXFLAGS="-Og -ggdb" \
       \
       LLVM_CONFIG=${brewpath}/llvm/bin/llvm-config \
       PYTHON=python3
@@ -366,6 +372,20 @@ task:
     #   build
     MSBFLAGS: -m -verbosity:minimal "-consoleLoggerParameters:Summary;ForceNoAlign" /p:TrackFileAccess=false -nologo
 
+    # If tests hang forever, cirrus eventually times out. In that case log
+    # output etc is not uploaded, making the problem hard to debug. Of course
+    # tests internally should have shorter timeouts, but that's proven to not
+    # be sufficient. 15min currently is fast enough to finish individual test
+    # "suites".
+    T_C: "\"C:/Program Files/Git/usr/bin/timeout.exe\" -v -k60s 15m"
+
+    # startcreate_script starts a postgres instance that we don't want to get
+    # killed at the end of that script (it's stopped in stop_script). Can't
+    # trivially use background_scripts because a) need pg_ctl's dropping of
+    # permissions b) need to wait for startup to have finished, and we don't
+    # currently have a tool for that...
+    CIRRUS_ESCAPING_PROCESSES: 1
+
   only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*' || $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:[^\n]*windows.*'
 
   windows_container:
@@ -379,6 +399,9 @@ task:
     powershell -Command get-psdrive -psprovider filesystem
     set
 
+  setup_additional_packages_script: |
+    REM choco install -y --no-progress ...
+
   configure_script:
     # copy errors out when using forward slashes
     - copy src\tools\ci\windows_build_config.pl src\tools\msvc\config.pl
@@ -391,44 +414,47 @@ task:
     # Installation on windows currently only completely works from src/tools/msvc
     - cd src/tools/msvc && perl install.pl %CIRRUS_WORKING_DIR%/tmp_install
 
-  test_regress_parallel_script:
-    - perl src/tools/msvc/vcregress.pl check parallel
-  startcreate_script:
-    # paths to binaries need backslashes
-    - tmp_install\bin\pg_ctl.exe initdb -D tmp_check/db -l tmp_check/initdb.log --options=--no-sync
-    - echo include '%TEMP_CONFIG%' >> tmp_check/db/postgresql.conf
-    - tmp_install\bin\pg_ctl.exe start -D tmp_check/db -l tmp_check/postmaster.log
-  test_pl_script:
-    - perl src/tools/msvc/vcregress.pl plcheck
-  test_isolation_script:
-    - perl src/tools/msvc/vcregress.pl isolationcheck
-  test_modules_script:
-    - perl src/tools/msvc/vcregress.pl modulescheck
-  test_contrib_script:
-    - perl src/tools/msvc/vcregress.pl contribcheck
-  stop_script:
-    - tmp_install\bin\pg_ctl.exe stop -D tmp_check/db -l tmp_check/postmaster.log
-  test_ssl_script:
-    - set with_ssl=openssl
-    - perl src/tools/msvc/vcregress.pl taptest ./src/test/ssl/
-  test_subscription_script:
-    - perl src/tools/msvc/vcregress.pl taptest ./src/test/subscription/
-  test_authentication_script:
-    - perl src/tools/msvc/vcregress.pl taptest ./src/test/authentication/
-  test_recovery_script:
-    - perl src/tools/msvc/vcregress.pl recoverycheck
-  test_bin_script:
-    - perl src/tools/msvc/vcregress.pl bincheck
-  test_pg_upgrade_script:
-    - perl src/tools/msvc/vcregress.pl upgradecheck
-  test_ecpg_script:
-    # tries to build additional stuff
-    - vcvarsall x64
-    # References ecpg_regression.proj in the current dir
-    - cd src/tools/msvc
-    - perl vcregress.pl ecpgcheck
+  test_regress_parallel_script: |
+    %T_C% perl src/tools/msvc/vcregress.pl check parallel
+  startcreate_script: |
+    rem paths to binaries need backslashes
+    tmp_install\bin\pg_ctl.exe initdb -D tmp_check/db -l tmp_check/initdb.log --options=--no-sync
+    echo include '%TEMP_CONFIG%' >> tmp_check/db/postgresql.conf
+    tmp_install\bin\pg_ctl.exe start -D tmp_check/db -l tmp_check/postmaster.log
 
-  on_failure: *on_failure
+  test_pl_script: |
+    %T_C% perl src/tools/msvc/vcregress.pl plcheck
+  test_isolation_script: |
+    %T_C% perl src/tools/msvc/vcregress.pl isolationcheck
+  test_modules_script: |
+    %T_C% perl src/tools/msvc/vcregress.pl modulescheck
+  test_contrib_script: |
+    %T_C% perl src/tools/msvc/vcregress.pl contribcheck
+  stop_script: |
+    tmp_install\bin\pg_ctl.exe stop -D tmp_check/db -l tmp_check/postmaster.log
+  test_ssl_script: |
+    set with_ssl=openssl
+    %T_C% perl src/tools/msvc/vcregress.pl taptest ./src/test/ssl/
+  test_subscription_script: |
+    %T_C% perl src/tools/msvc/vcregress.pl taptest ./src/test/subscription/
+  test_authentication_script: |
+    %T_C% perl src/tools/msvc/vcregress.pl taptest ./src/test/authentication/
+  test_recovery_script: |
+    %T_C% perl src/tools/msvc/vcregress.pl recoverycheck
+  test_bin_script: |
+    %T_C% perl src/tools/msvc/vcregress.pl bincheck
+  test_ecpg_script: |
+    rem tries to build additional stuff
+    vcvarsall x64
+    rem References ecpg_regression.proj in the current dir
+    cd src/tools/msvc
+    %T_C% perl vcregress.pl ecpgcheck
+
+  on_failure:
+    <<: *on_failure
+    crashlog_artifacts:
+      path: "crashlog-*.txt"
+      type: text/plain
 
 
 task:
@@ -444,7 +470,7 @@ task:
 
     # Use larger ccache cache, as this task compiles with multiple compilers /
     # flag combinations
-    CCACHE_SIZE: "1GB"
+    CCACHE_MAXSIZE: "1GB"
     CCACHE_DIR: "/tmp/ccache_dir"
 
     LINUX_CONFIGURE_FEATURES: *LINUX_CONFIGURE_FEATURES
@@ -468,6 +494,10 @@ task:
 
   ccache_cache:
     folder: $CCACHE_DIR
+
+  setup_additional_packages_script: |
+    #apt-get update
+    #DEBIAN_FRONTEND=noninteractive apt-get -y install ...
 
   ###
   # Test that code can be built with gcc/clang without warnings
@@ -547,6 +577,29 @@ task:
         CLANG="ccache clang"
       make -s -j${BUILD_JOBS} clean
       time make -s -j${BUILD_JOBS} -C doc
+
+  ###
+  # Verify headerscheck / cpluspluscheck succeed
+  #
+  # - Don't use ccache, the files are uncacheable, polluting ccache's
+  #   cache
+  # - Use -fmax-errors, as particularly cpluspluscheck can be very verbose
+  # - XXX have to disable ICU to avoid errors:
+  #   https://postgr.es/m/20220323002024.f2g6tivduzrktgfa%40alap3.anarazel.de
+  # - XXX: the -Wno-register avoids verbose warnings:
+  #   https://postgr.es/m/20220308181837.aun3tdtdvao4vb7o%40alap3.anarazel.de
+  ###
+  always:
+    headers_headerscheck_script: |
+      time ./configure \
+        ${LINUX_CONFIGURE_FEATURES} \
+        --without-icu \
+        --quiet \
+        CC="gcc" CXX"=g++" CLANG="clang"
+      make -s -j${BUILD_JOBS} clean
+      time make -s headerscheck EXTRAFLAGS='-fmax-errors=10'
+    headers_cpluspluscheck_script: |
+      time make -s cpluspluscheck EXTRAFLAGS='-Wno-register -fmax-errors=10'
 
   always:
     upload_caches: ccache

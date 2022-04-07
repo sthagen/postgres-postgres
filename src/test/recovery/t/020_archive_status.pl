@@ -8,8 +8,7 @@ use strict;
 use warnings;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 16;
-use Config;
+use Test::More;
 
 my $primary = PostgreSQL::Test::Cluster->new('primary');
 $primary->init(
@@ -234,3 +233,5 @@ ok( -f "$standby2_data/$segment_path_1_done"
 	  && -f "$standby2_data/$segment_path_2_done",
 	".done files created after archive success with archive_mode=always on standby"
 );
+
+done_testing();

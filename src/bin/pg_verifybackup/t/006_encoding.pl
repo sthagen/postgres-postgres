@@ -5,11 +5,9 @@
 
 use strict;
 use warnings;
-use Cwd;
-use Config;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 5;
+use Test::More;
 
 my $primary = PostgreSQL::Test::Cluster->new('primary');
 $primary->init(allows_streaming => 1);
@@ -32,3 +30,5 @@ command_like(
 	[ 'pg_verifybackup', '-s', $backup_path ],
 	qr/backup successfully verified/,
 	'backup with forced encoding verified');
+
+done_testing();

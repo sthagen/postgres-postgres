@@ -19,6 +19,7 @@ typedef struct PGOutputData
 {
 	MemoryContext context;		/* private memory context for transient
 								 * allocations */
+	MemoryContext cachectx;		/* private memory context for cache data */
 
 	/* client-supplied info: */
 	uint32		protocol_version;
@@ -28,6 +29,7 @@ typedef struct PGOutputData
 	bool		streaming;
 	bool		messages;
 	bool		two_phase;
+	bool		sequences;
 } PGOutputData;
 
 #endif							/* PGOUTPUT_H */

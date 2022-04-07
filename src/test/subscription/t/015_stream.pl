@@ -6,7 +6,7 @@ use strict;
 use warnings;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 4;
+use Test::More;
 
 # Create publisher node
 my $node_publisher = PostgreSQL::Test::Cluster->new('publisher');
@@ -58,7 +58,7 @@ is($result, qq(2|2|2), 'check initial data was copied to subscriber');
 my $in  = '';
 my $out = '';
 
-my $timer = IPC::Run::timeout(180);
+my $timer = IPC::Run::timeout($PostgreSQL::Test::Utils::timeout_default);
 
 my $h = $node_publisher->background_psql('postgres', \$in, \$out, $timer,
 	on_error_stop => 0);
@@ -133,3 +133,5 @@ is($result, qq(6667|6667|6667),
 
 $node_subscriber->stop;
 $node_publisher->stop;
+
+done_testing();

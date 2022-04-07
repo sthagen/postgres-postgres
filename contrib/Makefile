@@ -9,6 +9,8 @@ SUBDIRS = \
 		amcheck		\
 		auth_delay	\
 		auto_explain	\
+		basic_archive	\
+		basebackup_to_shell	\
 		bloom		\
 		btree_gin	\
 		btree_gist	\
