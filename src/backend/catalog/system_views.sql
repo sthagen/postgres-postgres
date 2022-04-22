@@ -374,16 +374,6 @@ CREATE VIEW pg_publication_tables AS
          pg_class C JOIN pg_namespace N ON (N.oid = C.relnamespace)
     WHERE C.oid = GPT.relid;
 
-CREATE VIEW pg_publication_sequences AS
-    SELECT
-        P.pubname AS pubname,
-        N.nspname AS schemaname,
-        C.relname AS sequencename
-    FROM pg_publication P,
-         LATERAL pg_get_publication_sequences(P.pubname) GPS,
-         pg_class C JOIN pg_namespace N ON (N.oid = C.relnamespace)
-    WHERE C.oid = GPS.relid;
-
 CREATE VIEW pg_locks AS
     SELECT * FROM pg_lock_status() AS L;
 
@@ -929,6 +919,20 @@ CREATE VIEW pg_stat_wal_receiver AS
             s.conninfo
     FROM pg_stat_get_wal_receiver() s
     WHERE s.pid IS NOT NULL;
+
+CREATE VIEW pg_stat_recovery_prefetch AS
+    SELECT
+            s.stats_reset,
+            s.prefetch,
+            s.hit,
+            s.skip_init,
+            s.skip_new,
+            s.skip_fpw,
+            s.skip_rep,
+            s.wal_distance,
+            s.block_distance,
+            s.io_depth
+     FROM pg_stat_get_recovery_prefetch() s;
 
 CREATE VIEW pg_stat_subscription AS
     SELECT

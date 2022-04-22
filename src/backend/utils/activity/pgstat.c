@@ -166,7 +166,7 @@ typedef struct PgStat_SnapshotEntry
 static void pgstat_write_statsfile(void);
 static void pgstat_read_statsfile(void);
 
-static void pgstat_reset_after_failure(TimestampTz ts);
+static void pgstat_reset_after_failure(void);
 
 static bool pgstat_flush_pending_entries(bool nowait);
 
@@ -218,6 +218,12 @@ static MemoryContext pgStatPendingContext = NULL;
  */
 static dlist_head pgStatPending = DLIST_STATIC_INIT(pgStatPending);
 
+
+/*
+ * Force the next stats flush to happen regardless of
+ * PGSTAT_MIN_INTERVAL. Useful in test scripts.
+ */
+static bool pgStatForceNextFlush = false;
 
 /*
  * For assertions that check pgstat is not used before initialization / after
@@ -421,6 +427,12 @@ pgstat_discard_stats(void)
 				 errmsg("unlinked permanent statistics file \"%s\"",
 						PGSTAT_STAT_PERMANENT_FILENAME)));
 	}
+
+	/*
+	 * Reset stats contents. This will set reset timestamps of fixed-numbered
+	 * stats to the current time (no variable stats exist).
+	 */
+	pgstat_reset_after_failure();
 }
 
 /*
@@ -560,6 +572,13 @@ pgstat_report_stat(bool force)
 	pgstat_assert_is_up();
 	Assert(!IsTransactionBlock());
 
+	/* "absorb" the forced flush even if there's nothing to flush */
+	if (pgStatForceNextFlush)
+	{
+		force = true;
+		pgStatForceNextFlush = false;
+	}
+
 	/* Don't expend a clock check if nothing to do */
 	if (dlist_is_empty(&pgStatPending) &&
 		!have_slrustats &&
@@ -635,6 +654,16 @@ pgstat_report_stat(bool force)
 	pending_since = 0;
 
 	return 0;
+}
+
+/*
+ * Force locally pending stats to be flushed during the next
+ * pgstat_report_stat() call. This is useful for writing tests.
+ */
+void
+pgstat_force_next_flush(void)
+{
+	pgStatForceNextFlush = true;
 }
 
 /*
@@ -847,6 +876,16 @@ pgstat_get_stat_snapshot_timestamp(bool *have_snapshot)
 	*have_snapshot = false;
 
 	return 0;
+}
+
+bool
+pgstat_have_entry(PgStat_Kind kind, Oid dboid, Oid objoid)
+{
+	/* fixed-numbered stats always exist */
+	if (pgstat_get_kind_info(kind)->fixed_amount)
+		return true;
+
+	return pgstat_get_entry_ref(kind, dboid, objoid, false, NULL) != NULL;
 }
 
 /*
@@ -1389,7 +1428,6 @@ pgstat_read_statsfile(void)
 	bool		found;
 	const char *statfile = PGSTAT_STAT_PERMANENT_FILENAME;
 	PgStat_ShmemControl *shmem = pgStatLocal.shmem;
-	TimestampTz ts = GetCurrentTimestamp();
 
 	/* shouldn't be called from postmaster */
 	Assert(IsUnderPostmaster || !IsPostmasterEnvironment);
@@ -1412,7 +1450,7 @@ pgstat_read_statsfile(void)
 					(errcode_for_file_access(),
 					 errmsg("could not open statistics file \"%s\": %m",
 							statfile)));
-		pgstat_reset_after_failure(ts);
+		pgstat_reset_after_failure();
 		return;
 	}
 
@@ -1465,7 +1503,7 @@ pgstat_read_statsfile(void)
 	 */
 	for (;;)
 	{
-		char		t = fgetc(fpin);
+		int			t = fgetc(fpin);
 
 		switch (t)
 		{
@@ -1545,6 +1583,10 @@ pgstat_read_statsfile(void)
 					break;
 				}
 			case 'E':
+				/* check that 'E' actually signals end of file */
+				if (fgetc(fpin) != EOF)
+					goto error;
+
 				goto done;
 
 			default:
@@ -1564,19 +1606,20 @@ error:
 	ereport(LOG,
 			(errmsg("corrupted statistics file \"%s\"", statfile)));
 
-	/* Set the current timestamp as reset timestamp */
-	pgstat_reset_after_failure(ts);
+	pgstat_reset_after_failure();
 
 	goto done;
 }
 
 /*
- * Helper to reset / drop stats after restoring stats from disk failed,
- * potentially after already loading parts.
+ * Helper to reset / drop stats after a crash or after restoring stats from
+ * disk failed, potentially after already loading parts.
  */
 static void
-pgstat_reset_after_failure(TimestampTz ts)
+pgstat_reset_after_failure(void)
 {
+	TimestampTz ts = GetCurrentTimestamp();
+
 	/* reset fixed-numbered stats */
 	for (int kind = PGSTAT_KIND_FIRST_VALID; kind <= PGSTAT_KIND_LAST; kind++)
 	{

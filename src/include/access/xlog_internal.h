@@ -320,12 +320,13 @@ typedef struct RmgrData
 							  struct XLogRecordBuffer *buf);
 } RmgrData;
 
-extern RmgrData RmgrTable[];
+extern PGDLLIMPORT RmgrData RmgrTable[];
 extern void RmgrStartup(void);
 extern void RmgrCleanup(void);
 extern void RmgrNotFound(RmgrId rmid);
 extern void RegisterCustomRmgr(RmgrId rmid, RmgrData *rmgr);
 
+#ifndef FRONTEND
 static inline bool
 RmgrIdExists(RmgrId rmid)
 {
@@ -339,6 +340,7 @@ GetRmgr(RmgrId rmid)
 		RmgrNotFound(rmid);
 	return RmgrTable[rmid];
 }
+#endif
 
 /*
  * Exported to support xlog switching from checkpointer
@@ -348,13 +350,17 @@ extern XLogRecPtr RequestXLogSwitch(bool mark_unimportant);
 
 extern void GetOldestRestartPoint(XLogRecPtr *oldrecptr, TimeLineID *oldtli);
 
+extern void XLogRecGetBlockRefInfo(XLogReaderState *record, bool pretty,
+								   bool detailed_format, StringInfo buf,
+								   uint32 *fpi_len);
+
 /*
  * Exported for the functions in timeline.c and xlogarchive.c.  Only valid
  * in the startup process.
  */
-extern bool ArchiveRecoveryRequested;
-extern bool InArchiveRecovery;
-extern bool StandbyMode;
-extern char *recoveryRestoreCommand;
+extern PGDLLIMPORT bool ArchiveRecoveryRequested;
+extern PGDLLIMPORT bool InArchiveRecovery;
+extern PGDLLIMPORT bool StandbyMode;
+extern PGDLLIMPORT char *recoveryRestoreCommand;
 
 #endif							/* XLOG_INTERNAL_H */

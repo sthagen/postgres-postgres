@@ -1421,6 +1421,9 @@ LogicalRepWorker
 LogicalRewriteMappingData
 LogicalTape
 LogicalTapeSet
+LsnReadQueue
+LsnReadQueueNextFun
+LsnReadQueueNextStatus
 LtreeGistOptions
 LtreeSignature
 MAGIC
@@ -2949,6 +2952,9 @@ XLogPageHeaderData
 XLogPageReadCB
 XLogPageReadPrivate
 XLogPageReadResult
+XLogPrefetcher
+XLogPrefetcherFilter
+XLogPrefetchStats
 XLogReaderRoutine
 XLogReaderState
 XLogRecData
@@ -3359,6 +3365,8 @@ pg_be_sasl_mech
 pg_checksum_context
 pg_checksum_raw_context
 pg_checksum_type
+pg_compress_algorithm
+pg_compress_specification
 pg_conn_host
 pg_conn_host_type
 pg_conv_map

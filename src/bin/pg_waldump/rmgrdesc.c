@@ -41,8 +41,8 @@ static const RmgrDescData RmgrDescTable[RM_N_BUILTIN_IDS] = {
 
 #define CUSTOM_NUMERIC_NAME_LEN sizeof("custom###")
 
-static char CustomNumericNames[RM_N_CUSTOM_IDS][CUSTOM_NUMERIC_NAME_LEN] = {0};
-static RmgrDescData CustomRmgrDesc[RM_N_CUSTOM_IDS] = {0};
+static char CustomNumericNames[RM_N_CUSTOM_IDS][CUSTOM_NUMERIC_NAME_LEN] = {{0}};
+static RmgrDescData CustomRmgrDesc[RM_N_CUSTOM_IDS] = {{0}};
 static bool CustomRmgrDescInitialized = false;
 
 /*
@@ -86,9 +86,9 @@ initialize_custom_rmgrs(void)
 const RmgrDescData *
 GetRmgrDesc(RmgrId rmid)
 {
-	Assert(RMID_IS_VALID(rmid));
+	Assert(RmgrIdIsValid(rmid));
 
-	if (RMID_IS_BUILTIN(rmid))
+	if (RmgrIdIsBuiltin(rmid))
 		return &RmgrDescTable[rmid];
 	else
 	{

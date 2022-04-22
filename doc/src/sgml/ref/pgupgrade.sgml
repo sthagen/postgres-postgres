@@ -24,8 +24,7 @@ PostgreSQL documentation
    <command>pg_upgrade</command>
    <arg choice="plain"><option>-b</option></arg>
    <arg choice="plain"><replaceable>oldbindir</replaceable></arg>
-   <arg choice="plain"><option>-B</option></arg>
-   <arg choice="plain"><replaceable>newbindir</replaceable></arg>
+   <arg choice="opt"><option>-B</option> <replaceable>newbindir</replaceable></arg>
    <arg choice="plain"><option>-d</option></arg>
    <arg choice="plain"><replaceable>oldconfigdir</replaceable></arg>
    <arg choice="plain"><option>-D</option></arg>
@@ -499,7 +498,7 @@ pg_upgrade.exe
      is running.
     </para>
 
-    <substeps>
+    <procedure>
 
      <step>
       <title>Install the new PostgreSQL binaries on standby servers</title>
@@ -624,7 +623,7 @@ rsync --archive --delete --hard-links --size-only --no-inc-recursive /vol1/pg_tb
       </para>
      </step>
 
-    </substeps>
+    </procedure>
 
    </step>
 

@@ -288,6 +288,7 @@ static WindowAgg *make_windowagg(List *tlist, Index winref,
 								 int frameOptions, Node *startOffset, Node *endOffset,
 								 Oid startInRangeFunc, Oid endInRangeFunc,
 								 Oid inRangeColl, bool inRangeAsc, bool inRangeNullsFirst,
+								 List *runCondition, List *qual, bool topWindow,
 								 Plan *lefttree);
 static Group *make_group(List *tlist, List *qual, int numGroupCols,
 						 AttrNumber *grpColIdx, Oid *grpOperators, Oid *grpCollations,
@@ -2672,6 +2673,9 @@ create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_path)
 						  wc->inRangeColl,
 						  wc->inRangeAsc,
 						  wc->inRangeNullsFirst,
+						  wc->runCondition,
+						  best_path->qual,
+						  best_path->topwindow,
 						  subplan);
 
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
@@ -3894,7 +3898,8 @@ create_ctescan_plan(PlannerInfo *root, Path *best_path,
 	if (ndx >= list_length(cteroot->cte_plan_ids))
 		elog(ERROR, "could not find plan for CTE \"%s\"", rte->ctename);
 	plan_id = list_nth_int(cteroot->cte_plan_ids, ndx);
-	Assert(plan_id > 0);
+	if (plan_id <= 0)
+		elog(ERROR, "no plan was made for CTE \"%s\"", rte->ctename);
 	foreach(lc, cteroot->init_plans)
 	{
 		ctesplan = (SubPlan *) lfirst(lc);
@@ -6558,7 +6563,7 @@ make_windowagg(List *tlist, Index winref,
 			   int frameOptions, Node *startOffset, Node *endOffset,
 			   Oid startInRangeFunc, Oid endInRangeFunc,
 			   Oid inRangeColl, bool inRangeAsc, bool inRangeNullsFirst,
-			   Plan *lefttree)
+			   List *runCondition, List *qual, bool topWindow, Plan *lefttree)
 {
 	WindowAgg  *node = makeNode(WindowAgg);
 	Plan	   *plan = &node->plan;
@@ -6575,17 +6580,20 @@ make_windowagg(List *tlist, Index winref,
 	node->frameOptions = frameOptions;
 	node->startOffset = startOffset;
 	node->endOffset = endOffset;
+	node->runCondition = runCondition;
+	/* a duplicate of the above for EXPLAIN */
+	node->runConditionOrig = runCondition;
 	node->startInRangeFunc = startInRangeFunc;
 	node->endInRangeFunc = endInRangeFunc;
 	node->inRangeColl = inRangeColl;
 	node->inRangeAsc = inRangeAsc;
 	node->inRangeNullsFirst = inRangeNullsFirst;
+	node->topWindow = topWindow;
 
 	plan->targetlist = tlist;
 	plan->lefttree = lefttree;
 	plan->righttree = NULL;
-	/* WindowAgg nodes never have a qual clause */
-	plan->qual = NIL;
+	plan->qual = qual;
 
 	return node;
 }

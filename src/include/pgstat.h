@@ -414,6 +414,7 @@ extern void pgstat_initialize(void);
 
 /* Functions called from backends */
 extern long pgstat_report_stat(bool force);
+extern void pgstat_force_next_flush(void);
 
 extern void pgstat_reset_counters(void);
 extern void pgstat_reset(PgStat_Kind kind, Oid dboid, Oid objectid);
@@ -425,6 +426,8 @@ extern TimestampTz pgstat_get_stat_snapshot_timestamp(bool *have_snapshot);
 
 /* helpers */
 extern PgStat_Kind pgstat_get_kind_from_str(char *kind_str);
+extern bool pgstat_have_entry(PgStat_Kind kind, Oid dboid, Oid objoid);
+
 
 /*
  * Functions in pgstat_archiver.c
@@ -648,7 +651,7 @@ extern PGDLLIMPORT int pgstat_fetch_consistency;
  */
 
 /* updated directly by bgwriter and bufmgr */
-extern PgStat_BgWriterStats PendingBgWriterStats;
+extern PGDLLIMPORT PgStat_BgWriterStats PendingBgWriterStats;
 
 
 /*
@@ -659,7 +662,7 @@ extern PgStat_BgWriterStats PendingBgWriterStats;
  * Checkpointer statistics counters are updated directly by checkpointer and
  * bufmgr.
  */
-extern PgStat_CheckpointerStats PendingCheckpointerStats;
+extern PGDLLIMPORT PgStat_CheckpointerStats PendingCheckpointerStats;
 
 
 /*
@@ -667,18 +670,18 @@ extern PgStat_CheckpointerStats PendingCheckpointerStats;
  */
 
 /* Updated by pgstat_count_buffer_*_time macros */
-extern PgStat_Counter pgStatBlockReadTime;
-extern PgStat_Counter pgStatBlockWriteTime;
+extern PGDLLIMPORT PgStat_Counter pgStatBlockReadTime;
+extern PGDLLIMPORT PgStat_Counter pgStatBlockWriteTime;
 
 /*
  * Updated by pgstat_count_conn_*_time macros, called by
  * pgstat_report_activity().
  */
-extern PgStat_Counter pgStatActiveTime;
-extern PgStat_Counter pgStatTransactionIdleTime;
+extern PGDLLIMPORT PgStat_Counter pgStatActiveTime;
+extern PGDLLIMPORT PgStat_Counter pgStatTransactionIdleTime;
 
 /* updated by the traffic cop and in errfinish() */
-extern SessionEndType pgStatSessionEndCause;
+extern PGDLLIMPORT SessionEndType pgStatSessionEndCause;
 
 
 /*
@@ -686,7 +689,7 @@ extern SessionEndType pgStatSessionEndCause;
  */
 
 /* updated directly by backends and background processes */
-extern PgStat_WalStats PendingWalStats;
+extern PGDLLIMPORT PgStat_WalStats PendingWalStats;
 
 
 #endif							/* PGSTAT_H */

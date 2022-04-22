@@ -2205,7 +2205,7 @@ REVOKE ALL ON accounts FROM PUBLIC;
       <entry><literal>PARAMETER</literal></entry>
       <entry><literal>sA</literal></entry>
       <entry>none</entry>
-      <entry>none</entry>
+      <entry><literal>\dconfig+</literal></entry>
      </row>
      <row>
       <entry><literal>SCHEMA</literal></entry>
@@ -2619,13 +2619,13 @@ CREATE POLICY admin_local_only ON passwd AS RESTRICTIVE TO admin
 
 <programlisting>
 =&gt; SELECT current_user;
- current_user 
+ current_user
 --------------
  admin
 (1 row)
 
 =&gt; select inet_client_addr();
- inet_client_addr 
+ inet_client_addr
 ------------------
  127.0.0.1
 (1 row)

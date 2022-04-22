@@ -16,6 +16,7 @@
 
 #include "access/htup_details.h"
 #include "access/xlog.h"
+#include "access/xlogprefetcher.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_type.h"
 #include "common/ip.h"
@@ -2067,6 +2068,16 @@ pg_stat_clear_snapshot(PG_FUNCTION_ARGS)
 }
 
 
+/* Force statistics to be reported at the next occasion */
+Datum
+pg_stat_force_next_flush(PG_FUNCTION_ARGS)
+{
+	pgstat_force_next_flush();
+
+	PG_RETURN_VOID();
+}
+
+
 /* Reset all counters for the current database */
 Datum
 pg_stat_reset(PG_FUNCTION_ARGS)
@@ -2093,13 +2104,15 @@ pg_stat_reset_shared(PG_FUNCTION_ARGS)
 		pgstat_reset_of_kind(PGSTAT_KIND_BGWRITER);
 		pgstat_reset_of_kind(PGSTAT_KIND_CHECKPOINTER);
 	}
+	else if (strcmp(target, "recovery_prefetch") == 0)
+		XLogPrefetchResetStats();
 	else if (strcmp(target, "wal") == 0)
 		pgstat_reset_of_kind(PGSTAT_KIND_WAL);
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("unrecognized reset target: \"%s\"", target),
-				 errhint("Target must be \"archiver\", \"bgwriter\", or \"wal\".")));
+				 errhint("Target must be \"archiver\", \"bgwriter\", \"recovery_prefetch\", or \"wal\".")));
 
 	PG_RETURN_VOID();
 }
@@ -2383,4 +2396,22 @@ pg_stat_get_subscription_stats(PG_FUNCTION_ARGS)
 
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/*
+ * Checks for presence of stats for object with provided kind, database oid,
+ * object oid.
+ *
+ * This is useful for tests, but not really anything else. Therefore not
+ * documented.
+ */
+Datum
+pg_stat_have_stats(PG_FUNCTION_ARGS)
+{
+	char	   *stats_type = text_to_cstring(PG_GETARG_TEXT_P(0));
+	Oid			dboid = PG_GETARG_OID(1);
+	Oid			objoid = PG_GETARG_OID(2);
+	PgStat_Kind	kind = pgstat_get_kind_from_str(stats_type);
+
+	PG_RETURN_BOOL(pgstat_have_entry(kind, dboid, objoid));
 }
