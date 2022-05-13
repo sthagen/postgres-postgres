@@ -84,11 +84,12 @@ Author: Stephen Frost <sfrost@snowman.net>
 
 <listitem>
 <para>
-Remove exclusive backup mode (David Steele, Nathan Bossart)
+Remove long-deprecated exclusive backup mode (David Steele, Nathan Bossart)
 </para>
 
 <para>
-If the database server stops abruptly while in this mode, the server could fail to start.  The non-exclusive backup mode requires a continuous database connection during the backup.
+If the database server stops abruptly while in this mode, the server could fail to start.  The non-exclusive backup mode requires a continuous database connection during the
+backup.  Functions pg_start_backup()/pg_stop_backup() have been renamed to pg_backup_start()/pg_backup_stop(), and the functions pg_backup_start_time() and pg_is_in_backup() have been removed.
 </para>
 </listitem>
 
@@ -157,17 +158,6 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 <listitem>
 <para>
 Generate an error when char() is supplied with a negative argument (Peter Eisentraut)
-</para>
-</listitem>
-
-<!--
-Author: John Naylor <john.naylor@postgresql.org>
-2021-07-14 [c203dcddf] Remove unused function parameter in get_qual_from_partbo
--->
-
-<listitem>
-<para>
-Remove unused function parameter in get_qual_from_partbound() (Hou Zhijie)
 </para>
 </listitem>
 
@@ -416,7 +406,7 @@ Improve the algorithm used to compute random() (Fabien Coelho)
 </para>
 
 <para>
-This will cause setseed() followed by random() to return a different value than on older servers.
+This will cause random() to differ from what was emitted by prior versions for the same seed values.
 </para>
 </listitem>
 
@@ -570,23 +560,11 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 
 <listitem>
 <para>
-Improve the trigger behavior of updates on partitioned tables that move rows between partitions (Amit Langote)
+Improve foreign key behavior of updates on partitioned tables that move rows between partitions (Amit Langote)
 </para>
 
 <para>
-Previously, such updates fired delete triggers on the source partition and fired insert triggers on the target partition.  PostgreSQL will now fire an update trigger on the partition root.  This makes
-foreign key behavior more consistent.  ALL TRIGGERS?
-</para>
-</listitem>
-
-<!--
-Author: Amit Kapila <akapila@postgresql.org>
-2021-12-08 [a61bff2bf] De-duplicate the result of pg_publication_tables view.
--->
-
-<listitem>
-<para>
-Remove incorrect duplicate partitions in system view pg_publication_tables (Hou Zhijie)
+Previously, such updates ran delete actions on the source partition and insert actions on the target partition.  PostgreSQL will now run update actions on the referenced partition root.
 </para>
 </listitem>
 
@@ -610,7 +588,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 
 <listitem>
 <para>
-Fix ALTER TRIGGER RENAME on partitioned tables to rename partitions (Arne Roland, Álvaro Herrera)
+Fix ALTER TRIGGER RENAME on partitioned tables to properly rename triggers an all partitions (Arne Roland, Álvaro Herrera)
 </para>
 
 <para>
@@ -639,23 +617,6 @@ Enable system and TOAST B-tree indexes to efficiently store duplicates (Peter Ge
 
 <para>
 Previously de-duplication was disabled for these types of indexes.
-</para>
-</listitem>
-
-<!--
-Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
-2021-10-18 [65014000b] Replace polyphase merge algorithm with a simple balanced
-Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
-2021-10-25 [166f94377] Clarify the logic in a few places in the new balanced me
--->
-
-<listitem>
-<para>
-Improve sorting performance (Heikki Linnakangas)
-</para>
-
-<para>
-Specifically, switch to a batch sorting algorithm that uses more output streams internally.
 </para>
 </listitem>
 
@@ -805,6 +766,38 @@ This will improve text-heavy operations like COPY FROM.
 </listitem>
 
 <!--
+Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
+2021-10-18 [65014000b] Replace polyphase merge algorithm with a simple balanced
+Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
+2021-10-25 [166f94377] Clarify the logic in a few places in the new balanced me
+-->
+
+<listitem>
+<para>
+Improve performance for sorts that exceed work_mem (Heikki Linnakangas)
+</para>
+
+<para>
+Specifically, switch to a batch sorting algorithm that uses more output streams internally.
+</para>
+</listitem>
+
+<!--
+Author: David Rowley <drowley@postgresql.org>
+2021-07-22 [91e9e89dc] Make nodeSort.c use Datum sorts for single column sorts
+Author: David Rowley <drowley@postgresql.org>
+2022-04-04 [40af10b57] Use Generation memory contexts to store tuples in sorts
+Author: John Naylor <john.naylor@postgresql.org>
+2022-04-02 [697492434] Specialize tuplesort routines for different kinds of abb
+-->
+
+<listitem>
+<para>
+Improve performance and reduce memory consumption of in-memory sorts (Ronan Dunklau, David Rowley, Thomas Munro, John Naylor)
+</para>
+</listitem>
+
+<!--
 Author: Michael Paquier <michael@paquier.xyz>
 2021-06-29 [4035cd5d4] Add support for LZ4 with compression of full-page writes
 Author: Michael Paquier <michael@paquier.xyz>
@@ -914,7 +907,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 
 <listitem>
 <para>
-Generate periodic log message during slow server starts (Nitin Jadhav, Robert Haas, Álvaro Herrera)
+Generate periodic log message during slow server starts (Nitin Jadhav, Robert Haas)
 </para>
 
 <para>
@@ -1067,7 +1060,7 @@ Author: Jeff Davis <jdavis@postgresql.org>
 
 <listitem>
 <para>
-Allow members of the pg_checkpointer predefined role to run the CHECKPOINT command (Jeff Davis)
+Add predefined role pg_checkpointer that allows members to run CHECKPOINT (Jeff Davis)
 </para>
 
 <para>
@@ -1220,20 +1213,9 @@ Author: Robert Haas <rhaas@postgresql.org>
 <para>
 Add server variable archive_library to specify the library to be called for archiving (Nathan Bossart)
 </para>
-</listitem>
-
-<!--
-Author: Michael Paquier <michael@paquier.xyz>
-2021-11-23 [1922d7c6e] Add SQL functions to monitor the directory contents of r
--->
-
-<listitem>
-<para>
-Add SQL functions to monitor the directory contents of replication slots (Bharath Rupireddy)
-</para>
 
 <para>
-Specifically, the functions are pg_ls_logicalsnapdir(), pg_ls_logicalmapdir(), and pg_ls_replslotdir().  They can be run by members of the predefined pg_monitor role.
+Previously only shell commands could be called to perform archiving.
 </para>
 </listitem>
 
@@ -1300,17 +1282,6 @@ Allow publications to be restricted to specific columns (Tomas Vondra, Álvaro H
 </listitem>
 
 <!--
-Author: Peter Eisentraut <peter@eisentraut.org>
-2022-04-07 [344d62fb9] Unlogged sequences
--->
-
-<listitem>
-<para>
-Create unlogged sequences and allow them to be skipped in logical replication (Peter Eisentraut)
-</para>
-</listitem>
-
-<!--
 Author: Amit Kapila <akapila@postgresql.org>
 2022-03-22 [208c5d65b] Add ALTER SUBSCRIPTION ... SKIP.
 -->
@@ -1350,6 +1321,51 @@ The new CREATE_REPLICATION_SLOT option is called TWO_PHASE.  pg_recvlogical now 
 </listitem>
 
 <!--
+Author: Amit Kapila <akapila@postgresql.org>
+2022-03-30 [d5a9d86d8] Skip empty transactions for logical replication.
+-->
+
+<listitem>
+<para>
+Prevent logical replication of empty transactions (Ajin Cherian, Hou Zhijie, Euler Taveira)
+</para>
+
+<para>
+Previously, write transactions would send empty transactions to subscribers if subscribed tables were not modified.
+</para>
+</listitem>
+
+<!--
+Author: Michael Paquier <michael@paquier.xyz>
+2021-11-23 [1922d7c6e] Add SQL functions to monitor the directory contents of r
+-->
+
+<listitem>
+<para>
+Add SQL functions to monitor the directory contents of logical replication slots (Bharath Rupireddy)
+</para>
+
+<para>
+Specifically, the functions are pg_ls_logicalsnapdir(), pg_ls_logicalmapdir(), and pg_ls_replslotdir().  They can be run by members of the predefined pg_monitor role.
+</para>
+</listitem>
+
+<!--
+Author: Amit Kapila <akapila@postgresql.org>
+2022-03-14 [705e20f85] Optionally disable subscriptions on error.
+-->
+
+<listitem>
+<para>
+Allow subscribers to stop logical replication application on error (Osumi Takamichi, Mark Dilger)
+</para>
+
+<para>
+This is enabled with the subscriber option "disable_on_error" and avoids possible infinite error loops during stream application.
+</para>
+</listitem>
+
+<!--
 Author: Tom Lane <tgl@sss.pgh.pa.us>
 2021-11-02 [f3d4019da] Ensure consistent logical replication of datetime and fl
 -->
@@ -1378,6 +1394,17 @@ Add system view pg_stat_subscription_stats to report on subscriber activity (Mas
 
 <para>
 New function pg_stat_reset_subscription_stats() allows the resetting of subscriber statistics.
+</para>
+</listitem>
+
+<!--
+Author: Amit Kapila <akapila@postgresql.org>
+2021-12-08 [a61bff2bf] De-duplicate the result of pg_publication_tables view.
+-->
+
+<listitem>
+<para>
+Remove incorrect duplicate partitions in system view pg_publication_tables (Hou Zhijie)
 </para>
 </listitem>
 
@@ -1419,7 +1446,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 
 <listitem>
 <para>
-Add SQL MERGE command to adjust one table to match another (Pavan Deolasee, Álvaro Herrera, Amit Langote, Simon Riggs)
+Add SQL MERGE command to adjust one table to match another (Simon Riggs, Pavan Deolasee, Álvaro Herrera, Amit Langote)
 </para>
 
 <para>
@@ -1550,6 +1577,17 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 <listitem>
 <para>
 Improve overflow detection when casting values to interval (Joe Koshakow)
+</para>
+</listitem>
+
+<!--
+Author: Peter Eisentraut <peter@eisentraut.org>
+2022-04-07 [344d62fb9] Unlogged sequences
+-->
+
+<listitem>
+<para>
+Allow the creation of unlogged sequences (Peter Eisentraut)
 </para>
 </listitem>
 
