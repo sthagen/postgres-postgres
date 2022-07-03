@@ -742,8 +742,7 @@ PQclear(PGresult *res)
 		free(res->events[i].name);
 	}
 
-	if (res->events)
-		free(res->events);
+	free(res->events);
 
 	/* Free all the subsidiary blocks */
 	while ((block = res->curBlock) != NULL)
@@ -753,8 +752,7 @@ PQclear(PGresult *res)
 	}
 
 	/* Free the top-level tuple pointer array */
-	if (res->tuples)
-		free(res->tuples);
+	free(res->tuples);
 
 	/* zero out the pointer fields to catch programming errors */
 	res->attDescs = NULL;
@@ -777,12 +775,10 @@ PQclear(PGresult *res)
 void
 pqClearAsyncResult(PGconn *conn)
 {
-	if (conn->result)
-		PQclear(conn->result);
+	PQclear(conn->result);
 	conn->result = NULL;
 	conn->error_result = false;
-	if (conn->next_result)
-		PQclear(conn->next_result);
+	PQclear(conn->next_result);
 	conn->next_result = NULL;
 }
 
@@ -2439,8 +2435,7 @@ PQexecFinish(PGconn *conn)
 	lastResult = NULL;
 	while ((result = PQgetResult(conn)) != NULL)
 	{
-		if (lastResult)
-			PQclear(lastResult);
+		PQclear(lastResult);
 		lastResult = result;
 		if (result->resultStatus == PGRES_COPY_IN ||
 			result->resultStatus == PGRES_COPY_OUT ||
