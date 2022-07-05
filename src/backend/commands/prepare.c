@@ -683,8 +683,11 @@ pg_prepared_statement(PG_FUNCTION_ARGS)
 		hash_seq_init(&hash_seq, prepared_queries);
 		while ((prep_stmt = hash_seq_search(&hash_seq)) != NULL)
 		{
-			Datum		values[7];
-			bool		nulls[7];
+			TupleDesc	result_desc;
+			Datum		values[8];
+			bool		nulls[8];
+
+			result_desc = prep_stmt->plansource->resultDesc;
 
 			MemSet(nulls, 0, sizeof(nulls));
 
@@ -693,9 +696,23 @@ pg_prepared_statement(PG_FUNCTION_ARGS)
 			values[2] = TimestampTzGetDatum(prep_stmt->prepare_time);
 			values[3] = build_regtype_array(prep_stmt->plansource->param_types,
 											prep_stmt->plansource->num_params);
-			values[4] = BoolGetDatum(prep_stmt->from_sql);
-			values[5] = Int64GetDatumFast(prep_stmt->plansource->num_generic_plans);
-			values[6] = Int64GetDatumFast(prep_stmt->plansource->num_custom_plans);
+			if (result_desc)
+			{
+				Oid		   *result_types;
+
+				result_types = (Oid *) palloc(result_desc->natts * sizeof(Oid));
+				for (int i = 0; i < result_desc->natts; i++)
+					result_types[i] = result_desc->attrs[i].atttypid;
+				values[4] = build_regtype_array(result_types, result_desc->natts);
+			}
+			else
+			{
+				/* no result descriptor (for example, DML statement) */
+				nulls[4] = true;
+			}
+			values[5] = BoolGetDatum(prep_stmt->from_sql);
+			values[6] = Int64GetDatumFast(prep_stmt->plansource->num_generic_plans);
+			values[7] = Int64GetDatumFast(prep_stmt->plansource->num_custom_plans);
 
 			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
 								 values, nulls);
