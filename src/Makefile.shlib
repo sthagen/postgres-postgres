@@ -118,7 +118,6 @@ endif
 ifeq ($(PORTNAME), darwin)
   ifdef soname
     # linkable library
-    DLSUFFIX		= .dylib
     ifneq ($(SO_MAJOR_VERSION), 0)
       version_link	= -compatibility_version $(SO_MAJOR_VERSION) -current_version $(SO_MAJOR_VERSION).$(SO_MINOR_VERSION)
     endif
@@ -127,7 +126,6 @@ ifeq ($(PORTNAME), darwin)
     shlib_major		= lib$(NAME).$(SO_MAJOR_VERSION)$(DLSUFFIX)
   else
     # loadable module
-    DLSUFFIX		= .so
     LINK.shared		= $(COMPILER) -bundle -multiply_defined suppress
   endif
   BUILD.exports		= $(AWK) '/^[^\#]/ {printf "_%s\n",$$1}' $< >$@
@@ -398,7 +396,7 @@ endif # PORTNAME == cygwin || PORTNAME == win32
 	echo >>$@
 	echo 'Name: lib$(NAME)' >>$@
 	echo 'Description: PostgreSQL lib$(NAME) library' >>$@
-	echo 'Url: $(PACKAGE_URL)' >>$@
+	echo 'URL: $(PACKAGE_URL)' >>$@
 	echo 'Version: $(VERSION)' >>$@
 	echo 'Requires: ' >>$@
 	echo 'Requires.private: $(PKG_CONFIG_REQUIRES_PRIVATE)' >>$@
