@@ -492,9 +492,6 @@ nodetag_to_string(NodeTag tag)
 		case T_BitmapOr:
 			return "BitmapOr";
 			break;
-		case T_Scan:
-			return "Scan";
-			break;
 		case T_SeqScan:
 			return "SeqScan";
 			break;
@@ -617,9 +614,6 @@ nodetag_to_string(NodeTag tag)
 			break;
 		case T_PlanInvalItem:
 			return "PlanInvalItem";
-			break;
-		case T_PlanState:
-			return "PlanState";
 			break;
 		case T_ResultState:
 			return "ResultState";
