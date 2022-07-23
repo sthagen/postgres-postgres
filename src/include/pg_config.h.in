@@ -640,9 +640,6 @@
 /* Define to 1 if you have the <sys/stat.h> header file. */
 #undef HAVE_SYS_STAT_H
 
-/* Define to 1 if you have the <sys/tas.h> header file. */
-#undef HAVE_SYS_TAS_H
-
 /* Define to 1 if you have the <sys/types.h> header file. */
 #undef HAVE_SYS_TYPES_H
 
@@ -702,9 +699,6 @@
 
 /* Define to 1 if you have the `wcstombs_l' function. */
 #undef HAVE_WCSTOMBS_L
-
-/* Define to 1 if you have the <wctype.h> header file. */
-#undef HAVE_WCTYPE_H
 
 /* Define to 1 if you have the <winldap.h> header file. */
 #undef HAVE_WINLDAP_H
