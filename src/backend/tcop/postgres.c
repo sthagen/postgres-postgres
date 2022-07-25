@@ -32,7 +32,7 @@
 #include <sys/resource.h>
 #endif
 
-#ifndef HAVE_GETRUSAGE
+#ifdef WIN32
 #include "rusagestub.h"
 #endif
 
@@ -4076,7 +4076,11 @@ PostgresMain(const char *dbname, const char *username)
 	 * it inside InitPostgres() instead.  In particular, anything that
 	 * involves database access should be there, not here.
 	 */
-	InitPostgres(dbname, InvalidOid, username, InvalidOid, NULL, false);
+	InitPostgres(dbname, InvalidOid,	/* database to connect to */
+				 username, InvalidOid,	/* role to connect as */
+				 !am_walsender, /* honor session_preload_libraries? */
+				 false,			/* don't ignore datallowconn */
+				 NULL);			/* no out_dbname */
 
 	/*
 	 * If the PostmasterContext is still around, recycle the space; we don't
@@ -4111,12 +4115,6 @@ PostgresMain(const char *dbname, const char *username)
 	/* Perform initialization specific to a WAL sender process. */
 	if (am_walsender)
 		InitWalSender();
-
-	/*
-	 * process any libraries that should be preloaded at backend start (this
-	 * likewise can't be done until GUC settings are complete)
-	 */
-	process_session_preload_libraries();
 
 	/*
 	 * Send this backend's cancellation info to the frontend.
@@ -4860,7 +4858,14 @@ ShowUsage(const char *title)
 					 (long) user.tv_usec,
 					 (long) sys.tv_sec,
 					 (long) sys.tv_usec);
-#if defined(HAVE_GETRUSAGE)
+#ifndef WIN32
+
+	/*
+	 * The following rusage fields are not defined by POSIX, but they're
+	 * present on all current Unix-like systems so we use them without any
+	 * special checks.  Some of these could be provided in our Windows
+	 * emulation in src/port/getrusage.c with more work.
+	 */
 	appendStringInfo(&str,
 					 "!\t%ld kB max resident size\n",
 #if defined(__darwin__)
@@ -4896,7 +4901,7 @@ ShowUsage(const char *title)
 					 r.ru_nvcsw - Save_r.ru_nvcsw,
 					 r.ru_nivcsw - Save_r.ru_nivcsw,
 					 r.ru_nvcsw, r.ru_nivcsw);
-#endif							/* HAVE_GETRUSAGE */
+#endif							/* !WIN32 */
 
 	/* remove trailing newline */
 	if (str.data[str.len - 1] == '\n')
