@@ -168,9 +168,7 @@ const struct config_enum_entry sync_method_options[] = {
 #ifdef HAVE_FSYNC_WRITETHROUGH
 	{"fsync_writethrough", SYNC_METHOD_FSYNC_WRITETHROUGH, false},
 #endif
-#ifdef HAVE_FDATASYNC
 	{"fdatasync", SYNC_METHOD_FDATASYNC, false},
-#endif
 #ifdef O_SYNC
 	{"open_sync", SYNC_METHOD_OPEN, false},
 #endif
@@ -2189,7 +2187,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 					INSTR_TIME_SET_CURRENT(start);
 
 				pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
-				written = pg_pwrite(openLogFile, from, nleft, startoffset);
+				written = pwrite(openLogFile, from, nleft, startoffset);
 				pgstat_report_wait_end();
 
 				/*
@@ -3011,7 +3009,7 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 		 * enough.
 		 */
 		errno = 0;
-		if (pg_pwrite(fd, zbuffer.data, 1, wal_segment_size - 1) != 1)
+		if (pwrite(fd, zbuffer.data, 1, wal_segment_size - 1) != 1)
 		{
 			/* if write didn't set errno, assume no disk space */
 			save_errno = errno ? errno : ENOSPC;
@@ -8015,12 +8013,10 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 				msg = _("could not fsync write-through file \"%s\": %m");
 			break;
 #endif
-#ifdef HAVE_FDATASYNC
 		case SYNC_METHOD_FDATASYNC:
 			if (pg_fdatasync(fd) != 0)
 				msg = _("could not fdatasync file \"%s\": %m");
 			break;
-#endif
 		case SYNC_METHOD_OPEN:
 		case SYNC_METHOD_OPEN_DSYNC:
 			/* not reachable */
@@ -8305,7 +8301,6 @@ do_pg_backup_start(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			if (get_dirent_type(fullpath, de, false, ERROR) != PGFILETYPE_LNK)
 				continue;
 
-#if defined(HAVE_READLINK) || defined(WIN32)
 			rllen = readlink(fullpath, linkpath, sizeof(linkpath));
 			if (rllen < 0)
 			{
@@ -8358,17 +8353,6 @@ do_pg_backup_start(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 							 ti->oid, escapedpath.data);
 
 			pfree(escapedpath.data);
-#else
-
-			/*
-			 * If the platform does not have symbolic links, it should not be
-			 * possible to have tablespaces - clearly somebody else created
-			 * them. Warn about it and ignore.
-			 */
-			ereport(WARNING,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("tablespaces are not supported on this platform")));
-#endif
 		}
 		FreeDir(tblspcdir);
 

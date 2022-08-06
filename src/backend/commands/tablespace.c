@@ -213,7 +213,6 @@ TablespaceCreateDbspace(Oid spcOid, Oid dbOid, bool isRedo)
 Oid
 CreateTableSpace(CreateTableSpaceStmt *stmt)
 {
-#ifdef HAVE_SYMLINK
 	Relation	rel;
 	Datum		values[Natts_pg_tablespace];
 	bool		nulls[Natts_pg_tablespace] = {0};
@@ -391,12 +390,6 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	table_close(rel, NoLock);
 
 	return tablespaceoid;
-#else							/* !HAVE_SYMLINK */
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("tablespaces are not supported on this platform")));
-	return InvalidOid;			/* keep compiler quiet */
-#endif							/* HAVE_SYMLINK */
 }
 
 /*
@@ -407,7 +400,6 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 void
 DropTableSpace(DropTableSpaceStmt *stmt)
 {
-#ifdef HAVE_SYMLINK
 	char	   *tablespacename = stmt->tablespacename;
 	TableScanDesc scandesc;
 	Relation	rel;
@@ -573,11 +565,6 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 
 	/* We keep the lock on pg_tablespace until commit */
 	table_close(rel, NoLock);
-#else							/* !HAVE_SYMLINK */
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("tablespaces are not supported on this platform")));
-#endif							/* HAVE_SYMLINK */
 }
 
 
@@ -805,8 +792,7 @@ destroy_tablespace_directories(Oid tablespaceoid, bool redo)
 	/*
 	 * Try to remove the symlink.  We must however deal with the possibility
 	 * that it's a directory instead of a symlink --- this could happen during
-	 * WAL replay (see TablespaceCreateDbspace), and it is also the case on
-	 * Windows where junction points lstat() as directories.
+	 * WAL replay (see TablespaceCreateDbspace).
 	 *
 	 * Note: in the redo case, we'll return true if this final step fails;
 	 * there's no point in retrying it.  Also, ENOENT should provoke no more
@@ -836,7 +822,6 @@ remove_symlink:
 							linkloc)));
 		}
 	}
-#ifdef S_ISLNK
 	else if (S_ISLNK(st.st_mode))
 	{
 		if (unlink(linkloc) < 0)
@@ -849,7 +834,6 @@ remove_symlink:
 							linkloc)));
 		}
 	}
-#endif
 	else
 	{
 		/* Refuse to remove anything that's not a directory or symlink */
@@ -927,7 +911,6 @@ remove_tablespace_symlink(const char *linkloc)
 					 errmsg("could not remove directory \"%s\": %m",
 							linkloc)));
 	}
-#ifdef S_ISLNK
 	else if (S_ISLNK(st.st_mode))
 	{
 		if (unlink(linkloc) < 0 && errno != ENOENT)
@@ -936,7 +919,6 @@ remove_tablespace_symlink(const char *linkloc)
 					 errmsg("could not remove symbolic link \"%s\": %m",
 							linkloc)));
 	}
-#endif
 	else
 	{
 		/* Refuse to remove anything that's not a directory or symlink */

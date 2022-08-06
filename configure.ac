@@ -1452,7 +1452,6 @@ AC_CHECK_HEADERS(m4_normalize([
 	ifaddrs.h
 	langinfo.h
 	mbarrier.h
-	poll.h
 	sys/epoll.h
 	sys/event.h
 	sys/ipc.h
@@ -1792,34 +1791,24 @@ LIBS=`echo "$LIBS" | sed -e 's/-ledit//g' -e 's/-lreadline//g'`
 
 AC_CHECK_FUNCS(m4_normalize([
 	backtrace_symbols
-	clock_gettime
 	copyfile
-	fdatasync
 	getifaddrs
 	getpeerucred
-	getrlimit
 	inet_pton
 	kqueue
 	mbstowcs_l
 	memset_s
-	poll
 	posix_fallocate
 	ppoll
 	pthread_is_threaded_np
-	readlink
-	readv
 	setproctitle
 	setproctitle_fast
-	setsid
-	shm_open
 	strchrnul
 	strsignal
-	symlink
 	syncfs
 	sync_file_range
 	uselocale
 	wcstombs_l
-	writev
 ]))
 
 # These typically are compiler builtins, for which AC_CHECK_FUNCS fails.
@@ -1858,8 +1847,6 @@ AC_CHECK_DECLS([pwritev], [], [AC_LIBOBJ(pwritev)], [#include <sys/uio.h>])
 # This is probably only present on macOS, but may as well check always
 AC_CHECK_DECLS(F_FULLFSYNC, [], [], [#include <fcntl.h>])
 
-AC_CHECK_DECLS([RTLD_GLOBAL, RTLD_NOW], [], [], [#include <dlfcn.h>])
-
 AC_CHECK_TYPE([struct sockaddr_in6],
         [AC_DEFINE(HAVE_IPV6, 1, [Define to 1 if you have support for IPv6.])],
         [],
@@ -1880,15 +1867,11 @@ if test "$pgac_cv_var_PS_STRINGS" = yes ; then
 fi
 
 AC_REPLACE_FUNCS(m4_normalize([
-	dlopen
 	explicit_bzero
 	getopt
 	getpeereid
 	inet_aton
-	link
 	mkdtemp
-	pread
-	pwrite
 	strlcat
 	strlcpy
 	strnlen
@@ -1908,19 +1891,6 @@ if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	AC_LIBOBJ([strtof])
 	AC_MSG_NOTICE([On $host_os we will use our strtof wrapper.])
 fi
-
-case $host_os in
-        # Windows uses a specialised env handler
-        mingw*)
-                AC_DEFINE(HAVE_SETENV, 1, [Define to 1 because replacement version used.])
-                AC_DEFINE(HAVE_UNSETENV, 1, [Define to 1 because replacement version used.])
-                ac_cv_func_setenv=yes
-                ac_cv_func_unsetenv=yes
-                ;;
-        *)
-                AC_REPLACE_FUNCS([setenv unsetenv])
-                ;;
-esac
 
 # System's version of getaddrinfo(), if any, may be used only if we found
 # a definition for struct addrinfo; see notes in src/include/getaddrinfo.h.
@@ -1957,19 +1927,21 @@ if test "$PORTNAME" = "win32"; then
   AC_CHECK_FUNCS(_configthreadlocale)
   AC_REPLACE_FUNCS(gettimeofday)
   AC_LIBOBJ(dirmod)
-  AC_LIBOBJ(fdatasync)
   AC_LIBOBJ(getrusage)
   AC_LIBOBJ(kill)
   AC_LIBOBJ(open)
   AC_LIBOBJ(system)
+  AC_LIBOBJ(win32dlopen)
   AC_LIBOBJ(win32env)
   AC_LIBOBJ(win32error)
+  AC_LIBOBJ(win32fdatasync)
+  AC_LIBOBJ(win32link)
   AC_LIBOBJ(win32ntdll)
+  AC_LIBOBJ(win32pread)
+  AC_LIBOBJ(win32pwrite)
   AC_LIBOBJ(win32security)
   AC_LIBOBJ(win32setlocale)
   AC_LIBOBJ(win32stat)
-  AC_DEFINE([HAVE_SYMLINK], 1,
-            [Define to 1 if you have the `symlink' function.])
   AC_CHECK_TYPES(MINIDUMP_TYPE, [pgac_minidump_type=yes], [pgac_minidump_type=no], [
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -2008,11 +1980,6 @@ AC_CACHE_CHECK([for optreset], pgac_cv_var_int_optreset,
 if test x"$pgac_cv_var_int_optreset" = x"yes"; then
   AC_DEFINE(HAVE_INT_OPTRESET, 1, [Define to 1 if you have the global variable 'int optreset'.])
 fi
-
-AC_CHECK_FUNCS([strtoll __strtoll strtoq], [break])
-AC_CHECK_FUNCS([strtoull __strtoull strtouq], [break])
-# strto[u]ll may exist but not be declared
-AC_CHECK_DECLS([strtoll, strtoull])
 
 if test "$with_icu" = yes; then
   ac_save_CPPFLAGS=$CPPFLAGS

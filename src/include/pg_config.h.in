@@ -83,9 +83,6 @@
 /* Define to 1 if you have the `BIO_meth_new' function. */
 #undef HAVE_BIO_METH_NEW
 
-/* Define to 1 if you have the `clock_gettime' function. */
-#undef HAVE_CLOCK_GETTIME
-
 /* Define to 1 if your compiler handles computed gotos. */
 #undef HAVE_COMPUTED_GOTO
 
@@ -141,14 +138,6 @@
    don't. */
 #undef HAVE_DECL_PWRITEV
 
-/* Define to 1 if you have the declaration of `RTLD_GLOBAL', and to 0 if you
-   don't. */
-#undef HAVE_DECL_RTLD_GLOBAL
-
-/* Define to 1 if you have the declaration of `RTLD_NOW', and to 0 if you
-   don't. */
-#undef HAVE_DECL_RTLD_NOW
-
 /* Define to 1 if you have the declaration of `strlcat', and to 0 if you
    don't. */
 #undef HAVE_DECL_STRLCAT
@@ -161,17 +150,6 @@
    don't. */
 #undef HAVE_DECL_STRNLEN
 
-/* Define to 1 if you have the declaration of `strtoll', and to 0 if you
-   don't. */
-#undef HAVE_DECL_STRTOLL
-
-/* Define to 1 if you have the declaration of `strtoull', and to 0 if you
-   don't. */
-#undef HAVE_DECL_STRTOULL
-
-/* Define to 1 if you have the `dlopen' function. */
-#undef HAVE_DLOPEN
-
 /* Define to 1 if you have the <editline/history.h> header file. */
 #undef HAVE_EDITLINE_HISTORY_H
 
@@ -183,9 +161,6 @@
 
 /* Define to 1 if you have the `explicit_bzero' function. */
 #undef HAVE_EXPLICIT_BZERO
-
-/* Define to 1 if you have the `fdatasync' function. */
-#undef HAVE_FDATASYNC
 
 /* Define to 1 if fseeko (and presumably ftello) exists and is declared. */
 #undef HAVE_FSEEKO
@@ -239,9 +214,6 @@
 
 /* Define to 1 if you have the `getpeerucred' function. */
 #undef HAVE_GETPEERUCRED
-
-/* Define to 1 if you have the `getrlimit' function. */
-#undef HAVE_GETRLIMIT
 
 /* Define to 1 if you have the `gettimeofday' function. */
 #undef HAVE_GETTIMEOFDAY
@@ -348,9 +320,6 @@
 /* Define to 1 if you have the `zstd' library (-lzstd). */
 #undef HAVE_LIBZSTD
 
-/* Define to 1 if you have the `link' function. */
-#undef HAVE_LINK
-
 /* Define to 1 if the system has the type `locale_t'. */
 #undef HAVE_LOCALE_T
 
@@ -393,12 +362,6 @@
 /* Define to 1 if you have the <pam/pam_appl.h> header file. */
 #undef HAVE_PAM_PAM_APPL_H
 
-/* Define to 1 if you have the `poll' function. */
-#undef HAVE_POLL
-
-/* Define to 1 if you have the <poll.h> header file. */
-#undef HAVE_POLL_H
-
 /* Define to 1 if you have the `posix_fadvise' function. */
 #undef HAVE_POSIX_FADVISE
 
@@ -410,9 +373,6 @@
 
 /* Define to 1 if you have the `ppoll' function. */
 #undef HAVE_PPOLL
-
-/* Define to 1 if you have the `pread' function. */
-#undef HAVE_PREAD
 
 /* Define to 1 if the PS_STRINGS thing exists. */
 #undef HAVE_PS_STRINGS
@@ -429,9 +389,6 @@
 /* Have PTHREAD_PRIO_INHERIT. */
 #undef HAVE_PTHREAD_PRIO_INHERIT
 
-/* Define to 1 if you have the `pwrite' function. */
-#undef HAVE_PWRITE
-
 /* Define to 1 if you have the <readline.h> header file. */
 #undef HAVE_READLINE_H
 
@@ -440,12 +397,6 @@
 
 /* Define to 1 if you have the <readline/readline.h> header file. */
 #undef HAVE_READLINE_READLINE_H
-
-/* Define to 1 if you have the `readlink' function. */
-#undef HAVE_READLINK
-
-/* Define to 1 if you have the `readv' function. */
-#undef HAVE_READV
 
 /* Define to 1 if you have the `rl_completion_matches' function. */
 #undef HAVE_RL_COMPLETION_MATCHES
@@ -474,20 +425,11 @@
 /* Define to 1 if you have the <security/pam_appl.h> header file. */
 #undef HAVE_SECURITY_PAM_APPL_H
 
-/* Define to 1 if you have the `setenv' function. */
-#undef HAVE_SETENV
-
 /* Define to 1 if you have the `setproctitle' function. */
 #undef HAVE_SETPROCTITLE
 
 /* Define to 1 if you have the `setproctitle_fast' function. */
 #undef HAVE_SETPROCTITLE_FAST
-
-/* Define to 1 if you have the `setsid' function. */
-#undef HAVE_SETSID
-
-/* Define to 1 if you have the `shm_open' function. */
-#undef HAVE_SHM_OPEN
 
 /* Define to 1 if the system has the type `socklen_t'. */
 #undef HAVE_SOCKLEN_T
@@ -531,18 +473,6 @@
 /* Define to 1 if you have the `strtof' function. */
 #undef HAVE_STRTOF
 
-/* Define to 1 if you have the `strtoll' function. */
-#undef HAVE_STRTOLL
-
-/* Define to 1 if you have the `strtoq' function. */
-#undef HAVE_STRTOQ
-
-/* Define to 1 if you have the `strtoull' function. */
-#undef HAVE_STRTOULL
-
-/* Define to 1 if you have the `strtouq' function. */
-#undef HAVE_STRTOUQ
-
 /* Define to 1 if the system has the type `struct addrinfo'. */
 #undef HAVE_STRUCT_ADDRINFO
 
@@ -575,9 +505,6 @@
 
 /* Define to 1 if `tm_zone' is a member of `struct tm'. */
 #undef HAVE_STRUCT_TM_TM_ZONE
-
-/* Define to 1 if you have the `symlink' function. */
-#undef HAVE_SYMLINK
 
 /* Define to 1 if you have the `syncfs' function. */
 #undef HAVE_SYNCFS
@@ -660,9 +587,6 @@
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
 
-/* Define to 1 if you have the `unsetenv' function. */
-#undef HAVE_UNSETENV
-
 /* Define to 1 if you have the `uselocale' function. */
 #undef HAVE_USELOCALE
 
@@ -689,9 +613,6 @@
 
 /* Define to 1 if you have the <winldap.h> header file. */
 #undef HAVE_WINLDAP_H
-
-/* Define to 1 if you have the `writev' function. */
-#undef HAVE_WRITEV
 
 /* Define to 1 if you have the `X509_get_signature_nid' function. */
 #undef HAVE_X509_GET_SIGNATURE_NID
@@ -746,12 +667,6 @@
 
 /* Define to 1 if your compiler understands _Static_assert. */
 #undef HAVE__STATIC_ASSERT
-
-/* Define to 1 if you have the `__strtoll' function. */
-#undef HAVE___STRTOLL
-
-/* Define to 1 if you have the `__strtoull' function. */
-#undef HAVE___STRTOULL
 
 /* Define to the appropriate printf length modifier for 64-bit ints. */
 #undef INT64_MODIFIER
