@@ -1779,7 +1779,6 @@ fi
 ##
 
 PGAC_VAR_INT_TIMEZONE
-PGAC_FUNC_GETTIMEOFDAY_1ARG
 PGAC_FUNC_WCSTOMBS_L
 
 # Some versions of libedit contain strlcpy(), setproctitle(), and other
@@ -1875,7 +1874,6 @@ AC_REPLACE_FUNCS(m4_normalize([
 	strlcat
 	strlcpy
 	strnlen
-	strtof
 ]))
 
 if test "$enable_thread_safety" = yes; then
@@ -1886,8 +1884,7 @@ if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	# Cygwin and (apparently, based on test results) Mingw both
 	# have a broken strtof(), so substitute its implementation.
 	# That's not a perfect fix, since it doesn't avoid double-rounding,
-	# but we have no better options. To get that, though, we have to
-	# force the file to be compiled despite HAVE_STRTOF.
+	# but we have no better options.
 	AC_LIBOBJ([strtof])
 	AC_MSG_NOTICE([On $host_os we will use our strtof wrapper.])
 fi
@@ -1925,7 +1922,6 @@ fi
 # Win32 (really MinGW) support
 if test "$PORTNAME" = "win32"; then
   AC_CHECK_FUNCS(_configthreadlocale)
-  AC_REPLACE_FUNCS(gettimeofday)
   AC_LIBOBJ(dirmod)
   AC_LIBOBJ(getrusage)
   AC_LIBOBJ(kill)

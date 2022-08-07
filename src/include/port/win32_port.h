@@ -179,16 +179,10 @@
 #define SIGUSR1				30
 #define SIGUSR2				31
 
-/*
- * New versions of MinGW have gettimeofday() and also declare
- * struct timezone to support it.
- */
-#ifndef HAVE_GETTIMEOFDAY
-struct timezone
-{
-	int			tz_minuteswest; /* Minutes west of GMT.  */
-	int			tz_dsttime;		/* Nonzero if DST is ever in effect.  */
-};
+/* MinGW has gettimeofday(), but MSVC doesn't */
+#ifdef _MSC_VER
+/* Last parameter not used */
+extern int	gettimeofday(struct timeval *tp, void *tzp);
 #endif
 
 /* for setitimer in backend/port/win32/timer.c */

@@ -327,11 +327,6 @@ extern FILE *pgwin32_popen(const char *command, const char *type);
 #define popen(a,b) pgwin32_popen(a,b)
 #define pclose(a) _pclose(a)
 
-/* New versions of MingW have gettimeofday, old mingw and msvc don't */
-#ifndef HAVE_GETTIMEOFDAY
-/* Last parameter not used */
-extern int	gettimeofday(struct timeval *tp, struct timezone *tzp);
-#endif
 #else							/* !WIN32 */
 
 /*
@@ -390,10 +385,6 @@ extern int	getpeereid(int sock, uid_t *uid, gid_t *gid);
 
 #ifndef HAVE_EXPLICIT_BZERO
 extern void explicit_bzero(void *buf, size_t len);
-#endif
-
-#ifndef HAVE_STRTOF
-extern float strtof(const char *nptr, char **endptr);
 #endif
 
 #ifdef HAVE_BUGGY_STRTOF
