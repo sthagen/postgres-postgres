@@ -158,12 +158,6 @@
 /* Define to 1 if fseeko (and presumably ftello) exists and is declared. */
 #undef HAVE_FSEEKO
 
-/* Define to 1 if your compiler understands __func__. */
-#undef HAVE_FUNCNAME__FUNC
-
-/* Define to 1 if your compiler understands __FUNCTION__. */
-#undef HAVE_FUNCNAME__FUNCTION
-
 /* Define to 1 if you have __atomic_compare_exchange_n(int *, int *, int). */
 #undef HAVE_GCC__ATOMIC_INT32_CAS
 
@@ -330,9 +324,6 @@
 
 /* Define to 1 if you have the `memset_s' function. */
 #undef HAVE_MEMSET_S
-
-/* Define to 1 if the system has the type `MINIDUMP_TYPE'. */
-#undef HAVE_MINIDUMP_TYPE
 
 /* Define to 1 if you have the `mkdtemp' function. */
 #undef HAVE_MKDTEMP
