@@ -16,18 +16,17 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <limits.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <time.h>
-#ifdef HAVE_SYS_SELECT_H
-#include <sys/select.h>
-#endif
 #ifdef HAVE_LIBZ
 #include <zlib.h>
 #endif
 
 #include "access/xlog_internal.h"
+#include "backup/basebackup.h"
 #include "bbstreamer.h"
 #include "common/compression.h"
 #include "common/file_perm.h"
@@ -37,7 +36,6 @@
 #include "fe_utils/recovery_gen.h"
 #include "getopt_long.h"
 #include "receivelog.h"
-#include "replication/basebackup.h"
 #include "streamutil.h"
 
 #define ERRCODE_DATA_CORRUPTED	"XX001"
@@ -2325,7 +2323,7 @@ main(int argc, char **argv)
 
 	atexit(cleanup_directories_atexit);
 
-	while ((c = getopt_long(argc, argv, "CD:F:r:RS:t:T:X:l:nNzZ:d:c:h:p:U:s:wWkvP",
+	while ((c = getopt_long(argc, argv, "CD:F:r:RS:t:T:X:l:nNzZ:d:c:h:p:U:s:wWvP",
 							long_options, &option_index)) != -1)
 	{
 		switch (c)

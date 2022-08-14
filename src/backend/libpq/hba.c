@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <sys/param.h>
 #include <sys/socket.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -973,17 +974,7 @@ parse_hba_line(TokenizedAuthLine *tok_line, int elevel)
 	token = linitial(tokens);
 	if (strcmp(token->string, "local") == 0)
 	{
-#ifdef HAVE_UNIX_SOCKETS
 		parsedline->conntype = ctLocal;
-#else
-		ereport(elevel,
-				(errcode(ERRCODE_CONFIG_FILE_ERROR),
-				 errmsg("local connections are not supported by this build"),
-				 errcontext("line %d of configuration file \"%s\"",
-							line_num, HbaFileName)));
-		*err_msg = "local connections are not supported by this build";
-		return NULL;
-#endif
 	}
 	else if (strcmp(token->string, "host") == 0 ||
 			 strcmp(token->string, "hostssl") == 0 ||

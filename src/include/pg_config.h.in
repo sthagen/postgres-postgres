@@ -178,12 +178,6 @@
    */
 #undef HAVE_GCC__SYNC_INT64_CAS
 
-/* Define to 1 if you have the `getaddrinfo' function. */
-#undef HAVE_GETADDRINFO
-
-/* Define to 1 if you have the `gethostbyname_r' function. */
-#undef HAVE_GETHOSTBYNAME_R
-
 /* Define to 1 if you have the `getifaddrs' function. */
 #undef HAVE_GETIFADDRS
 
@@ -349,9 +343,6 @@
 /* Define to 1 if you have the `posix_fallocate' function. */
 #undef HAVE_POSIX_FALLOCATE
 
-/* Define to 1 if the assembler supports PPC's LWARX mutex hint bit. */
-#undef HAVE_PPC_LWARX_MUTEX_HINT
-
 /* Define to 1 if you have the `ppoll' function. */
 #undef HAVE_PPOLL
 
@@ -451,9 +442,6 @@
 /* Define to 1 if you have the `strsignal' function. */
 #undef HAVE_STRSIGNAL
 
-/* Define to 1 if the system has the type `struct addrinfo'. */
-#undef HAVE_STRUCT_ADDRINFO
-
 /* Define to 1 if the system has the type `struct cmsgcred'. */
 #undef HAVE_STRUCT_CMSGCRED
 
@@ -462,9 +450,6 @@
 
 /* Define to 1 if `sa_len' is a member of `struct sockaddr'. */
 #undef HAVE_STRUCT_SOCKADDR_SA_LEN
-
-/* Define to 1 if the system has the type `struct sockaddr_storage'. */
-#undef HAVE_STRUCT_SOCKADDR_STORAGE
 
 /* Define to 1 if `ss_family' is a member of `struct sockaddr_storage'. */
 #undef HAVE_STRUCT_SOCKADDR_STORAGE_SS_FAMILY
@@ -477,9 +462,6 @@
 
 /* Define to 1 if `__ss_len' is a member of `struct sockaddr_storage'. */
 #undef HAVE_STRUCT_SOCKADDR_STORAGE___SS_LEN
-
-/* Define to 1 if the system has the type `struct sockaddr_un'. */
-#undef HAVE_STRUCT_SOCKADDR_UN
 
 /* Define to 1 if `tm_zone' is a member of `struct tm'. */
 #undef HAVE_STRUCT_TM_TM_ZONE
@@ -499,9 +481,6 @@
 /* Define to 1 if you have the <sys/event.h> header file. */
 #undef HAVE_SYS_EVENT_H
 
-/* Define to 1 if you have the <sys/ipc.h> header file. */
-#undef HAVE_SYS_IPC_H
-
 /* Define to 1 if you have the <sys/personality.h> header file. */
 #undef HAVE_SYS_PERSONALITY_H
 
@@ -510,18 +489,6 @@
 
 /* Define to 1 if you have the <sys/procctl.h> header file. */
 #undef HAVE_SYS_PROCCTL_H
-
-/* Define to 1 if you have the <sys/resource.h> header file. */
-#undef HAVE_SYS_RESOURCE_H
-
-/* Define to 1 if you have the <sys/select.h> header file. */
-#undef HAVE_SYS_SELECT_H
-
-/* Define to 1 if you have the <sys/sem.h> header file. */
-#undef HAVE_SYS_SEM_H
-
-/* Define to 1 if you have the <sys/shm.h> header file. */
-#undef HAVE_SYS_SHM_H
 
 /* Define to 1 if you have the <sys/signalfd.h> header file. */
 #undef HAVE_SYS_SIGNALFD_H
@@ -537,12 +504,6 @@
 
 /* Define to 1 if you have the <sys/ucred.h> header file. */
 #undef HAVE_SYS_UCRED_H
-
-/* Define to 1 if you have the <sys/uio.h> header file. */
-#undef HAVE_SYS_UIO_H
-
-/* Define to 1 if you have the <sys/un.h> header file. */
-#undef HAVE_SYS_UN_H
 
 /* Define to 1 if you have the <termios.h> header file. */
 #undef HAVE_TERMIOS_H
