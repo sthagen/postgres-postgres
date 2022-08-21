@@ -2552,7 +2552,7 @@ JsonValueListLength(const JsonValueList *jvl)
 static bool
 JsonValueListIsEmpty(JsonValueList *jvl)
 {
-	return !jvl->singleton && list_length(jvl->list) <= 0;
+	return !jvl->singleton && (jvl->list == NIL);
 }
 
 static JsonbValue *
@@ -3109,10 +3109,10 @@ JsonItemFromDatum(Datum val, Oid typid, int32 typmod, JsonbValue *res)
 
 				if (JsonContainerIsScalar(&jb->root))
 				{
-					bool		res PG_USED_FOR_ASSERTS_ONLY;
+					bool		result PG_USED_FOR_ASSERTS_ONLY;
 
-					res = JsonbExtractScalar(&jb->root, jbv);
-					Assert(res);
+					result = JsonbExtractScalar(&jb->root, jbv);
+					Assert(result);
 				}
 				else
 					JsonbInitBinary(jbv, jb);

@@ -1957,7 +1957,7 @@ compute_cpu_sort_cost(PlannerInfo *root, List *pathkeys, int nPresortedKeys,
 	List	   *cache_varinfos = NIL;
 
 	/* fallback if pathkeys is unknown */
-	if (list_length(pathkeys) == 0)
+	if (pathkeys == NIL)
 	{
 		/*
 		 * If we'll use a bounded heap-sort keeping just K tuples in memory,
@@ -6245,7 +6245,7 @@ set_rel_width(PlannerInfo *root, RelOptInfo *rel)
 			 * scanning this rel, so be sure to include it in reltarget->cost.
 			 */
 			PlaceHolderVar *phv = (PlaceHolderVar *) node;
-			PlaceHolderInfo *phinfo = find_placeholder_info(root, phv, false);
+			PlaceHolderInfo *phinfo = find_placeholder_info(root, phv);
 			QualCost	cost;
 
 			tuple_width += phinfo->ph_width;

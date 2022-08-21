@@ -1450,15 +1450,12 @@ AC_CHECK_HEADERS(m4_normalize([
 	ifaddrs.h
 	langinfo.h
 	mbarrier.h
-	net/if.h
-	netinet/tcp.h
 	sys/epoll.h
 	sys/event.h
 	sys/personality.h
 	sys/prctl.h
 	sys/procctl.h
 	sys/signalfd.h
-	sys/sockio.h
 	sys/ucred.h
 	termios.h
 	ucred.h
@@ -1550,15 +1547,15 @@ fi
 
 if test "$with_ldap" = yes ; then
   if test "$PORTNAME" != "win32"; then
-     AC_CHECK_HEADERS(ldap.h, [],
-                      [AC_MSG_ERROR([header file <ldap.h> is required for LDAP])])
+     AC_CHECK_HEADER(ldap.h, [],
+                     [AC_MSG_ERROR([header file <ldap.h> is required for LDAP])])
      PGAC_LDAP_SAFE
   else
-     AC_CHECK_HEADERS(winldap.h, [],
-                      [AC_MSG_ERROR([header file <winldap.h> is required for LDAP])],
-                      [AC_INCLUDES_DEFAULT
+     AC_CHECK_HEADER(winldap.h, [],
+                     [AC_MSG_ERROR([header file <winldap.h> is required for LDAP])],
+                     [AC_INCLUDES_DEFAULT
 #include <windows.h>
-                      ])
+                     ])
   fi
 fi
 
@@ -2255,7 +2252,6 @@ if test "$with_tcl" = yes; then
     PGAC_PATH_TCLCONFIGSH([$with_tclconfig])
     PGAC_EVAL_TCLCONFIGSH([$TCL_CONFIG_SH],
                           [TCL_INCLUDE_SPEC,TCL_LIBS,TCL_LIB_SPEC,TCL_SHARED_BUILD])
-    AC_SUBST(TCL_SHLIB_LD_LIBS)dnl don't want to double-evaluate that one
     if test "$TCL_SHARED_BUILD" != 1; then
       AC_MSG_ERROR([cannot build PL/Tcl because Tcl is not a shared library
 Use --without-tcl to disable building PL/Tcl.])

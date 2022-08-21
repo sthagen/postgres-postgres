@@ -2462,7 +2462,7 @@ create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path)
 
 			if (rollup->is_hashed)
 				strat = AGG_HASHED;
-			else if (list_length(linitial(rollup->gsets)) == 0)
+			else if (linitial(rollup->gsets) == NIL)
 				strat = AGG_PLAIN;
 			else
 				strat = AGG_SORTED;
@@ -4915,13 +4915,8 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 		/* Upper-level PlaceHolderVars should be long gone at this point */
 		Assert(phv->phlevelsup == 0);
 
-		/*
-		 * Check whether we need to replace the PHV.  We use bms_overlap as a
-		 * cheap/quick test to see if the PHV might be evaluated in the outer
-		 * rels, and then grab its PlaceHolderInfo to tell for sure.
-		 */
-		if (!bms_overlap(phv->phrels, root->curOuterRels) ||
-			!bms_is_subset(find_placeholder_info(root, phv, false)->ph_eval_at,
+		/* Check whether we need to replace the PHV */
+		if (!bms_is_subset(find_placeholder_info(root, phv)->ph_eval_at,
 						   root->curOuterRels))
 		{
 			/*

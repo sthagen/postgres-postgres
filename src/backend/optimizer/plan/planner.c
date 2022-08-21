@@ -635,6 +635,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->qual_security_level = 0;
 	root->hasPseudoConstantQuals = false;
 	root->hasAlternativeSubPlans = false;
+	root->placeholdersFrozen = false;
 	root->hasRecursion = hasRecursion;
 	if (hasRecursion)
 		root->wt_param_id = assign_special_exec_param(root);
@@ -1792,8 +1793,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 							withCheckOptions = (List *)
 								adjust_appendrel_attrs_multilevel(root,
 																  (Node *) withCheckOptions,
-																  this_result_rel->relids,
-																  top_result_rel->relids);
+																  this_result_rel,
+																  top_result_rel);
 						withCheckOptionLists = lappend(withCheckOptionLists,
 													   withCheckOptions);
 					}
@@ -1805,8 +1806,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 							returningList = (List *)
 								adjust_appendrel_attrs_multilevel(root,
 																  (Node *) returningList,
-																  this_result_rel->relids,
-																  top_result_rel->relids);
+																  this_result_rel,
+																  top_result_rel);
 						returningLists = lappend(returningLists,
 												 returningList);
 					}
@@ -1827,13 +1828,13 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 							leaf_action->qual =
 								adjust_appendrel_attrs_multilevel(root,
 																  (Node *) action->qual,
-																  this_result_rel->relids,
-																  top_result_rel->relids);
+																  this_result_rel,
+																  top_result_rel);
 							leaf_action->targetList = (List *)
 								adjust_appendrel_attrs_multilevel(root,
 																  (Node *) action->targetList,
-																  this_result_rel->relids,
-																  top_result_rel->relids);
+																  this_result_rel,
+																  top_result_rel);
 							if (leaf_action->commandType == CMD_UPDATE)
 								leaf_action->updateColnos =
 									adjust_inherited_attnums_multilevel(root,
@@ -3097,7 +3098,7 @@ reorder_grouping_sets(List *groupingsets, List *sortclause)
 		GroupingSetData *gs = makeNode(GroupingSetData);
 
 		while (list_length(sortclause) > list_length(previous) &&
-			   list_length(new_elems) > 0)
+			   new_elems != NIL)
 		{
 			SortGroupClause *sc = list_nth(sortclause, list_length(previous));
 			int			ref = sc->tleSortGroupRef;
@@ -4120,7 +4121,7 @@ consider_groupingsets_paths(PlannerInfo *root,
 	/*
 	 * If we have sorted input but nothing we can do with it, bail.
 	 */
-	if (list_length(gd->rollups) == 0)
+	if (gd->rollups == NIL)
 		return;
 
 	/*
@@ -6477,7 +6478,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 																group_clauses,
 																orderAggPathkeys);
 
-			Assert(list_length(pathkey_orderings) > 0);
+			Assert(pathkey_orderings != NIL);
 
 			/* process all potentially interesting grouping reorderings */
 			foreach(lc2, pathkey_orderings)
@@ -6636,10 +6637,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				ListCell   *lc2;
 				Path	   *path = (Path *) lfirst(lc);
 				Path	   *path_original = path;
-
 				List	   *pathkey_orderings = NIL;
-
-				List	   *group_pathkeys = root->group_pathkeys;
 				List	   *group_clauses = parse->groupClause;
 
 				/* generate alternative group orderings that might be useful */
@@ -6650,7 +6648,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 																	group_clauses,
 																	orderAggPathkeys);
 
-				Assert(list_length(pathkey_orderings) > 0);
+				Assert(pathkey_orderings != NIL);
 
 				/* process all potentially interesting grouping reorderings */
 				foreach(lc2, pathkey_orderings)
@@ -6994,7 +6992,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 																group_clauses,
 																orderAggPathkeys);
 
-			Assert(list_length(pathkey_orderings) > 0);
+			Assert(pathkey_orderings != NIL);
 
 			/* process all potentially interesting grouping reorderings */
 			foreach(lc2, pathkey_orderings)
@@ -7145,7 +7143,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 																group_clauses,
 																orderAggPathkeys);
 
-			Assert(list_length(pathkey_orderings) > 0);
+			Assert(pathkey_orderings != NIL);
 
 			/* process all potentially interesting grouping reorderings */
 			foreach(lc2, pathkey_orderings)

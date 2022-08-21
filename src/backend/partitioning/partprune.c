@@ -529,8 +529,8 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 			partprunequal = (List *)
 				adjust_appendrel_attrs_multilevel(root,
 												  (Node *) prunequal,
-												  subpart->relids,
-												  targetpart->relids);
+												  subpart,
+												  targetpart);
 		}
 
 		/*
@@ -2383,7 +2383,7 @@ get_steps_using_prefix(GeneratePruningStepsContext *context,
 		   context->rel->part_scheme->strategy == PARTITION_STRATEGY_HASH);
 
 	/* Quick exit if there are no values to prefix with. */
-	if (list_length(prefix) == 0)
+	if (prefix == NIL)
 	{
 		PartitionPruneStep *step;
 

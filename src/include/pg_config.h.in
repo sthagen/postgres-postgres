@@ -253,9 +253,6 @@
 /* Define to 1 if you have the <langinfo.h> header file. */
 #undef HAVE_LANGINFO_H
 
-/* Define to 1 if you have the <ldap.h> header file. */
-#undef HAVE_LDAP_H
-
 /* Define to 1 if you have the `ldap_initialize' function. */
 #undef HAVE_LDAP_INITIALIZE
 
@@ -321,12 +318,6 @@
 
 /* Define to 1 if you have the `mkdtemp' function. */
 #undef HAVE_MKDTEMP
-
-/* Define to 1 if you have the <netinet/tcp.h> header file. */
-#undef HAVE_NETINET_TCP_H
-
-/* Define to 1 if you have the <net/if.h> header file. */
-#undef HAVE_NET_IF_H
 
 /* Define to 1 if you have the `OPENSSL_init_ssl' function. */
 #undef HAVE_OPENSSL_INIT_SSL
@@ -493,9 +484,6 @@
 /* Define to 1 if you have the <sys/signalfd.h> header file. */
 #undef HAVE_SYS_SIGNALFD_H
 
-/* Define to 1 if you have the <sys/sockio.h> header file. */
-#undef HAVE_SYS_SOCKIO_H
-
 /* Define to 1 if you have the <sys/stat.h> header file. */
 #undef HAVE_SYS_STAT_H
 
@@ -549,9 +537,6 @@
 
 /* Define to 1 if you have the `wcstombs_l' function. */
 #undef HAVE_WCSTOMBS_L
-
-/* Define to 1 if you have the <winldap.h> header file. */
-#undef HAVE_WINLDAP_H
 
 /* Define to 1 if you have the `X509_get_signature_nid' function. */
 #undef HAVE_X509_GET_SIGNATURE_NID
