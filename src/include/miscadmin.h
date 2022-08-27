@@ -316,18 +316,19 @@ extern void SwitchBackToLocalLatch(void);
 typedef enum BackendType
 {
 	B_INVALID = 0,
+	B_ARCHIVER,
 	B_AUTOVAC_LAUNCHER,
 	B_AUTOVAC_WORKER,
 	B_BACKEND,
 	B_BG_WORKER,
 	B_BG_WRITER,
 	B_CHECKPOINTER,
+	B_LOGGER,
+	B_STANDALONE_BACKEND,
 	B_STARTUP,
 	B_WAL_RECEIVER,
 	B_WAL_SENDER,
 	B_WAL_WRITER,
-	B_ARCHIVER,
-	B_LOGGER,
 } BackendType;
 
 extern PGDLLIMPORT BackendType MyBackendType;
@@ -480,6 +481,10 @@ extern bool has_rolreplication(Oid roleid);
 
 typedef void (*shmem_request_hook_type) (void);
 extern PGDLLIMPORT shmem_request_hook_type shmem_request_hook;
+
+extern Size EstimateClientConnectionInfoSpace(void);
+extern void SerializeClientConnectionInfo(Size maxsize, char *start_address);
+extern void RestoreClientConnectionInfo(char *conninfo);
 
 /* in executor/nodeHash.c */
 extern size_t get_hash_memory_limit(void);

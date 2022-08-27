@@ -122,7 +122,7 @@ ifeq ($(PORTNAME), darwin)
       version_link	= -compatibility_version $(SO_MAJOR_VERSION) -current_version $(SO_MAJOR_VERSION).$(SO_MINOR_VERSION)
     endif
     LINK.shared		= $(COMPILER) -dynamiclib -install_name '$(libdir)/lib$(NAME).$(SO_MAJOR_VERSION)$(DLSUFFIX)' $(version_link) $(exported_symbols_list) -multiply_defined suppress
-    shlib		= lib$(NAME).$(SO_MAJOR_VERSION).$(SO_MINOR_VERSION)$(DLSUFFIX)
+    shlib		= lib$(NAME).$(SO_MAJOR_VERSION)$(DLSUFFIX)
     shlib_major		= lib$(NAME).$(SO_MAJOR_VERSION)$(DLSUFFIX)
   else
     # loadable module
@@ -188,9 +188,14 @@ ifeq ($(PORTNAME), linux)
 endif
 
 ifeq ($(PORTNAME), solaris)
-  LINK.shared		= $(COMPILER) -shared -Wl,-Bsymbolic
+  LINK.shared		= $(COMPILER) -shared
   ifdef soname
     LINK.shared	+= -Wl,-soname,$(soname)
+  endif
+  BUILD.exports		= ( echo '{ global:'; $(AWK) '/^[^\#]/ {printf "%s;\n",$$1}' $<; echo ' local: *; };' ) >$@
+  exports_file		= $(SHLIB_EXPORTS:%.txt=%.list)
+  ifneq (,$(exports_file))
+    LINK.shared		+= -Wl,-M$(exports_file)
   endif
 endif
 
@@ -302,7 +307,7 @@ $(shlib): $(OBJS) | $(SHLIB_PREREQS)
 ifeq (,$(SHLIB_EXPORTS))
 	$(MKLDEXPORT) $(stlib) $(shlib) >$(exports_file)
 else
-	( echo '#! $(shlib)'; $(AWK) '/^[^#]/ {printf "%s\n",$$1}' $(SHLIB_EXPORTS) ) >$(exports_file)
+	( echo '#! $(shlib)'; $(AWK) '/^[^#]/ {printf "%s\n",$$1}' ${srcdir}/$(SHLIB_EXPORTS) ) >$(exports_file)
 endif
 	$(COMPILER) -o $(shlib) $(stlib) -Wl,-bE:$(exports_file) $(LDFLAGS) $(LDFLAGS_SL) $(SHLIB_LINK)
 	rm -f $(stlib)

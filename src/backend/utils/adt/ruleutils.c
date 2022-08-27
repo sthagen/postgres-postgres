@@ -1303,7 +1303,6 @@ pg_get_indexdef_worker(Oid indexrelid, int colno,
 	if (!heap_attisnull(ht_idx, Anum_pg_index_indexprs, NULL))
 	{
 		Datum		exprsDatum;
-		bool		isnull;
 		char	   *exprsString;
 
 		exprsDatum = SysCacheGetAttr(INDEXRELID, ht_idx,
@@ -1500,7 +1499,6 @@ pg_get_indexdef_worker(Oid indexrelid, int colno,
 		{
 			Node	   *node;
 			Datum		predDatum;
-			bool		isnull;
 			char	   *predString;
 
 			/* Convert text string to node tree */
@@ -1615,7 +1613,6 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 	ArrayType  *arr;
 	char	   *enabled;
 	Datum		datum;
-	bool		isnull;
 	bool		ndistinct_enabled;
 	bool		dependencies_enabled;
 	bool		mcv_enabled;
@@ -1668,6 +1665,8 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 
 	if (!columns_only)
 	{
+		bool		isnull;
+
 		nsp = get_namespace_name_or_temp(statextrec->stxnamespace);
 		appendStringInfo(&buf, "CREATE STATISTICS %s",
 						 quote_qualified_identifier(nsp,
@@ -1944,7 +1943,6 @@ pg_get_partkeydef_worker(Oid relid, int prettyFlags,
 	if (!heap_attisnull(tuple, Anum_pg_partitioned_table_partexprs, NULL))
 	{
 		Datum		exprsDatum;
-		bool		isnull;
 		char	   *exprsString;
 
 		exprsDatum = SysCacheGetAttr(PARTRELID, tuple,

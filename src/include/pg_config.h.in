@@ -241,9 +241,6 @@
 /* Define to 1 if you have the global variable 'int timezone'. */
 #undef HAVE_INT_TIMEZONE
 
-/* Define to 1 if you have support for IPv6. */
-#undef HAVE_IPV6
-
 /* Define to 1 if __builtin_constant_p(x) implies "i"(x) acceptance. */
 #undef HAVE_I_CONSTRAINT__BUILTIN_CONSTANT_P
 
@@ -441,18 +438,6 @@
 
 /* Define to 1 if `sa_len' is a member of `struct sockaddr'. */
 #undef HAVE_STRUCT_SOCKADDR_SA_LEN
-
-/* Define to 1 if `ss_family' is a member of `struct sockaddr_storage'. */
-#undef HAVE_STRUCT_SOCKADDR_STORAGE_SS_FAMILY
-
-/* Define to 1 if `ss_len' is a member of `struct sockaddr_storage'. */
-#undef HAVE_STRUCT_SOCKADDR_STORAGE_SS_LEN
-
-/* Define to 1 if `__ss_family' is a member of `struct sockaddr_storage'. */
-#undef HAVE_STRUCT_SOCKADDR_STORAGE___SS_FAMILY
-
-/* Define to 1 if `__ss_len' is a member of `struct sockaddr_storage'. */
-#undef HAVE_STRUCT_SOCKADDR_STORAGE___SS_LEN
 
 /* Define to 1 if `tm_zone' is a member of `struct tm'. */
 #undef HAVE_STRUCT_TM_TM_ZONE
