@@ -978,7 +978,7 @@ dumpRoleMembership(PGconn *conn)
 					  "ug.rolname AS grantor, "
 					  "a.admin_option");
 	if (dump_inherit_option)
-		appendPQExpBuffer(buf, ", a.inherit_option");
+		appendPQExpBufferStr(buf, ", a.inherit_option");
 	appendPQExpBuffer(buf, " FROM pg_auth_members a "
 					  "LEFT JOIN %s ur on ur.oid = a.roleid "
 					  "LEFT JOIN %s um on um.oid = a.member "
@@ -1578,8 +1578,7 @@ runPgDump(const char *dbname, const char *create_opts)
 
 	pg_log_info("running \"%s\"", cmd->data);
 
-	fflush(stdout);
-	fflush(stderr);
+	fflush(NULL);
 
 	ret = system(cmd->data);
 

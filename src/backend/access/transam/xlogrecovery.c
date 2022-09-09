@@ -2412,7 +2412,9 @@ verifyBackupPageConsistency(XLogReaderState *record)
 		 * can be directly applied on it.
 		 */
 		if (!RestoreBlockImage(record, block_id, primary_image_masked))
-			elog(ERROR, "failed to restore block image");
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg_internal("%s", record->errormsg_buf)));
 
 		/*
 		 * If masking function is defined, mask both the primary and replay
@@ -3024,12 +3026,18 @@ ReadRecord(XLogPrefetcher *xlogprefetcher, int emode,
 		if (record == NULL)
 		{
 			/*
-			 * When not in standby mode we find that WAL ends in an incomplete
-			 * record, keep track of that record.  After recovery is done,
-			 * we'll write a record to indicate to downstream WAL readers that
-			 * that portion is to be ignored.
+			 * When we find that WAL ends in an incomplete record, keep track
+			 * of that record.  After recovery is done, we'll write a record to
+			 * indicate to downstream WAL readers that that portion is to be
+			 * ignored.
+			 *
+			 * However, when ArchiveRecoveryRequested = true, we're going to
+			 * switch to a new timeline at the end of recovery. We will only
+			 * copy WAL over to the new timeline up to the end of the last
+			 * complete record, so if we did this, we would later create an
+			 * overwrite contrecord in the wrong place, breaking everything.
 			 */
-			if (!StandbyMode &&
+			if (!ArchiveRecoveryRequested &&
 				!XLogRecPtrIsInvalid(xlogreader->abortedRecPtr))
 			{
 				abortedRecPtr = xlogreader->abortedRecPtr;
@@ -3335,13 +3343,21 @@ retry:
 					(errmsg_internal("%s", xlogreader->errormsg_buf)));
 
 		/* reset any error XLogReaderValidatePageHeader() might have set */
-		xlogreader->errormsg_buf[0] = '\0';
+		XLogReaderResetError(xlogreader);
 		goto next_record_is_invalid;
 	}
 
 	return readLen;
 
 next_record_is_invalid:
+
+	/*
+	 * If we're reading ahead, give up fast.  Retries and error reporting will
+	 * be handled by a later read when recovery catches up to this point.
+	 */
+	if (xlogreader->nonblocking)
+		return XLREAD_WOULDBLOCK;
+
 	lastSourceFailed = true;
 
 	if (readFile >= 0)

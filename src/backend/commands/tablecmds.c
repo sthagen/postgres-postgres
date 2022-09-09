@@ -10304,16 +10304,6 @@ CloneFkReferencing(List **wqueue, Relation parentRel, Relation partRel)
 
 		/* No dice.  Set up to create our own constraint */
 		fkconstraint = makeNode(Constraint);
-		if (ConstraintNameIsUsed(CONSTRAINT_RELATION,
-								 RelationGetRelid(partRel),
-								 NameStr(constrForm->conname)))
-			fkconstraint->conname =
-				ChooseConstraintName(RelationGetRelationName(partRel),
-									 ChooseForeignKeyConstraintNameAddition(fkconstraint->fk_attrs),
-									 "fkey",
-									 RelationGetNamespace(partRel), NIL);
-		else
-			fkconstraint->conname = pstrdup(NameStr(constrForm->conname));
 		fkconstraint->fk_upd_action = constrForm->confupdtype;
 		fkconstraint->fk_del_action = constrForm->confdeltype;
 		fkconstraint->deferrable = constrForm->condeferrable;
@@ -10328,6 +10318,16 @@ CloneFkReferencing(List **wqueue, Relation parentRel, Relation partRel)
 			fkconstraint->fk_attrs = lappend(fkconstraint->fk_attrs,
 											 makeString(NameStr(att->attname)));
 		}
+		if (ConstraintNameIsUsed(CONSTRAINT_RELATION,
+								 RelationGetRelid(partRel),
+								 NameStr(constrForm->conname)))
+			fkconstraint->conname =
+				ChooseConstraintName(RelationGetRelationName(partRel),
+									 ChooseForeignKeyConstraintNameAddition(fkconstraint->fk_attrs),
+									 "fkey",
+									 RelationGetNamespace(partRel), NIL);
+		else
+			fkconstraint->conname = pstrdup(NameStr(constrForm->conname));
 
 		indexOid = constrForm->conindid;
 		constrOid =
@@ -10581,6 +10581,9 @@ GetForeignKeyActionTriggers(Relation trigrel,
 			continue;
 		if (trgform->tgrelid != confrelid)
 			continue;
+		/* Only ever look at "action" triggers on the PK side. */
+		if (RI_FKey_trigger_type(trgform->tgfoid) != RI_TRIGGER_PK)
+			continue;
 		if (TRIGGER_FOR_DELETE(trgform->tgtype))
 		{
 			Assert(*deleteTriggerOid == InvalidOid);
@@ -10591,8 +10594,11 @@ GetForeignKeyActionTriggers(Relation trigrel,
 			Assert(*updateTriggerOid == InvalidOid);
 			*updateTriggerOid = trgform->oid;
 		}
+#ifndef USE_ASSERT_CHECKING
+		/* In an assert-enabled build, continue looking to find duplicates */
 		if (OidIsValid(*deleteTriggerOid) && OidIsValid(*updateTriggerOid))
 			break;
+#endif
 	}
 
 	if (!OidIsValid(*deleteTriggerOid))
@@ -10636,6 +10642,9 @@ GetForeignKeyCheckTriggers(Relation trigrel,
 			continue;
 		if (trgform->tgrelid != conrelid)
 			continue;
+		/* Only ever look at "check" triggers on the FK side. */
+		if (RI_FKey_trigger_type(trgform->tgfoid) != RI_TRIGGER_FK)
+			continue;
 		if (TRIGGER_FOR_INSERT(trgform->tgtype))
 		{
 			Assert(*insertTriggerOid == InvalidOid);
@@ -10646,8 +10655,11 @@ GetForeignKeyCheckTriggers(Relation trigrel,
 			Assert(*updateTriggerOid == InvalidOid);
 			*updateTriggerOid = trgform->oid;
 		}
+#ifndef USE_ASSERT_CHECKING
+		/* In an assert-enabled build, continue looking to find duplicates. */
 		if (OidIsValid(*insertTriggerOid) && OidIsValid(*updateTriggerOid))
 			break;
+#endif
 	}
 
 	if (!OidIsValid(*insertTriggerOid))

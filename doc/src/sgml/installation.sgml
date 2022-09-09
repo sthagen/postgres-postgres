@@ -314,8 +314,8 @@ su - postgres
       <application>Flex</application> and <application>Bison</application>
       are needed to build from a Git checkout, or if you changed the actual
       scanner and parser definition files. If you need them, be sure
-      to get <application>Flex</application> 2.5.31 or later and
-      <application>Bison</application> 1.875 or later. Other <application>lex</application>
+      to get <application>Flex</application> 2.5.35 or later and
+      <application>Bison</application> 2.3 or later. Other <application>lex</application>
       and <application>yacc</application> programs cannot be used.
      </para>
     </listitem>
@@ -1125,7 +1125,7 @@ build-postgresql:
         <itemizedlist>
          <listitem>
           <para>
-           <option>bsd</option> to use the UUID functions found in FreeBSD, NetBSD,
+           <option>bsd</option> to use the UUID functions found in FreeBSD
            and some other BSD-derived systems
           </para>
          </listitem>

@@ -174,13 +174,13 @@ utils/probes.o: utils/probes.d $(SUBDIROBJS)
 # Be sure that these files get removed by the maintainer-clean target
 distprep:
 	$(MAKE) -C parser	gram.c gram.h scan.c
-	$(MAKE) -C bootstrap	bootparse.c bootscanner.c
+	$(MAKE) -C bootstrap	bootparse.c bootparse.h bootscanner.c
 	$(MAKE) -C catalog	distprep
 	$(MAKE) -C nodes	distprep
-	$(MAKE) -C replication	repl_gram.c repl_scanner.c syncrep_gram.c syncrep_scanner.c
+	$(MAKE) -C replication	repl_gram.c repl_gram.h repl_scanner.c syncrep_gram.c syncrep_gram.h syncrep_scanner.c
 	$(MAKE) -C storage/lmgr	lwlocknames.h lwlocknames.c
 	$(MAKE) -C utils	distprep
-	$(MAKE) -C utils/adt	jsonpath_gram.c jsonpath_scan.c
+	$(MAKE) -C utils/adt	jsonpath_gram.c jsonpath_gram.h jsonpath_scan.c
 	$(MAKE) -C utils/misc	guc-file.c
 
 
@@ -292,17 +292,21 @@ maintainer-clean: distclean
 	$(MAKE) -C nodes $@
 	$(MAKE) -C utils $@
 	rm -f bootstrap/bootparse.c \
+	      bootstrap/bootparse.h \
 	      bootstrap/bootscanner.c \
 	      parser/gram.c \
 	      parser/gram.h \
 	      parser/scan.c \
 	      replication/repl_gram.c \
+	      replication/repl_gram.h \
 	      replication/repl_scanner.c \
 	      replication/syncrep_gram.c \
+	      replication/syncrep_gram.h \
 	      replication/syncrep_scanner.c \
 	      storage/lmgr/lwlocknames.c \
 	      storage/lmgr/lwlocknames.h \
 	      utils/adt/jsonpath_gram.c \
+	      utils/adt/jsonpath_gram.h \
 	      utils/adt/jsonpath_scan.c \
 	      utils/misc/guc-file.c
 
