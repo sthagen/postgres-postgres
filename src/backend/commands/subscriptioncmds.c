@@ -437,7 +437,7 @@ get_publications_str(List *publications, StringInfo dest, bool quote_literal)
 }
 
 /*
- * Check the specified publication(s) is(are) present in the publisher.
+ * Check that the specified publications are present on the publisher.
  */
 static void
 check_publications(WalReceiverConn *wrconn, List *publications)
@@ -495,8 +495,8 @@ check_publications(WalReceiverConn *wrconn, List *publications)
 		get_publications_str(publicationsCopy, pubnames, false);
 		ereport(WARNING,
 				errcode(ERRCODE_UNDEFINED_OBJECT),
-				errmsg_plural("publication %s does not exist in the publisher",
-							  "publications %s do not exist in the publisher",
+				errmsg_plural("publication %s does not exist on the publisher",
+							  "publications %s do not exist on the publisher",
 							  list_length(publicationsCopy),
 							  pubnames->data));
 	}
@@ -931,10 +931,10 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
 				logicalrep_worker_stop(sub->oid, relid);
 
 				/*
-				 * For READY state and SYNCDONE state, we would have already
-				 * dropped the tablesync origin.
+				 * For READY state, we would have already dropped the
+				 * tablesync origin.
 				 */
-				if (state != SUBREL_STATE_READY && state != SUBREL_STATE_SYNCDONE)
+				if (state != SUBREL_STATE_READY)
 				{
 					char		originname[NAMEDATALEN];
 
@@ -942,8 +942,11 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
 					 * Drop the tablesync's origin tracking if exists.
 					 *
 					 * It is possible that the origin is not yet created for
-					 * tablesync worker so passing missing_ok = true. This can
-					 * happen for the states before SUBREL_STATE_FINISHEDCOPY.
+					 * tablesync worker, this can happen for the states before
+					 * SUBREL_STATE_FINISHEDCOPY. The tablesync worker or
+					 * apply worker can also concurrently try to drop the
+					 * origin and by this time the origin might be already
+					 * removed. For these reasons, passing missing_ok = true.
 					 */
 					ReplicationOriginNameForTablesync(sub->oid, relid, originname,
 													  sizeof(originname));
@@ -1184,7 +1187,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("ALTER SUBSCRIPTION with refresh and copy_data is not allowed when two_phase is enabled"),
-								 errhint("Use ALTER SUBSCRIPTION ...SET PUBLICATION with refresh = false, or with copy_data = false"
+								 errhint("Use ALTER SUBSCRIPTION ... SET PUBLICATION with refresh = false, or with copy_data = false"
 										 ", or use DROP/CREATE SUBSCRIPTION.")));
 
 					PreventInTransactionBlock(isTopLevel, "ALTER SUBSCRIPTION with refresh");
@@ -1236,7 +1239,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("ALTER SUBSCRIPTION with refresh and copy_data is not allowed when two_phase is enabled"),
-								 errhint("Use ALTER SUBSCRIPTION ...SET PUBLICATION with refresh = false, or with copy_data = false"
+								 errhint("Use ALTER SUBSCRIPTION ... SET PUBLICATION with refresh = false, or with copy_data = false"
 										 ", or use DROP/CREATE SUBSCRIPTION.")));
 
 					PreventInTransactionBlock(isTopLevel, "ALTER SUBSCRIPTION with refresh");
@@ -1516,19 +1519,13 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 		/*
 		 * Drop the tablesync's origin tracking if exists.
 		 *
-		 * For SYNCDONE/READY states, the tablesync origin tracking is known
-		 * to have already been dropped by the tablesync worker.
-		 *
 		 * It is possible that the origin is not yet created for tablesync
 		 * worker so passing missing_ok = true. This can happen for the states
 		 * before SUBREL_STATE_FINISHEDCOPY.
 		 */
-		if (rstate->state != SUBREL_STATE_SYNCDONE)
-		{
-			ReplicationOriginNameForTablesync(subid, relid, originname,
-											  sizeof(originname));
-			replorigin_drop_by_name(originname, true, false);
-		}
+		ReplicationOriginNameForTablesync(subid, relid, originname,
+										  sizeof(originname));
+		replorigin_drop_by_name(originname, true, false);
 	}
 
 	/* Clean up dependencies */

@@ -650,11 +650,11 @@ error:
 #ifndef WIN32
 
 /*
- * When sigint is called, just tell the system to exit at the next possible
- * moment.
+ * When SIGINT/SIGTERM are caught, just tell the system to exit at the next
+ * possible moment.
  */
 static void
-sigint_handler(int signum)
+sigexit_handler(SIGNAL_ARGS)
 {
 	time_to_abort = true;
 }
@@ -663,7 +663,7 @@ sigint_handler(int signum)
  * Trigger the output file to be reopened.
  */
 static void
-sighup_handler(int signum)
+sighup_handler(SIGNAL_ARGS)
 {
 	output_reopen = true;
 }
@@ -922,7 +922,8 @@ main(int argc, char **argv)
 	 * if one is needed, in GetConnection.)
 	 */
 #ifndef WIN32
-	pqsignal(SIGINT, sigint_handler);
+	pqsignal(SIGINT, sigexit_handler);
+	pqsignal(SIGTERM, sigexit_handler);
 	pqsignal(SIGHUP, sighup_handler);
 #endif
 

@@ -40,6 +40,7 @@
 #include "storage/ipc.h"
 #include "storage/reinit.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/ps_status.h"
 #include "utils/relcache.h"
 #include "utils/resowner.h"
@@ -907,7 +908,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 		if (target_detail_str != NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("target '%s' does not accept a target detail",
+					 errmsg("target \"%s\" does not accept a target detail",
 							target_str)));
 		opt->send_to_client = true;
 	}

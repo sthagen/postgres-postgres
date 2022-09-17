@@ -268,7 +268,7 @@ static void load_plpgsql(FILE *cmdfd);
 static void vacuum_db(FILE *cmdfd);
 static void make_template0(FILE *cmdfd);
 static void make_postgres(FILE *cmdfd);
-static void trapsig(int signum);
+static void trapsig(SIGNAL_ARGS);
 static void check_ok(void);
 static char *escape_quotes(const char *src);
 static char *escape_quotes_bki(const char *src);
@@ -1848,10 +1848,10 @@ make_postgres(FILE *cmdfd)
  * So this will need some testing on Windows.
  */
 static void
-trapsig(int signum)
+trapsig(SIGNAL_ARGS)
 {
 	/* handle systems that reset the handler, like Windows (grr) */
-	pqsignal(signum, trapsig);
+	pqsignal(postgres_signal_arg, trapsig);
 	caught_signal = true;
 }
 
@@ -2034,6 +2034,27 @@ check_locale_encoding(const char *locale, int user_enc)
 							"misbehavior in various character string processing functions.",
 							pg_encoding_to_char(user_enc),
 							pg_encoding_to_char(locale_enc));
+		pg_log_error_hint("Rerun %s and either do not specify an encoding explicitly, "
+						  "or choose a matching combination.",
+						  progname);
+		return false;
+	}
+	return true;
+}
+
+/*
+ * check if the chosen encoding matches is supported by ICU
+ *
+ * this should match the similar check in the backend createdb() function
+ */
+static bool
+check_icu_locale_encoding(int user_enc)
+{
+	if (!(is_encoding_supported_by_icu(user_enc)))
+	{
+		pg_log_error("encoding mismatch");
+		pg_log_error_detail("The encoding you selected (%s) is not supported with the ICU provider.",
+							pg_encoding_to_char(user_enc));
 		pg_log_error_hint("Rerun %s and either do not specify an encoding explicitly, "
 						  "or choose a matching combination.",
 						  progname);
@@ -2310,7 +2331,11 @@ setup_locale_encoding(void)
 	}
 
 	if (!encoding && locale_provider == COLLPROVIDER_ICU)
+	{
 		encodingid = PG_UTF8;
+		printf(_("The default database encoding has been set to \"%s\".\n"),
+			   pg_encoding_to_char(encodingid));
+	}
 	else if (!encoding)
 	{
 		int			ctype_enc;
@@ -2362,6 +2387,10 @@ setup_locale_encoding(void)
 	if (!check_locale_encoding(lc_ctype, encodingid) ||
 		!check_locale_encoding(lc_collate, encodingid))
 		exit(1);				/* check_locale_encoding printed the error */
+
+	if (locale_provider == COLLPROVIDER_ICU &&
+		!check_icu_locale_encoding(encodingid))
+		exit(1);
 }
 
 

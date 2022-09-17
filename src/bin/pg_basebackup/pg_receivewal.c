@@ -45,7 +45,7 @@ static int	verbose = 0;
 static int	compresslevel = 0;
 static int	noloop = 0;
 static int	standby_message_timeout = 10 * 1000;	/* 10 sec = default */
-static volatile bool time_to_stop = false;
+static volatile sig_atomic_t time_to_stop = false;
 static bool do_create_slot = false;
 static bool slot_exists_ok = false;
 static bool do_drop_slot = false;
@@ -673,13 +673,13 @@ StreamLog(void)
 }
 
 /*
- * When sigint is called, just tell the system to exit at the next possible
- * moment.
+ * When SIGINT/SIGTERM are caught, just tell the system to exit at the next
+ * possible moment.
  */
 #ifndef WIN32
 
 static void
-sigint_handler(int signum)
+sigexit_handler(SIGNAL_ARGS)
 {
 	time_to_stop = true;
 }
@@ -875,38 +875,11 @@ main(int argc, char **argv)
 		pg_fatal("invalid compression specification: %s",
 				 error_detail);
 
-	/* Extract the compression level, if found in the specification */
-	if ((compression_spec.options & PG_COMPRESSION_OPTION_LEVEL) != 0)
-		compresslevel = compression_spec.level;
+	/* Extract the compression level */
+	compresslevel = compression_spec.level;
 
-	switch (compression_algorithm)
-	{
-		case PG_COMPRESSION_NONE:
-			/* nothing to do */
-			break;
-		case PG_COMPRESSION_GZIP:
-#ifdef HAVE_LIBZ
-			if ((compression_spec.options & PG_COMPRESSION_OPTION_LEVEL) == 0)
-			{
-				pg_log_info("no value specified for --compress, switching to default");
-				compresslevel = Z_DEFAULT_COMPRESSION;
-			}
-#else
-			pg_fatal("this build does not support compression with %s",
-					 "gzip");
-#endif
-			break;
-		case PG_COMPRESSION_LZ4:
-#ifndef USE_LZ4
-			pg_fatal("this build does not support compression with %s",
-					 "LZ4");
-#endif
-			break;
-		case PG_COMPRESSION_ZSTD:
-			pg_fatal("compression with %s is not yet supported", "ZSTD");
-			break;
-	}
-
+	if (compression_algorithm == PG_COMPRESSION_ZSTD)
+		pg_fatal("compression with %s is not yet supported", "ZSTD");
 
 	/*
 	 * Check existence of destination folder.
@@ -932,7 +905,8 @@ main(int argc, char **argv)
 	 * if one is needed, in GetConnection.)
 	 */
 #ifndef WIN32
-	pqsignal(SIGINT, sigint_handler);
+	pqsignal(SIGINT, sigexit_handler);
+	pqsignal(SIGTERM, sigexit_handler);
 #endif
 
 	/*
