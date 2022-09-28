@@ -1505,7 +1505,7 @@ struct config_bool ConfigureNamesBool[] =
 		{"transaction_read_only", PGC_USERSET, CLIENT_CONN_STATEMENT,
 			gettext_noop("Sets the current transaction's read-only status."),
 			NULL,
-			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+			GUC_NO_RESET | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
 		},
 		&XactReadOnly,
 		false,
@@ -1524,7 +1524,7 @@ struct config_bool ConfigureNamesBool[] =
 		{"transaction_deferrable", PGC_USERSET, CLIENT_CONN_STATEMENT,
 			gettext_noop("Whether to defer a read-only serializable transaction until it can be executed with no possible serialization failures."),
 			NULL,
-			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+			GUC_NO_RESET | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
 		},
 		&XactDeferrable,
 		false,
@@ -2591,7 +2591,7 @@ struct config_int ConfigureNamesInt[] =
 	{
 		{"wal_decode_buffer_size", PGC_POSTMASTER, WAL_RECOVERY,
 			gettext_noop("Buffer size for reading ahead in the WAL during recovery."),
-			gettext_noop("This controls the maximum distance we can read ahead in the WAL to prefetch referenced data blocks."),
+			gettext_noop("Maximum distance to read ahead in the WAL to prefetch referenced data blocks."),
 			GUC_UNIT_BYTE
 		},
 		&wal_decode_buffer_size,
@@ -3248,7 +3248,7 @@ struct config_int ConfigureNamesInt[] =
 	{
 		{"tcp_keepalives_count", PGC_USERSET, CONN_AUTH_TCP,
 			gettext_noop("Maximum number of TCP keepalive retransmits."),
-			gettext_noop("This controls the number of consecutive keepalive retransmits that can be "
+			gettext_noop("Number of consecutive keepalive retransmits that can be "
 						 "lost before a connection is considered dead. A value of 0 uses the "
 						 "system default."),
 		},
@@ -3606,7 +3606,7 @@ struct config_real ConfigureNamesReal[] =
 		{"seed", PGC_USERSET, UNGROUPED,
 			gettext_noop("Sets the seed for random-number generation."),
 			NULL,
-			GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+			GUC_NO_SHOW_ALL | GUC_NO_RESET | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
 		},
 		&phony_random_seed,
 		0.0, -1.0, 1.0,
@@ -4557,7 +4557,7 @@ struct config_enum ConfigureNamesEnum[] =
 		{"transaction_isolation", PGC_USERSET, CLIENT_CONN_STATEMENT,
 			gettext_noop("Sets the current transaction's isolation level."),
 			NULL,
-			GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+			GUC_NO_RESET | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
 		},
 		&XactIsoLevel,
 		XACT_READ_COMMITTED, isolation_level_options,

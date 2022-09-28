@@ -225,7 +225,7 @@ static void reapply_stacked_values(struct config_generic *variable,
 								   Oid cursrole);
 static bool validate_option_array_item(const char *name, const char *value,
 									   bool skipIfNoPermissions);
-static void write_auto_conf_file(int fd, const char *filename, ConfigVariable *head_p);
+static void write_auto_conf_file(int fd, const char *filename, ConfigVariable *head);
 static void replace_auto_config_value(ConfigVariable **head_p, ConfigVariable **tail_p,
 									  const char *name, const char *value);
 static bool valid_custom_variable_name(const char *name);
@@ -3238,6 +3238,26 @@ set_config_option_ext(const char *name, const char *value,
 			ereport(elevel,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("cannot set parameter \"%s\" within security-restricted operation",
+							name)));
+			return 0;
+		}
+	}
+
+	/* Disallow resetting and saving GUC_NO_RESET values */
+	if (record->flags & GUC_NO_RESET)
+	{
+		if (value == NULL)
+		{
+			ereport(elevel,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("parameter \"%s\" cannot be reset", name)));
+			return 0;
+		}
+		if (action == GUC_ACTION_SAVE)
+		{
+			ereport(elevel,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("parameter \"%s\" cannot be set locally in functions",
 							name)));
 			return 0;
 		}

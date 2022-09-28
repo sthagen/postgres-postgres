@@ -104,17 +104,17 @@ typedef struct
 bool		binary_upgrade_record_init_privs = false;
 
 static void ExecGrantStmt_oids(InternalGrant *istmt);
-static void ExecGrant_Relation(InternalGrant *grantStmt);
-static void ExecGrant_Database(InternalGrant *grantStmt);
-static void ExecGrant_Fdw(InternalGrant *grantStmt);
-static void ExecGrant_ForeignServer(InternalGrant *grantStmt);
-static void ExecGrant_Function(InternalGrant *grantStmt);
-static void ExecGrant_Language(InternalGrant *grantStmt);
-static void ExecGrant_Largeobject(InternalGrant *grantStmt);
-static void ExecGrant_Namespace(InternalGrant *grantStmt);
-static void ExecGrant_Tablespace(InternalGrant *grantStmt);
-static void ExecGrant_Type(InternalGrant *grantStmt);
-static void ExecGrant_Parameter(InternalGrant *grantStmt);
+static void ExecGrant_Relation(InternalGrant *istmt);
+static void ExecGrant_Database(InternalGrant *istmt);
+static void ExecGrant_Fdw(InternalGrant *istmt);
+static void ExecGrant_ForeignServer(InternalGrant *istmt);
+static void ExecGrant_Function(InternalGrant *istmt);
+static void ExecGrant_Language(InternalGrant *istmt);
+static void ExecGrant_Largeobject(InternalGrant *istmt);
+static void ExecGrant_Namespace(InternalGrant *istmt);
+static void ExecGrant_Tablespace(InternalGrant *istmt);
+static void ExecGrant_Type(InternalGrant *istmt);
+static void ExecGrant_Parameter(InternalGrant *istmt);
 
 static void SetDefaultACLsInSchemas(InternalDefaultACL *iacls, List *nspnames);
 static void SetDefaultACL(InternalDefaultACL *iacls);
@@ -1117,13 +1117,10 @@ ExecAlterDefaultPrivilegesStmt(ParseState *pstate, AlterDefaultPrivilegesStmt *s
 
 			iacls.roleid = get_rolespec_oid(rolespec, false);
 
-			/*
-			 * We insist that calling user be a member of each target role. If
-			 * he has that, he could become that role anyway via SET ROLE, so
-			 * FOR ROLE is just a syntactic convenience and doesn't give any
-			 * special privileges.
-			 */
-			check_is_member_of_role(GetUserId(), iacls.roleid);
+			if (!has_privs_of_role(GetUserId(), iacls.roleid))
+				ereport(ERROR,
+						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						 errmsg("permission denied to change default privileges")));
 
 			SetDefaultACLsInSchemas(&iacls, nspnames);
 		}

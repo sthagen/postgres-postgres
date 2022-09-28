@@ -23,7 +23,7 @@
 
 PgBenchExpr *expr_parse_result;
 
-static PgBenchExprList *make_elist(PgBenchExpr *exp, PgBenchExprList *list);
+static PgBenchExprList *make_elist(PgBenchExpr *expr, PgBenchExprList *list);
 static PgBenchExpr *make_null_constant(void);
 static PgBenchExpr *make_boolean_constant(bool bval);
 static PgBenchExpr *make_integer_constant(int64 ival);
@@ -80,7 +80,10 @@ static PgBenchExpr *make_case(yyscan_t yyscanner, PgBenchExprList *when_then_lis
 
 %%
 
-result: expr				{ expr_parse_result = $1; }
+result: expr				{
+								expr_parse_result = $1;
+								(void) yynerrs; /* suppress compiler warning */
+							}
 
 elist:						{ $$ = NULL; }
 	| expr					{ $$ = make_elist($1, NULL); }

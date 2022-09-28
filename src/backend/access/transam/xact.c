@@ -354,7 +354,7 @@ static void AtSubStart_Memory(void);
 static void AtSubStart_ResourceOwner(void);
 
 static void ShowTransactionState(const char *str);
-static void ShowTransactionStateRec(const char *str, TransactionState state);
+static void ShowTransactionStateRec(const char *str, TransactionState s);
 static const char *BlockStateAsString(TBlockState blockState);
 static const char *TransStateAsString(TransState state);
 
@@ -680,12 +680,12 @@ AssignTransactionId(TransactionState s)
 		log_unknown_top = true;
 
 	/*
-	 * Generate a new FullTransactionId and record its xid in PG_PROC and
+	 * Generate a new FullTransactionId and record its xid in PGPROC and
 	 * pg_subtrans.
 	 *
 	 * NB: we must make the subtrans entry BEFORE the Xid appears anywhere in
-	 * shared storage other than PG_PROC; because if there's no room for it in
-	 * PG_PROC, the subtrans entry is needed to ensure that other backends see
+	 * shared storage other than PGPROC; because if there's no room for it in
+	 * PGPROC, the subtrans entry is needed to ensure that other backends see
 	 * the Xid as "running".  See GetNewTransactionId.
 	 */
 	s->fullTransactionId = GetNewTransactionId(isSubXact);
@@ -3656,9 +3656,14 @@ static void
 CallXactCallbacks(XactEvent event)
 {
 	XactCallbackItem *item;
+	XactCallbackItem *next;
 
-	for (item = Xact_callbacks; item; item = item->next)
+	for (item = Xact_callbacks; item; item = next)
+	{
+		/* allow callbacks to unregister themselves when called */
+		next = item->next;
 		item->callback(event, item->arg);
+	}
 }
 
 
@@ -3713,9 +3718,14 @@ CallSubXactCallbacks(SubXactEvent event,
 					 SubTransactionId parentSubid)
 {
 	SubXactCallbackItem *item;
+	SubXactCallbackItem *next;
 
-	for (item = SubXact_callbacks; item; item = item->next)
+	for (item = SubXact_callbacks; item; item = next)
+	{
+		/* allow callbacks to unregister themselves when called */
+		next = item->next;
 		item->callback(event, mySubid, parentSubid, item->arg);
+	}
 }
 
 

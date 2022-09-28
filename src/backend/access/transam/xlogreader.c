@@ -47,7 +47,7 @@ static bool allocate_recordbuf(XLogReaderState *state, uint32 reclength);
 static int	ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr,
 							 int reqLen);
 static void XLogReaderInvalReadState(XLogReaderState *state);
-static XLogPageReadResult XLogDecodeNextRecord(XLogReaderState *state, bool non_blocking);
+static XLogPageReadResult XLogDecodeNextRecord(XLogReaderState *state, bool nonblocking);
 static bool ValidXLogRecordHeader(XLogReaderState *state, XLogRecPtr RecPtr,
 								  XLogRecPtr PrevRecPtr, XLogRecord *record, bool randAccess);
 static bool ValidXLogRecord(XLogReaderState *state, XLogRecord *record,
@@ -1963,10 +1963,10 @@ XLogRecGetBlockTag(XLogReaderState *record, uint8 block_id,
 									blknum, NULL))
 	{
 #ifndef FRONTEND
-		elog(ERROR, "failed to locate backup block with ID %d in WAL record",
+		elog(ERROR, "could not locate backup block with ID %d in WAL record",
 			 block_id);
 #else
-		pg_fatal("failed to locate backup block with ID %d in WAL record",
+		pg_fatal("could not locate backup block with ID %d in WAL record",
 				 block_id);
 #endif
 	}

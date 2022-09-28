@@ -234,7 +234,7 @@ parse_compress_specification(pg_compress_algorithm algorithm, char *specificatio
 		}
 		else
 			result->parse_error =
-				psprintf(_("unknown compression option \"%s\""), keyword);
+				psprintf(_("unrecognized compression option: \"%s\""), keyword);
 
 		/* Release memory, just to be tidy. */
 		pfree(keyword);
@@ -324,8 +324,9 @@ validate_compress_specification(pg_compress_specification *spec)
 			default_level = 0;	/* fast mode */
 			break;
 		case PG_COMPRESSION_ZSTD:
-			max_level = 22;
 #ifdef USE_ZSTD
+			max_level = ZSTD_maxCLevel();
+			min_level = ZSTD_minCLevel();
 			default_level = ZSTD_CLEVEL_DEFAULT;
 #endif
 			break;

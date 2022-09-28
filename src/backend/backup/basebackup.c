@@ -17,6 +17,7 @@
 #include <time.h>
 
 #include "access/xlog_internal.h"
+#include "access/xlogbackup.h"
 #include "backup/backup_manifest.h"
 #include "backup/basebackup.h"
 #include "backup/basebackup_sink.h"
@@ -74,7 +75,7 @@ typedef struct
 	pg_checksum_type manifest_checksum_type;
 } basebackup_options;
 
-static int64 sendTablespace(bbsink *sink, char *path, char *oid, bool sizeonly,
+static int64 sendTablespace(bbsink *sink, char *path, char *spcoid, bool sizeonly,
 							struct backup_manifest_info *manifest);
 static int64 sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 					 List *tablespaces, bool sendtblspclinks,
@@ -231,9 +232,9 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 	bbsink_state state;
 	XLogRecPtr	endptr;
 	TimeLineID	endtli;
-	StringInfo	labelfile;
-	StringInfo	tblspc_map_file;
 	backup_manifest_info manifest;
+	BackupState *backup_state;
+	StringInfo	tablespace_map;
 
 	/* Initial backup state, insofar as we know it now. */
 	state.tablespaces = NIL;
@@ -248,18 +249,21 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 
 	backup_started_in_recovery = RecoveryInProgress();
 
-	labelfile = makeStringInfo();
-	tblspc_map_file = makeStringInfo();
 	InitializeBackupManifest(&manifest, opt->manifest,
 							 opt->manifest_checksum_type);
 
 	total_checksum_failures = 0;
 
+	/* Allocate backup related varilables. */
+	backup_state = (BackupState *) palloc0(sizeof(BackupState));
+	tablespace_map = makeStringInfo();
+
 	basebackup_progress_wait_checkpoint();
-	state.startptr = do_pg_backup_start(opt->label, opt->fastcheckpoint,
-										&state.starttli,
-										labelfile, &state.tablespaces,
-										tblspc_map_file);
+	do_pg_backup_start(opt->label, opt->fastcheckpoint, &state.tablespaces,
+					   backup_state, tablespace_map);
+
+	state.startptr = backup_state->startpoint;
+	state.starttli = backup_state->starttli;
 
 	/*
 	 * Once do_pg_backup_start has been called, ensure that any failure causes
@@ -313,18 +317,21 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 			{
 				struct stat statbuf;
 				bool		sendtblspclinks = true;
+				char	   *backup_label;
 
 				bbsink_begin_archive(sink, "base.tar");
 
 				/* In the main tar, include the backup_label first... */
-				sendFileWithContent(sink, BACKUP_LABEL_FILE, labelfile->data,
-									&manifest);
+				backup_label = build_backup_content(backup_state, false);
+				sendFileWithContent(sink, BACKUP_LABEL_FILE,
+									backup_label, &manifest);
+				pfree(backup_label);
 
 				/* Then the tablespace_map file, if required... */
 				if (opt->sendtblspcmapfile)
 				{
-					sendFileWithContent(sink, TABLESPACE_MAP, tblspc_map_file->data,
-										&manifest);
+					sendFileWithContent(sink, TABLESPACE_MAP,
+										tablespace_map->data, &manifest);
 					sendtblspclinks = false;
 				}
 
@@ -374,7 +381,15 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 		}
 
 		basebackup_progress_wait_wal_archive(&state);
-		endptr = do_pg_backup_stop(labelfile->data, !opt->nowait, &endtli);
+		do_pg_backup_stop(backup_state, !opt->nowait);
+
+		endptr = backup_state->stoppoint;
+		endtli = backup_state->stoptli;
+
+		/* Deallocate backup-related variables. */
+		pfree(tablespace_map->data);
+		pfree(tablespace_map);
+		pfree(backup_state);
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(do_pg_abort_backup, BoolGetDatum(false));
 
@@ -863,7 +878,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 			if (!parse_compress_algorithm(optval, &opt->compression))
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("unrecognized compression algorithm \"%s\"",
+						 errmsg("unrecognized compression algorithm: \"%s\"",
 								optval)));
 			o_compression = true;
 		}
@@ -919,7 +934,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 	if (o_compression_detail && !o_compression)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("compression detail requires compression")));
+				 errmsg("compression detail cannot be specified unless compression is enabled")));
 
 	if (o_compression)
 	{

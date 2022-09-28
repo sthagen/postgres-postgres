@@ -86,8 +86,8 @@ static bool GetTupleForTrigger(EState *estate,
 							   ItemPointer tid,
 							   LockTupleMode lockmode,
 							   TupleTableSlot *oldslot,
-							   TupleTableSlot **newSlot,
-							   TM_FailureData *tmfpd);
+							   TupleTableSlot **epqslot,
+							   TM_FailureData *tmfdp);
 static bool TriggerEnabled(EState *estate, ResultRelInfo *relinfo,
 						   Trigger *trigger, TriggerEvent event,
 						   Bitmapset *modifiedCols,
@@ -101,7 +101,7 @@ static void AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 								  ResultRelInfo *src_partinfo,
 								  ResultRelInfo *dst_partinfo,
 								  int event, bool row_trigger,
-								  TupleTableSlot *oldtup, TupleTableSlot *newtup,
+								  TupleTableSlot *oldslot, TupleTableSlot *newslot,
 								  List *recheckIndexes, Bitmapset *modifiedCols,
 								  TransitionCaptureState *transition_capture,
 								  bool is_crosspart_update);
@@ -1532,7 +1532,7 @@ renametrig(RenameStmt *stmt)
 			ereport(ERROR,
 					errmsg("cannot rename trigger \"%s\" on table \"%s\"",
 						   stmt->subname, RelationGetRelationName(targetrel)),
-					errhint("Rename trigger on partitioned table \"%s\" instead.",
+					errhint("Rename the trigger on the partitioned table \"%s\" instead.",
 							get_rel_name(get_partition_parent(relid, false))));
 
 
@@ -3871,7 +3871,7 @@ static void TransitionTableAddTuple(EState *estate,
 									Tuplestorestate *tuplestore);
 static void AfterTriggerFreeQuery(AfterTriggersQueryData *qs);
 static SetConstraintState SetConstraintStateCreate(int numalloc);
-static SetConstraintState SetConstraintStateCopy(SetConstraintState state);
+static SetConstraintState SetConstraintStateCopy(SetConstraintState origstate);
 static SetConstraintState SetConstraintStateAddItem(SetConstraintState state,
 													Oid tgoid, bool tgisdeferred);
 static void cancel_prior_stmt_triggers(Oid relid, CmdType cmdType, int tgevent);
@@ -4775,11 +4775,13 @@ GetAfterTriggersStoreSlot(AfterTriggersTableData *table,
 		MemoryContext oldcxt;
 
 		/*
-		 * We only need this slot only until AfterTriggerEndQuery, but making
-		 * it last till end-of-subxact is good enough.  It'll be freed by
-		 * AfterTriggerFreeQuery().
+		 * We need this slot only until AfterTriggerEndQuery, but making it
+		 * last till end-of-subxact is good enough.  It'll be freed by
+		 * AfterTriggerFreeQuery().  However, the passed-in tupdesc might have
+		 * a different lifespan, so we'd better make a copy of that.
 		 */
 		oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+		tupdesc = CreateTupleDescCopy(tupdesc);
 		table->storeslot = MakeSingleTupleTableSlot(tupdesc, &TTSOpsVirtual);
 		MemoryContextSwitchTo(oldcxt);
 	}
@@ -5098,7 +5100,12 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 		if (ts)
 			tuplestore_end(ts);
 		if (table->storeslot)
-			ExecDropSingleTupleTableSlot(table->storeslot);
+		{
+			TupleTableSlot *slot = table->storeslot;
+
+			table->storeslot = NULL;
+			ExecDropSingleTupleTableSlot(slot);
+		}
 	}
 
 	/*

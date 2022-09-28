@@ -71,6 +71,10 @@ if ($ENV{with_icu} eq 'yes')
 	$node2->command_ok(
 		[ 'createdb', '-T', 'template0', '--locale-provider=libc', 'foobar55' ],
 		'create database with libc provider from template database with icu provider');
+
+	$node2->command_ok(
+		[ 'createdb', '-T', 'template0', '--icu-locale', 'en-US', 'foobar56' ],
+		'create database with icu locale from template database with icu provider');
 }
 else
 {
@@ -139,7 +143,7 @@ $node->command_checks_all(
 	1,
 	[qr/^$/],
 	[
-		qr/^createdb: error: database creation failed: ERROR:  invalid create database strategy foo/s
+		qr/^createdb: error: database creation failed: ERROR:  invalid create database strategy "foo"/s
 	],
 	'createdb with incorrect --strategy');
 
@@ -153,5 +157,23 @@ $node->issues_sql_like(
 	[ 'createdb', '-T', 'foobar2', '-S', 'file_copy', 'foobar7' ],
 	qr/statement: CREATE DATABASE foobar7 STRATEGY file_copy TEMPLATE foobar2/,
 	'create database with FILE_COPY strategy');
+
+# Create database owned by role_foobar.
+$node->issues_sql_like(
+	[ 'createdb', '-T', 'foobar2', '-O', 'role_foobar', 'foobar8' ],
+	qr/statement: CREATE DATABASE foobar8 OWNER role_foobar TEMPLATE foobar2/,
+	'create database with owner role_foobar');
+($ret, $stdout, $stderr) = $node->psql(
+	'foobar2',
+	'DROP OWNED BY role_foobar;',
+	on_error_die => 1,
+);
+ok($ret == 0, "DROP OWNED BY role_foobar");
+($ret, $stdout, $stderr) = $node->psql(
+	'foobar2',
+	'DROP DATABASE foobar8;',
+	on_error_die => 1,
+);
+ok($ret == 0, "DROP DATABASE foobar8");
 
 done_testing();
