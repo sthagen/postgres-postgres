@@ -36,8 +36,15 @@ sql_help = custom_target('psql_help',
 generated_sources += sql_help.to_list()
 psql_sources += sql_help
 
+if host_system == 'windows'
+  psql_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
+    '--NAME', 'psql',
+    '--FILEDESC', 'psql - the PostgreSQL interactive terminal',])
+endif
+
 psql = executable('psql',
   psql_sources,
+  c_pch: pch_postgres_fe_h,
   include_directories: include_directories('.'),
   dependencies: [frontend_code, libpq, readline],
   kwargs: default_bin_args,

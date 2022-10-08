@@ -508,6 +508,8 @@ if test "$GCC" = yes -a "$ICC" = no; then
   PGAC_PROG_CXX_CFLAGS_OPT([-Wimplicit-fallthrough=3])
   PGAC_PROG_CC_CFLAGS_OPT([-Wcast-function-type])
   PGAC_PROG_CXX_CFLAGS_OPT([-Wcast-function-type])
+  PGAC_PROG_CC_CFLAGS_OPT([-Wshadow=compatible-local])
+  PGAC_PROG_CXX_CFLAGS_OPT([-Wshadow=compatible-local])
   # This was included in -Wall/-Wformat in older GCC versions
   PGAC_PROG_CC_CFLAGS_OPT([-Wformat-security])
   PGAC_PROG_CXX_CFLAGS_OPT([-Wformat-security])
@@ -1129,7 +1131,6 @@ AC_ARG_VAR(LDFLAGS_SL, [extra linker flags for linking shared libraries only])
 PGAC_PROG_LD
 AC_SUBST(LD)
 AC_SUBST(with_gnu_ld)
-AC_PROG_RANLIB
 PGAC_CHECK_STRIP
 AC_CHECK_TOOL(AR, ar, ar)
 if test "$PORTNAME" = "win32"; then

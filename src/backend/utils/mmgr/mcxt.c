@@ -32,6 +32,11 @@
 #include "utils/memutils_internal.h"
 
 
+static void BogusFree(void *pointer);
+static void *BogusRealloc(void *pointer, Size size);
+static MemoryContext BogusGetChunkContext(void *pointer);
+static Size BogusGetChunkSpace(void *pointer);
+
 /*****************************************************************************
  *	  GLOBAL MEMORY															 *
  *****************************************************************************/
@@ -74,10 +79,42 @@ static const MemoryContextMethods mcxt_methods[] = {
 	[MCTX_SLAB_ID].get_chunk_context = SlabGetChunkContext,
 	[MCTX_SLAB_ID].get_chunk_space = SlabGetChunkSpace,
 	[MCTX_SLAB_ID].is_empty = SlabIsEmpty,
-	[MCTX_SLAB_ID].stats = SlabStats
+	[MCTX_SLAB_ID].stats = SlabStats,
 #ifdef MEMORY_CONTEXT_CHECKING
-	,[MCTX_SLAB_ID].check = SlabCheck
+	[MCTX_SLAB_ID].check = SlabCheck,
 #endif
+
+	/*
+	 * Unused (as yet) IDs should have dummy entries here.  This allows us to
+	 * fail cleanly if a bogus pointer is passed to pfree or the like.  It
+	 * seems sufficient to provide routines for the methods that might get
+	 * invoked from inspection of a chunk (see MCXT_METHOD calls below).
+	 */
+
+	[MCTX_UNUSED1_ID].free_p = BogusFree,
+	[MCTX_UNUSED1_ID].realloc = BogusRealloc,
+	[MCTX_UNUSED1_ID].get_chunk_context = BogusGetChunkContext,
+	[MCTX_UNUSED1_ID].get_chunk_space = BogusGetChunkSpace,
+
+	[MCTX_UNUSED2_ID].free_p = BogusFree,
+	[MCTX_UNUSED2_ID].realloc = BogusRealloc,
+	[MCTX_UNUSED2_ID].get_chunk_context = BogusGetChunkContext,
+	[MCTX_UNUSED2_ID].get_chunk_space = BogusGetChunkSpace,
+
+	[MCTX_UNUSED3_ID].free_p = BogusFree,
+	[MCTX_UNUSED3_ID].realloc = BogusRealloc,
+	[MCTX_UNUSED3_ID].get_chunk_context = BogusGetChunkContext,
+	[MCTX_UNUSED3_ID].get_chunk_space = BogusGetChunkSpace,
+
+	[MCTX_UNUSED4_ID].free_p = BogusFree,
+	[MCTX_UNUSED4_ID].realloc = BogusRealloc,
+	[MCTX_UNUSED4_ID].get_chunk_context = BogusGetChunkContext,
+	[MCTX_UNUSED4_ID].get_chunk_space = BogusGetChunkSpace,
+
+	[MCTX_UNUSED5_ID].free_p = BogusFree,
+	[MCTX_UNUSED5_ID].realloc = BogusRealloc,
+	[MCTX_UNUSED5_ID].get_chunk_context = BogusGetChunkContext,
+	[MCTX_UNUSED5_ID].get_chunk_space = BogusGetChunkSpace,
 };
 
 /*
@@ -124,6 +161,77 @@ static void MemoryContextStatsPrint(MemoryContext context, void *passthru,
  */
 #define MCXT_METHOD(pointer, method) \
 	mcxt_methods[GetMemoryChunkMethodID(pointer)].method
+
+/*
+ * GetMemoryChunkMethodID
+ *		Return the MemoryContextMethodID from the uint64 chunk header which
+ *		directly precedes 'pointer'.
+ */
+static inline MemoryContextMethodID
+GetMemoryChunkMethodID(const void *pointer)
+{
+	uint64		header;
+
+	/*
+	 * Try to detect bogus pointers handed to us, poorly though we can.
+	 * Presumably, a pointer that isn't MAXALIGNED isn't pointing at an
+	 * allocated chunk.
+	 */
+	Assert(pointer == (const void *) MAXALIGN(pointer));
+
+	header = *((const uint64 *) ((const char *) pointer - sizeof(uint64)));
+
+	return (MemoryContextMethodID) (header & MEMORY_CONTEXT_METHODID_MASK);
+}
+
+/*
+ * GetMemoryChunkHeader
+ *		Return the uint64 chunk header which directly precedes 'pointer'.
+ *
+ * This is only used after GetMemoryChunkMethodID, so no need for error checks.
+ */
+static inline uint64
+GetMemoryChunkHeader(const void *pointer)
+{
+	return *((const uint64 *) ((const char *) pointer - sizeof(uint64)));
+}
+
+/*
+ * Support routines to trap use of invalid memory context method IDs
+ * (from calling pfree or the like on a bogus pointer).  As a possible
+ * aid in debugging, we report the header word along with the pointer
+ * address (if we got here, there must be an accessible header word).
+ */
+static void
+BogusFree(void *pointer)
+{
+	elog(ERROR, "pfree called with invalid pointer %p (header 0x%016llx)",
+		 pointer, (long long) GetMemoryChunkHeader(pointer));
+}
+
+static void *
+BogusRealloc(void *pointer, Size size)
+{
+	elog(ERROR, "repalloc called with invalid pointer %p (header 0x%016llx)",
+		 pointer, (long long) GetMemoryChunkHeader(pointer));
+	return NULL;				/* keep compiler quiet */
+}
+
+static MemoryContext
+BogusGetChunkContext(void *pointer)
+{
+	elog(ERROR, "GetMemoryChunkContext called with invalid pointer %p (header 0x%016llx)",
+		 pointer, (long long) GetMemoryChunkHeader(pointer));
+	return NULL;				/* keep compiler quiet */
+}
+
+static Size
+BogusGetChunkSpace(void *pointer)
+{
+	elog(ERROR, "GetMemoryChunkSpace called with invalid pointer %p (header 0x%016llx)",
+		 pointer, (long long) GetMemoryChunkHeader(pointer));
+	return 0;					/* keep compiler quiet */
+}
 
 
 /*****************************************************************************
@@ -224,10 +332,8 @@ MemoryContextResetOnly(MemoryContext context)
 		 * If context->ident points into the context's memory, it will become
 		 * a dangling pointer.  We could prevent that by setting it to NULL
 		 * here, but that would break valid coding patterns that keep the
-		 * ident elsewhere, e.g. in a parent context.  Another idea is to use
-		 * MemoryContextContains(), but we don't require ident strings to be
-		 * in separately-palloc'd chunks, so that risks false positives.  So
-		 * for now we assume the programmer got it right.
+		 * ident elsewhere, e.g. in a parent context.  So for now we assume
+		 * the programmer got it right.
 		 */
 
 		context->methods->reset(context);
@@ -482,15 +588,6 @@ MemoryContextAllowInCriticalSection(MemoryContext context, bool allow)
 MemoryContext
 GetMemoryChunkContext(void *pointer)
 {
-	/*
-	 * Try to detect bogus pointers handed to us, poorly though we can.
-	 * Presumably, a pointer that isn't MAXALIGNED isn't pointing at an
-	 * allocated chunk.
-	 */
-	Assert(pointer != NULL);
-	Assert(pointer == (void *) MAXALIGN(pointer));
-	/* adding further Asserts here? See pre-checks in MemoryContextContains */
-
 	return MCXT_METHOD(pointer, get_chunk_context) (pointer);
 }
 
@@ -812,49 +909,6 @@ MemoryContextCheck(MemoryContext context)
 		MemoryContextCheck(child);
 }
 #endif
-
-/*
- * MemoryContextContains
- *		Detect whether an allocated chunk of memory belongs to a given
- *		context or not.
- *
- * Caution: 'pointer' must point to a pointer which was allocated by a
- * MemoryContext.  It's not safe or valid to use this function on arbitrary
- * pointers as obtaining the MemoryContext which 'pointer' belongs to requires
- * possibly several pointer dereferences.
- */
-bool
-MemoryContextContains(MemoryContext context, void *pointer)
-{
-	/*
-	 * Temporarily make this always return false as we don't yet have a fully
-	 * baked idea on how to make it work correctly with the new MemoryChunk
-	 * code.
-	 */
-	return false;
-
-#ifdef NOT_USED
-	MemoryContext ptr_context;
-
-	/*
-	 * NB: We must perform run-time checks here which GetMemoryChunkContext()
-	 * does as assertions before calling GetMemoryChunkContext().
-	 *
-	 * Try to detect bogus pointers handed to us, poorly though we can.
-	 * Presumably, a pointer that isn't MAXALIGNED isn't pointing at an
-	 * allocated chunk.
-	 */
-	if (pointer == NULL || pointer != (void *) MAXALIGN(pointer))
-		return false;
-
-	/*
-	 * OK, it's probably safe to look at the context.
-	 */
-	ptr_context = GetMemoryChunkContext(pointer);
-
-	return ptr_context == context;
-#endif
-}
 
 /*
  * MemoryContextCreate

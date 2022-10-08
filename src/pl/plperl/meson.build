@@ -36,8 +36,16 @@ foreach n : ['SPI', 'Util']
 endforeach
 
 plperl_inc = include_directories('.')
+
+if host_system == 'windows'
+  plperl_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
+    '--NAME', 'plperl',
+    '--FILEDESC', 'PL/Perl - procedural language',])
+endif
+
 plperl = shared_module('plperl',
   plperl_sources,
+  c_pch: pch_postgres_h,
   include_directories: [plperl_inc, postgres_inc],
   kwargs: pg_mod_args + {
     'dependencies': [perl_dep, pg_mod_args['dependencies']],

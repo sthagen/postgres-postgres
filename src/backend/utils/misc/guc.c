@@ -5262,12 +5262,10 @@ read_nondefault_variables(void)
 
 	for (;;)
 	{
-		struct config_generic *record;
-
 		if ((varname = read_string_with_null(fp)) == NULL)
 			break;
 
-		if ((record = find_option(varname, true, false, FATAL)) == NULL)
+		if (find_option(varname, true, false, FATAL) == NULL)
 			elog(FATAL, "failed to locate variable \"%s\" in exec config params file", varname);
 
 		if ((varvalue = read_string_with_null(fp)) == NULL)
@@ -5380,7 +5378,7 @@ estimate_variable_size(struct config_generic *gconf)
 				 * small values.  Maximum value is 2147483647, i.e. 10 chars.
 				 * Include one byte for sign.
 				 */
-				if (Abs(*conf->variable) < 1000)
+				if (abs(*conf->variable) < 1000)
 					valsize = 3 + 1;
 				else
 					valsize = 10 + 1;

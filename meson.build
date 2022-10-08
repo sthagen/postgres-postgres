@@ -15,6 +15,7 @@ project('postgresql',
   meson_version: '>=0.54',
   default_options: [
     'warning_level=1', #-Wall equivalent
+    'b_pch=false',
     'buildtype=release',
     # For compatibility with the autoconf build, set a default prefix. This
     # works even on windows, where it's a drive-relative path (i.e. when on
@@ -584,7 +585,10 @@ endif
 ###############################################################
 
 ldapopt = get_option('ldap')
-if host_system == 'windows'
+if ldapopt.disabled()
+  ldap = not_found_dep
+  ldap_r = not_found_dep
+elif host_system == 'windows'
   ldap = cc.find_library('wldap32', required: ldapopt)
   ldap_r = ldap
 else
@@ -1705,6 +1709,7 @@ common_warning_flags = [
   '-Wmissing-format-attribute',
   '-Wimplicit-fallthrough=3',
   '-Wcast-function-type',
+  '-Wshadow=compatible-local',
   # This was included in -Wall/-Wformat in older GCC versions
   '-Wformat-security',
 ]
@@ -2561,6 +2566,65 @@ gen_export_kwargs = {
 
 
 
+###
+### windows resources related stuff
+###
+
+if host_system == 'windows'
+  pg_ico = meson.source_root() / 'src' / 'port' / 'win32.ico'
+  win32ver_rc = files('src/port/win32ver.rc')
+  rcgen = find_program('src/tools/rcgen', native: true)
+
+  rcgen_base_args = [
+    '--srcdir', '@SOURCE_DIR@',
+    '--builddir', meson.build_root(),
+    '--rcout', '@OUTPUT0@',
+    '--out', '@OUTPUT1@',
+    '--input', '@INPUT@',
+    '@EXTRA_ARGS@',
+  ]
+
+  if cc.get_argument_syntax() == 'msvc'
+    rc = find_program('rc', required: true)
+    rcgen_base_args += ['--rc', rc.path()]
+    rcgen_outputs = ['@BASENAME@.rc', '@BASENAME@.res']
+  else
+    windres = find_program('windres', required: true)
+    rcgen_base_args += ['--windres', windres.path()]
+    rcgen_outputs = ['@BASENAME@.rc', '@BASENAME@.obj']
+  endif
+
+  # msbuild backend doesn't support this atm
+  if meson.backend() == 'ninja'
+    rcgen_base_args += ['--depfile', '@DEPFILE@']
+  endif
+
+  rcgen_bin_args = rcgen_base_args + [
+    '--VFT_TYPE', 'VFT_APP',
+    '--FILEENDING', 'exe',
+    '--ICO', pg_ico
+  ]
+
+  rcgen_lib_args = rcgen_base_args + [
+    '--VFT_TYPE', 'VFT_DLL',
+    '--FILEENDING', 'dll',
+  ]
+
+  rc_bin_gen = generator(rcgen,
+    depfile: '@BASENAME@.d',
+    arguments: rcgen_bin_args,
+    output: rcgen_outputs,
+  )
+
+  rc_lib_gen = generator(rcgen,
+    depfile: '@BASENAME@.d',
+    arguments: rcgen_lib_args,
+    output: rcgen_outputs,
+  )
+endif
+
+
+
 # headers that the whole build tree depends on
 generated_headers = []
 # headers that the backend build depends on
@@ -2616,17 +2680,29 @@ backend_common_code = declare_dependency(
 
 subdir('src/common')
 
-frontend_shlib_code = declare_dependency(
-  compile_args: ['-DFRONTEND'],
-  include_directories: [postgres_inc],
+# all shared libraries should depend on shlib_code
+shlib_code = declare_dependency(
   link_args: ldflags_sl,
-  link_with: [pgport_shlib, common_shlib],
+)
+
+# all static libraries not part of the backend should depend on this
+frontend_stlib_code = declare_dependency(
+  include_directories: [postgres_inc],
+  link_with: [common_static, pgport_static],
   sources: generated_headers,
   dependencies: [os_deps, libintl],
 )
 
+# all shared libraries not part of the backend should depend on this
+frontend_shlib_code = declare_dependency(
+  include_directories: [postgres_inc],
+  link_with: [common_shlib, pgport_shlib],
+  sources: generated_headers,
+  dependencies: [shlib_code, os_deps, libintl],
+)
+
+# Dependencies both for static and shared libpq
 libpq_deps += [
-  frontend_shlib_code,
   thread_dep,
 
   gssapi,
@@ -2639,6 +2715,7 @@ subdir('src/interfaces/libpq')
 # fe_utils depends on libpq
 subdir('src/fe_utils')
 
+# for frontend binaries
 frontend_code = declare_dependency(
   include_directories: [postgres_inc],
   link_with: [fe_utils, common_static, pgport_static],

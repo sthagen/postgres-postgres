@@ -62,6 +62,7 @@ postgres_lib = static_library('postgres_lib',
   backend_sources + timezone_sources + generated_backend_sources,
   link_whole: backend_link_with,
   dependencies: backend_build_deps,
+  c_pch: pch_postgres_h,
   kwargs: internal_lib_args,
 )
 
@@ -81,6 +82,10 @@ if cc.get_id() == 'msvc'
 
   backend_link_args += '/DEF:@0@'.format(postgres_def.full_path())
   backend_link_depends += postgres_def
+  # Due to the way msvc and meson's precompiled headers implementation
+  # interact, we need to have symbols from the full library available. Could
+  # be restricted to b_pch=true.
+  backend_link_with += postgres_lib
 
 elif host_system == 'aix'
   # The '.' argument leads mkldexport.sh to emit "#! .", which refers to the
@@ -112,9 +117,9 @@ backend_objs = [postgres_lib.extract_all_objects(recursive: false)]
 # On at least linux we don't actually need to pass in all the objects, but
 # at least on FreeBSD and Solaris we have to.
 #
-# XXX: The reason we don't use the objects for generated sources is that
-# hits a meson bug. Luckily we don't don't have probes in generated
-# sources...
+# XXX: The reason we don't use the objects for generated sources is that doing
+# so is not supported in older meson versions. Luckily we don't have probes in
+# generated sources...
 if dtrace.found() and host_system != 'darwin'
   backend_input += custom_target(
     'probes.o',
@@ -148,7 +153,7 @@ pg_mod_link_depend = []
 # or a [import] library derived from it. Set up the link flags for that.
 if mod_link_args_fmt.length() > 0
   # To avoid unnecessary build-time dependencies on other operating systems,
-  # only the dependency when it when necessary.
+  # only add the dependency when necessary.
   pg_mod_link_depend += postgres
 
   name = mod_link_with_name.format('postgres')

@@ -28,8 +28,15 @@ plpython_sources += custom_target('spiexceptions.h',
 # FIXME: need to duplicate import library ugliness?
 plpython_inc = include_directories('.')
 
+if host_system == 'windows'
+  plpython_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
+    '--NAME', 'plpython3',
+    '--FILEDESC', 'PL/Python - procedural language',])
+endif
+
 plpython = shared_module('plpython3',
   plpython_sources,
+  c_pch: pch_postgres_h,
   include_directories: [plpython_inc, postgres_inc],
   kwargs: pg_mod_args + {
     'dependencies': [python3_dep, pg_mod_args['dependencies']],

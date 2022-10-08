@@ -703,7 +703,7 @@ const char *const config_group_names[] =
 	gettext_noop("Version and Platform Compatibility / Previous PostgreSQL Versions"),
 	/* COMPAT_OPTIONS_CLIENT */
 	gettext_noop("Version and Platform Compatibility / Other Platforms and Clients"),
-	/* ERROR_HANDLING */
+	/* ERROR_HANDLING_OPTIONS */
 	gettext_noop("Error Handling"),
 	/* PRESET_OPTIONS */
 	gettext_noop("Preset Options"),
@@ -964,16 +964,6 @@ struct config_bool ConfigureNamesBool[] =
 			GUC_EXPLAIN
 		},
 		&enable_async_append,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"enable_group_by_reordering", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables reordering of GROUP BY keys."),
-			NULL,
-			GUC_EXPLAIN
-		},
-		&enable_group_by_reordering,
 		true,
 		NULL, NULL, NULL
 	},
