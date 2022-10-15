@@ -29,6 +29,7 @@
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/tzparser.h"
 
@@ -4468,7 +4469,7 @@ AddVerboseIntPart(char *cp, int64 value, const char *units,
 	if (*is_zero)
 	{
 		*is_before = (value < 0);
-		value = Abs(value);
+		value = i64abs(value);
 	}
 	else if (*is_before)
 		value = -value;
@@ -4569,8 +4570,8 @@ EncodeInterval(struct pg_itm *itm, int style, char *str)
 
 					sprintf(cp, "%c%d-%d %c%lld %c%lld:%02d:",
 							year_sign, abs(year), abs(mon),
-							day_sign, (long long) Abs(mday),
-							sec_sign, (long long) Abs(hour), abs(min));
+							day_sign, (long long) i64abs(mday),
+							sec_sign, (long long) i64abs(hour), abs(min));
 					cp += strlen(cp);
 					cp = AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
 					*cp = '\0';
@@ -4642,7 +4643,7 @@ EncodeInterval(struct pg_itm *itm, int style, char *str)
 				sprintf(cp, "%s%s%02lld:%02d:",
 						is_zero ? "" : " ",
 						(minus ? "-" : (is_before ? "+" : "")),
-						(long long) Abs(hour), abs(min));
+						(long long) i64abs(hour), abs(min));
 				cp += strlen(cp);
 				cp = AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
 				*cp = '\0';
@@ -4782,8 +4783,8 @@ TemporalSimplify(int32 max_precis, Node *node)
  * to create the final array of timezone tokens.  The argument array
  * is already sorted in name order.
  *
- * The result is a TimeZoneAbbrevTable (which must be a single malloc'd chunk)
- * or NULL on malloc failure.  No other error conditions are defined.
+ * The result is a TimeZoneAbbrevTable (which must be a single guc_malloc'd
+ * chunk) or NULL on alloc failure.  No other error conditions are defined.
  */
 TimeZoneAbbrevTable *
 ConvertTimeZoneAbbrevs(struct tzEntry *abbrevs, int n)
@@ -4812,7 +4813,7 @@ ConvertTimeZoneAbbrevs(struct tzEntry *abbrevs, int n)
 	}
 
 	/* Alloc the result ... */
-	tbl = malloc(tbl_size);
+	tbl = guc_malloc(LOG, tbl_size);
 	if (!tbl)
 		return NULL;
 
