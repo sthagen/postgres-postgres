@@ -421,7 +421,7 @@ pg_hba_file_rules(PG_FUNCTION_ARGS)
 	 * also more efficient than having to look up our current position in the
 	 * parsed list every time.
 	 */
-	SetSingleFuncCall(fcinfo, 0);
+	InitMaterializedSRF(fcinfo, 0);
 
 	/* Fill the tuplestore */
 	rsi = (ReturnSetInfo *) fcinfo->resultinfo;
@@ -467,7 +467,7 @@ fill_ident_line(Tuplestorestate *tuple_store, TupleDesc tupdesc,
 	if (ident != NULL)
 	{
 		values[index++] = CStringGetTextDatum(ident->usermap);
-		values[index++] = CStringGetTextDatum(ident->ident_user);
+		values[index++] = CStringGetTextDatum(ident->token->string);
 		values[index++] = CStringGetTextDatum(ident->pg_role);
 	}
 	else
@@ -554,7 +554,7 @@ pg_ident_file_mappings(PG_FUNCTION_ARGS)
 	 * also more efficient than having to look up our current position in the
 	 * parsed list every time.
 	 */
-	SetSingleFuncCall(fcinfo, 0);
+	InitMaterializedSRF(fcinfo, 0);
 
 	/* Fill the tuplestore */
 	rsi = (ReturnSetInfo *) fcinfo->resultinfo;

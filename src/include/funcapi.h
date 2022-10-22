@@ -282,7 +282,7 @@ HeapTupleGetDatum(const HeapTupleData *tuple)
  * memory allocated in multi_call_memory_ctx, but holding file descriptors or
  * other non-memory resources open across calls is a bug.  SRFs that need
  * such resources should not use these macros, but instead populate a
- * tuplestore during a single call, as set up by SetSingleFuncCall() (see
+ * tuplestore during a single call, as set up by InitMaterializedSRF() (see
  * fmgr/README).  Alternatively, set up a callback to release resources
  * at query shutdown, using RegisterExprContextCallback().
  *
@@ -291,10 +291,11 @@ HeapTupleGetDatum(const HeapTupleData *tuple)
 
 /* from funcapi.c */
 
-/* flag bits for SetSingleFuncCall() */
-#define SRF_SINGLE_USE_EXPECTED	0x01	/* use expectedDesc as tupdesc */
-#define SRF_SINGLE_BLESS		0x02	/* validate tuple for SRF */
-extern void SetSingleFuncCall(FunctionCallInfo fcinfo, bits32 flags);
+/* flag bits for InitMaterializedSRF() */
+#define MAT_SRF_USE_EXPECTED_DESC	0x01	/* use expectedDesc as tupdesc. */
+#define MAT_SRF_BLESS				0x02	/* "Bless" a tuple descriptor with
+											 * BlessTupleDesc(). */
+extern void InitMaterializedSRF(FunctionCallInfo fcinfo, bits32 flags);
 
 extern FuncCallContext *init_MultiFuncCall(PG_FUNCTION_ARGS);
 extern FuncCallContext *per_MultiFuncCall(PG_FUNCTION_ARGS);

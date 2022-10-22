@@ -1545,7 +1545,14 @@ END
 
 	foreach my $node (@all_nodes)
 	{
-		$node->teardown_node;
+		# During unclean termination (which could be a signal or some
+		# other failure), we're not sure that the status of our nodes
+		# has been correctly set up already, so try and update it to
+		# improve our chances of shutting them down.
+		$node->_update_pid(-1) if $exit_code != 0;
+
+		# If that fails, don't let that foil other nodes' shutdown
+		$node->teardown_node(fail_ok => 1);
 
 		# skip clean if we are requested to retain the basedir
 		next if defined $ENV{'PG_TEST_NOCLEAN'};
@@ -1564,13 +1571,15 @@ END
 
 Do an immediate stop of the node
 
+Any optional extra parameter is passed to ->stop.
+
 =cut
 
 sub teardown_node
 {
-	my $self = shift;
+	my ($self, %params) = @_;
 
-	$self->stop('immediate');
+	$self->stop('immediate', %params);
 	return;
 }
 
@@ -2922,6 +2931,13 @@ sub corrupt_page_checksum
 	return;
 }
 
+#
+# Signal handlers
+#
+$SIG{TERM} = $SIG{INT} = sub {
+	die "death by signal";
+};
+
 =pod
 
 =back
@@ -2933,10 +2949,7 @@ sub corrupt_page_checksum
 package PostgreSQL::Test::Cluster::V_11
   ;    ## no critic (ProhibitMultiplePackages)
 
-# parent.pm is not present in all perl versions before 5.10.1, so instead
-# do directly what it would do for this:
-# use parent -norequire, qw(PostgreSQL::Test::Cluster);
-push @PostgreSQL::Test::Cluster::V_11::ISA, 'PostgreSQL::Test::Cluster';
+use parent -norequire, qw(PostgreSQL::Test::Cluster);
 
 # https://www.postgresql.org/docs/11/release-11.html
 
@@ -2964,8 +2977,7 @@ sub init
 package PostgreSQL::Test::Cluster::V_10
   ;    ## no critic (ProhibitMultiplePackages)
 
-# use parent -norequire, qw(PostgreSQL::Test::Cluster::V_11);
-push @PostgreSQL::Test::Cluster::V_10::ISA, 'PostgreSQL::Test::Cluster::V_11';
+use parent -norequire, qw(PostgreSQL::Test::Cluster::V_11);
 
 # https://www.postgresql.org/docs/10/release-10.html
 
