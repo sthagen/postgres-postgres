@@ -2651,6 +2651,69 @@ WHERE d.f1 IS NULL;
 (3 rows)
 
 --
+-- basic semijoin and antijoin recognition tests
+--
+explain (costs off)
+select a.* from tenk1 a
+where unique1 in (select unique2 from tenk1 b);
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Hash Semi Join
+   Hash Cond: (a.unique1 = b.unique2)
+   ->  Seq Scan on tenk1 a
+   ->  Hash
+         ->  Index Only Scan using tenk1_unique2 on tenk1 b
+(5 rows)
+
+-- sadly, this is not an antijoin
+explain (costs off)
+select a.* from tenk1 a
+where unique1 not in (select unique2 from tenk1 b);
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Seq Scan on tenk1 a
+   Filter: (NOT (hashed SubPlan 1))
+   SubPlan 1
+     ->  Index Only Scan using tenk1_unique2 on tenk1 b
+(4 rows)
+
+explain (costs off)
+select a.* from tenk1 a
+where exists (select 1 from tenk1 b where a.unique1 = b.unique2);
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Hash Semi Join
+   Hash Cond: (a.unique1 = b.unique2)
+   ->  Seq Scan on tenk1 a
+   ->  Hash
+         ->  Index Only Scan using tenk1_unique2 on tenk1 b
+(5 rows)
+
+explain (costs off)
+select a.* from tenk1 a
+where not exists (select 1 from tenk1 b where a.unique1 = b.unique2);
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Hash Anti Join
+   Hash Cond: (a.unique1 = b.unique2)
+   ->  Seq Scan on tenk1 a
+   ->  Hash
+         ->  Index Only Scan using tenk1_unique2 on tenk1 b
+(5 rows)
+
+explain (costs off)
+select a.* from tenk1 a left join tenk1 b on a.unique1 = b.unique2
+where b.unique2 is null;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Hash Anti Join
+   Hash Cond: (a.unique1 = b.unique2)
+   ->  Seq Scan on tenk1 a
+   ->  Hash
+         ->  Index Only Scan using tenk1_unique2 on tenk1 b
+(5 rows)
+
+--
 -- regression test for proper handling of outer joins within antijoins
 --
 create temp table tt4x(c1 int, c2 int, c3 int);
@@ -4587,6 +4650,34 @@ select a.q2, b.q1
 
 reset enable_hashjoin;
 reset enable_nestloop;
+--
+-- test join strength reduction with a SubPlan providing the proof
+--
+explain (costs off)
+select a.unique1, b.unique2
+  from onek a left join onek b on a.unique1 = b.unique2
+  where b.unique2 = any (select q1 from int8_tbl c where c.q1 < b.unique1);
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Hash Join
+   Hash Cond: (b.unique2 = a.unique1)
+   ->  Seq Scan on onek b
+         Filter: (SubPlan 1)
+         SubPlan 1
+           ->  Seq Scan on int8_tbl c
+                 Filter: (q1 < b.unique1)
+   ->  Hash
+         ->  Index Only Scan using onek_unique1 on onek a
+(9 rows)
+
+select a.unique1, b.unique2
+  from onek a left join onek b on a.unique1 = b.unique2
+  where b.unique2 = any (select q1 from int8_tbl c where c.q1 < b.unique1);
+ unique1 | unique2 
+---------+---------
+     123 |     123
+(1 row)
+
 --
 -- test join removal
 --

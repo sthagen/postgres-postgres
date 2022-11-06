@@ -17,7 +17,6 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
-#include <sys/stat.h>
 #include "utils/memutils.h"
 }
 

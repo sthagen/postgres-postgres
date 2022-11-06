@@ -1112,7 +1112,7 @@
    of the contents of the client user name mapping configuration file,
    <link linkend="auth-username-maps"><filename>pg_ident.conf</filename></link>.
    A row appears in this view for each non-empty, non-comment line in the file,
-   with annotations indicating whether the rule could be applied successfully.
+   with annotations indicating whether the map could be applied successfully.
   </para>
 
   <para>
@@ -1157,7 +1157,7 @@
        <structfield>line_number</structfield> <type>int4</type>
       </para>
       <para>
-       Line number of this rule in <filename>pg_ident.conf</filename>
+       Line number of this map in <filename>pg_ident.conf</filename>
       </para></entry>
      </row>
 
@@ -2413,8 +2413,9 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
       </para>
       <para>
        The address (<literal>LSN</literal>) up to which the logical
-       slot's consumer has confirmed receiving data. Data older than this is
-       not available anymore. <literal>NULL</literal> for physical slots.
+       slot's consumer has confirmed receiving data. Data corresponding to the
+       transactions committed before this <literal>LSN</literal> is not
+       available anymore. <literal>NULL</literal> for physical slots.
       </para></entry>
      </row>
 

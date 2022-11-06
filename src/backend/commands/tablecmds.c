@@ -605,9 +605,10 @@ static void RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid,
 											Oid oldRelOid, void *arg);
 static void RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid,
 											 Oid oldrelid, void *arg);
-static PartitionSpec *transformPartitionSpec(Relation rel, PartitionSpec *partspec, char *strategy);
+static PartitionSpec *transformPartitionSpec(Relation rel, PartitionSpec *partspec);
 static void ComputePartitionAttrs(ParseState *pstate, Relation rel, List *partParams, AttrNumber *partattrs,
-								  List **partexprs, Oid *partopclass, Oid *partcollation, char strategy);
+								  List **partexprs, Oid *partopclass, Oid *partcollation,
+								  PartitionStrategy strategy);
 static void CreateInheritance(Relation child_rel, Relation parent_rel);
 static void RemoveInheritance(Relation child_rel, Relation parent_rel,
 							  bool expect_detached);
@@ -1122,7 +1123,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	if (partitioned)
 	{
 		ParseState *pstate;
-		char		strategy;
 		int			partnatts;
 		AttrNumber	partattrs[PARTITION_MAX_KEYS];
 		Oid			partopclass[PARTITION_MAX_KEYS];
@@ -1147,14 +1147,14 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		 * and CHECK constraints, we could not have done the transformation
 		 * earlier.
 		 */
-		stmt->partspec = transformPartitionSpec(rel, stmt->partspec,
-												&strategy);
+		stmt->partspec = transformPartitionSpec(rel, stmt->partspec);
 
 		ComputePartitionAttrs(pstate, rel, stmt->partspec->partParams,
 							  partattrs, &partexprs, partopclass,
-							  partcollation, strategy);
+							  partcollation, stmt->partspec->strategy);
 
-		StorePartitionKey(rel, strategy, partnatts, partattrs, partexprs,
+		StorePartitionKey(rel, stmt->partspec->strategy, partnatts, partattrs,
+						  partexprs,
 						  partopclass, partcollation);
 
 		/* make it all visible */
@@ -10092,14 +10092,22 @@ CloneFkReferenced(Relation parentRel, Relation partitionRel)
 			mapped_confkey[i] = attmap->attnums[confkey[i] - 1];
 
 		fkconstraint = makeNode(Constraint);
-		/* for now this is all we need */
+		fkconstraint->contype = CONSTRAINT_FOREIGN;
 		fkconstraint->conname = NameStr(constrForm->conname);
-		fkconstraint->fk_upd_action = constrForm->confupdtype;
-		fkconstraint->fk_del_action = constrForm->confdeltype;
 		fkconstraint->deferrable = constrForm->condeferrable;
 		fkconstraint->initdeferred = constrForm->condeferred;
-		fkconstraint->initially_valid = true;
+		fkconstraint->location = -1;
+		fkconstraint->pktable = NULL;
+		/* ->fk_attrs determined below */
+		fkconstraint->pk_attrs = NIL;
 		fkconstraint->fk_matchtype = constrForm->confmatchtype;
+		fkconstraint->fk_upd_action = constrForm->confupdtype;
+		fkconstraint->fk_del_action = constrForm->confdeltype;
+		fkconstraint->fk_del_set_cols = NIL;
+		fkconstraint->old_conpfeqop = NIL;
+		fkconstraint->old_pktable_oid = InvalidOid;
+		fkconstraint->skip_validation = false;
+		fkconstraint->initially_valid = true;
 
 		/* set up colnames that are used to generate the constraint name */
 		for (int i = 0; i < numfks; i++)
@@ -10317,11 +10325,22 @@ CloneFkReferencing(List **wqueue, Relation parentRel, Relation partRel)
 
 		/* No dice.  Set up to create our own constraint */
 		fkconstraint = makeNode(Constraint);
-		fkconstraint->fk_upd_action = constrForm->confupdtype;
-		fkconstraint->fk_del_action = constrForm->confdeltype;
+		fkconstraint->contype = CONSTRAINT_FOREIGN;
+		/* ->conname determined below */
 		fkconstraint->deferrable = constrForm->condeferrable;
 		fkconstraint->initdeferred = constrForm->condeferred;
+		fkconstraint->location = -1;
+		fkconstraint->pktable = NULL;
+		/* ->fk_attrs determined below */
+		fkconstraint->pk_attrs = NIL;
 		fkconstraint->fk_matchtype = constrForm->confmatchtype;
+		fkconstraint->fk_upd_action = constrForm->confupdtype;
+		fkconstraint->fk_del_action = constrForm->confdeltype;
+		fkconstraint->fk_del_set_cols = NIL;
+		fkconstraint->old_conpfeqop = NIL;
+		fkconstraint->old_pktable_oid = InvalidOid;
+		fkconstraint->skip_validation = false;
+		fkconstraint->initially_valid = true;
 		for (int i = 0; i < numfks; i++)
 		{
 			Form_pg_attribute att;
@@ -17132,10 +17151,10 @@ RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid, Oid oldrelid,
 /*
  * Transform any expressions present in the partition key
  *
- * Returns a transformed PartitionSpec, as well as the strategy code
+ * Returns a transformed PartitionSpec.
  */
 static PartitionSpec *
-transformPartitionSpec(Relation rel, PartitionSpec *partspec, char *strategy)
+transformPartitionSpec(Relation rel, PartitionSpec *partspec)
 {
 	PartitionSpec *newspec;
 	ParseState *pstate;
@@ -17148,21 +17167,8 @@ transformPartitionSpec(Relation rel, PartitionSpec *partspec, char *strategy)
 	newspec->partParams = NIL;
 	newspec->location = partspec->location;
 
-	/* Parse partitioning strategy name */
-	if (pg_strcasecmp(partspec->strategy, "hash") == 0)
-		*strategy = PARTITION_STRATEGY_HASH;
-	else if (pg_strcasecmp(partspec->strategy, "list") == 0)
-		*strategy = PARTITION_STRATEGY_LIST;
-	else if (pg_strcasecmp(partspec->strategy, "range") == 0)
-		*strategy = PARTITION_STRATEGY_RANGE;
-	else
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("unrecognized partitioning strategy \"%s\"",
-						partspec->strategy)));
-
 	/* Check valid number of columns for strategy */
-	if (*strategy == PARTITION_STRATEGY_LIST &&
+	if (partspec->strategy == PARTITION_STRATEGY_LIST &&
 		list_length(partspec->partParams) != 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -17208,7 +17214,7 @@ transformPartitionSpec(Relation rel, PartitionSpec *partspec, char *strategy)
 static void
 ComputePartitionAttrs(ParseState *pstate, Relation rel, List *partParams, AttrNumber *partattrs,
 					  List **partexprs, Oid *partopclass, Oid *partcollation,
-					  char strategy)
+					  PartitionStrategy strategy)
 {
 	int			attn;
 	ListCell   *lc;
@@ -18530,11 +18536,22 @@ DetachPartitionFinalize(Relation rel, Relation partRel, bool concurrent,
 		 * still do), but now we need separate ones of our own.
 		 */
 		fkconstraint = makeNode(Constraint);
+		fkconstraint->contype = CONSTRAINT_FOREIGN;
 		fkconstraint->conname = pstrdup(NameStr(conform->conname));
-		fkconstraint->fk_upd_action = conform->confupdtype;
-		fkconstraint->fk_del_action = conform->confdeltype;
 		fkconstraint->deferrable = conform->condeferrable;
 		fkconstraint->initdeferred = conform->condeferred;
+		fkconstraint->location = -1;
+		fkconstraint->pktable = NULL;
+		fkconstraint->fk_attrs = NIL;
+		fkconstraint->pk_attrs = NIL;
+		fkconstraint->fk_matchtype = conform->confmatchtype;
+		fkconstraint->fk_upd_action = conform->confupdtype;
+		fkconstraint->fk_del_action = conform->confdeltype;
+		fkconstraint->fk_del_set_cols = NIL;
+		fkconstraint->old_conpfeqop = NIL;
+		fkconstraint->old_pktable_oid = InvalidOid;
+		fkconstraint->skip_validation = false;
+		fkconstraint->initially_valid = true;
 
 		createForeignKeyActionTriggers(partRel, conform->confrelid,
 									   fkconstraint, fk->conoid,

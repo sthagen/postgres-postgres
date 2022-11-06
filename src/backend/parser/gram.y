@@ -213,6 +213,7 @@ static void SplitColQualList(List *qualList,
 static void processCASbits(int cas_bits, int location, const char *constrType,
 			   bool *deferrable, bool *initdeferred, bool *not_valid,
 			   bool *no_inherit, core_yyscan_t yyscanner);
+static PartitionStrategy parsePartitionStrategy(char *strategy);
 static void preprocess_pubobj_list(List *pubobjspec_list,
 								   core_yyscan_t yyscanner);
 static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
@@ -4357,7 +4358,7 @@ PartitionSpec: PARTITION BY ColId '(' part_params ')'
 				{
 					PartitionSpec *n = makeNode(PartitionSpec);
 
-					n->strategy = $3;
+					n->strategy = parsePartitionStrategy($3);
 					n->partParams = $5;
 					n->location = @1;
 
@@ -11104,9 +11105,9 @@ createdb_opt_items:
 		;
 
 createdb_opt_item:
-			createdb_opt_name opt_equal SignedIconst
+			createdb_opt_name opt_equal NumericOnly
 				{
-					$$ = makeDefElem($1, (Node *) makeInteger($3), @1);
+					$$ = makeDefElem($1, $3, @1);
 				}
 			| createdb_opt_name opt_equal opt_boolean_or_string
 				{
@@ -18412,6 +18413,25 @@ processCASbits(int cas_bits, int location, const char *constrType,
 							constrType),
 					 parser_errposition(location)));
 	}
+}
+
+/*
+ * Parse a user-supplied partition strategy string into parse node
+ * PartitionStrategy representation, or die trying.
+ */
+static PartitionStrategy
+parsePartitionStrategy(char *strategy)
+{
+	if (pg_strcasecmp(strategy, "list") == 0)
+		return PARTITION_STRATEGY_LIST;
+	else if (pg_strcasecmp(strategy, "range") == 0)
+		return PARTITION_STRATEGY_RANGE;
+	else if (pg_strcasecmp(strategy, "hash") == 0)
+		return PARTITION_STRATEGY_HASH;
+	ereport(ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("unrecognized partitioning strategy \"%s\"",
+					strategy)));
 }
 
 /*
