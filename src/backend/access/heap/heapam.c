@@ -8193,8 +8193,10 @@ log_heap_freeze(Relation reln, Buffer buffer, TransactionId cutoff_xid,
  * corresponding visibility map block.  Both should have already been modified
  * and dirtied.
  *
- * If checksums are enabled, we also generate a full-page image of
- * heap_buffer, if necessary.
+ * If checksums or wal_log_hints are enabled, we may also generate a full-page
+ * image of heap_buffer. Otherwise, we optimize away the FPI (by specifying
+ * REGBUF_NO_IMAGE for the heap buffer), in which case the caller should *not*
+ * update the heap page's LSN.
  */
 XLogRecPtr
 log_heap_visible(RelFileLocator rlocator, Buffer heap_buffer, Buffer vm_buffer,
@@ -8823,20 +8825,16 @@ heap_xlog_visible(XLogReaderState *record)
 		/*
 		 * We don't bump the LSN of the heap page when setting the visibility
 		 * map bit (unless checksums or wal_hint_bits is enabled, in which
-		 * case we must), because that would generate an unworkable volume of
-		 * full-page writes.  This exposes us to torn page hazards, but since
+		 * case we must). This exposes us to torn page hazards, but since
 		 * we're not inspecting the existing page contents in any way, we
 		 * don't care.
-		 *
-		 * However, all operations that clear the visibility map bit *do* bump
-		 * the LSN, and those operations will only be replayed if the XLOG LSN
-		 * follows the page LSN.  Thus, if the page LSN has advanced past our
-		 * XLOG record's LSN, we mustn't mark the page all-visible, because
-		 * the subsequent update won't be replayed to clear the flag.
 		 */
 		page = BufferGetPage(buffer);
 
 		PageSetAllVisible(page);
+
+		if (XLogHintBitIsNeeded())
+			PageSetLSN(page, lsn);
 
 		MarkBufferDirty(buffer);
 	}
@@ -8901,20 +8899,8 @@ heap_xlog_visible(XLogReaderState *record)
 		reln = CreateFakeRelcacheEntry(rlocator);
 		visibilitymap_pin(reln, blkno, &vmbuffer);
 
-		/*
-		 * Don't set the bit if replay has already passed this point.
-		 *
-		 * It might be safe to do this unconditionally; if replay has passed
-		 * this point, we'll replay at least as far this time as we did
-		 * before, and if this bit needs to be cleared, the record responsible
-		 * for doing so should be again replayed, and clear it.  For right
-		 * now, out of an abundance of conservatism, we use the same test here
-		 * we did for the heap page.  If this results in a dropped bit, no
-		 * real harm is done; and the next VACUUM will fix it.
-		 */
-		if (lsn > PageGetLSN(vmpage))
-			visibilitymap_set(reln, blkno, InvalidBuffer, lsn, vmbuffer,
-							  xlrec->cutoff_xid, xlrec->flags);
+		visibilitymap_set(reln, blkno, InvalidBuffer, lsn, vmbuffer,
+						  xlrec->cutoff_xid, xlrec->flags);
 
 		ReleaseBuffer(vmbuffer);
 		FreeFakeRelcacheEntry(reln);

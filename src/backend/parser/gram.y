@@ -3758,6 +3758,7 @@ opt_column_compression:
 
 column_storage:
 			STORAGE ColId							{ $$ = $2; }
+			| STORAGE DEFAULT						{ $$ = pstrdup("default"); }
 		;
 
 opt_column_storage:
@@ -18428,10 +18429,13 @@ parsePartitionStrategy(char *strategy)
 		return PARTITION_STRATEGY_RANGE;
 	else if (pg_strcasecmp(strategy, "hash") == 0)
 		return PARTITION_STRATEGY_HASH;
+
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 			 errmsg("unrecognized partitioning strategy \"%s\"",
 					strategy)));
+	return PARTITION_STRATEGY_LIST;		/* keep compiler quiet */
+
 }
 
 /*
