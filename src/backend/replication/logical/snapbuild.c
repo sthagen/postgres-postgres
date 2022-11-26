@@ -93,7 +93,7 @@
  * Initially the machinery is in the START stage. When an xl_running_xacts
  * record is read that is sufficiently new (above the safe xmin horizon),
  * there's a state transition. If there were no running xacts when the
- * running_xacts record was generated, we'll directly go into CONSISTENT
+ * xl_running_xacts record was generated, we'll directly go into CONSISTENT
  * state, otherwise we'll switch to the BUILDING_SNAPSHOT state. Having a full
  * snapshot means that all transactions that start henceforth can be decoded
  * in their entirety, but transactions that started previously can't. In
@@ -566,11 +566,18 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 {
 	Snapshot	snap;
 	TransactionId xid;
+	TransactionId safeXid;
 	TransactionId *newxip;
 	int			newxcnt = 0;
 
-	Assert(!FirstSnapshotSet);
 	Assert(XactIsoLevel == XACT_REPEATABLE_READ);
+	Assert(builder->building_full_snapshot);
+
+	/* don't allow older snapshots */
+	InvalidateCatalogSnapshot(); /* about to overwrite MyProc->xmin */
+	if (HaveRegisteredOrActiveSnapshot())
+		elog(ERROR, "cannot build an initial slot snapshot when snapshots exist");
+	Assert(!HistoricSnapshotActive());
 
 	if (builder->state != SNAPBUILD_CONSISTENT)
 		elog(ERROR, "cannot build an initial slot snapshot before reaching a consistent state");
@@ -588,18 +595,18 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 	 * We know that snap->xmin is alive, enforced by the logical xmin
 	 * mechanism. Due to that we can do this without locks, we're only
 	 * changing our own value.
+	 *
+	 * Building an initial snapshot is expensive and an unenforced xmin
+	 * horizon would have bad consequences, therefore always double-check that
+	 * the horizon is enforced.
 	 */
-#ifdef USE_ASSERT_CHECKING
-	{
-		TransactionId safeXid;
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	safeXid = GetOldestSafeDecodingTransactionId(false);
+	LWLockRelease(ProcArrayLock);
 
-		LWLockAcquire(ProcArrayLock, LW_SHARED);
-		safeXid = GetOldestSafeDecodingTransactionId(false);
-		LWLockRelease(ProcArrayLock);
-
-		Assert(TransactionIdPrecedesOrEquals(safeXid, snap->xmin));
-	}
-#endif
+	if (TransactionIdFollows(safeXid, snap->xmin))
+		elog(ERROR, "cannot build an initial slot snapshot as oldest safe xid %u follows snapshot's xmin %u",
+			 safeXid, snap->xmin);
 
 	MyProc->xmin = snap->xmin;
 
@@ -1331,7 +1338,7 @@ SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *runn
 	 */
 
 	/*
-	 * xl_running_xact record is older than what we can use, we might not have
+	 * xl_running_xacts record is older than what we can use, we might not have
 	 * all necessary catalog rows anymore.
 	 */
 	if (TransactionIdIsNormal(builder->initial_xmin_horizon) &&
@@ -1399,7 +1406,7 @@ SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *runn
 	 * encountered.  In that case, switch to BUILDING_SNAPSHOT state, and
 	 * record xl_running_xacts->nextXid.  Once all running xacts have finished
 	 * (i.e. they're all >= nextXid), we have a complete catalog snapshot.  It
-	 * might look that we could use xl_running_xact's ->xids information to
+	 * might look that we could use xl_running_xacts's ->xids information to
 	 * get there quicker, but that is problematic because transactions marked
 	 * as running, might already have inserted their commit record - it's
 	 * infeasible to change that with locking.

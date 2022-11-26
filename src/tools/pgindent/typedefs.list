@@ -2397,8 +2397,6 @@ SQLFunctionCache
 SQLFunctionCachePtr
 SQLFunctionParseInfo
 SQLFunctionParseInfoPtr
-SQLValueFunction
-SQLValueFunctionOp
 SSL
 SSLExtensionInfoContext
 SSL_CTX
@@ -3723,6 +3721,7 @@ timeout_params
 timerCA
 tlist_vinfo
 toast_compress_header
+tokenize_error_callback_arg
 transferMode
 transfer_thread_arg
 trgm

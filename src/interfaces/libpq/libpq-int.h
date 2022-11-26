@@ -685,6 +685,7 @@ extern void pqParseInput3(PGconn *conn);
 extern int	pqGetErrorNotice3(PGconn *conn, bool isError);
 extern void pqBuildErrorMessage3(PQExpBuffer msg, const PGresult *res,
 								 PGVerbosity verbosity, PGContextVisibility show_context);
+extern int	pqGetNegotiateProtocolVersion3(PGconn *conn);
 extern int	pqGetCopyData3(PGconn *conn, char **buffer, int async);
 extern int	pqGetline3(PGconn *conn, char *s, int maxlen);
 extern int	pqGetlineAsync3(PGconn *conn, char *buffer, int bufsize);
@@ -886,6 +887,9 @@ extern char *libpq_ngettext(const char *msgid, const char *msgid_plural, unsigne
  * surrounding programs's message catalog.
  */
 #undef _
+
+extern void libpq_append_error(PQExpBuffer errorMessage, const char *fmt, ...) pg_attribute_printf(2, 3);
+extern void libpq_append_conn_error(PGconn *conn, const char *fmt, ...) pg_attribute_printf(2, 3);
 
 /*
  * These macros are needed to let error-handling code be portable between

@@ -960,7 +960,7 @@ ObjectAddress
 get_object_address(ObjectType objtype, Node *object,
 				   Relation *relp, LOCKMODE lockmode, bool missing_ok)
 {
-	ObjectAddress address;
+	ObjectAddress address = {InvalidOid, InvalidOid, 0};
 	ObjectAddress old_address = {InvalidOid, InvalidOid, 0};
 	Relation	relation = NULL;
 	uint64		inval_count;
@@ -991,6 +991,7 @@ get_object_address(ObjectType objtype, Node *object,
 												   &relation, lockmode,
 												   missing_ok);
 				break;
+			case OBJECT_ATTRIBUTE:
 			case OBJECT_COLUMN:
 				address =
 					get_object_address_attribute(objtype, castNode(List, object),
@@ -1163,13 +1164,11 @@ get_object_address(ObjectType objtype, Node *object,
 															 missing_ok);
 				address.objectSubId = 0;
 				break;
-			default:
-				elog(ERROR, "unrecognized object type: %d", (int) objtype);
-				/* placate compiler, in case it thinks elog might return */
-				address.classId = InvalidOid;
-				address.objectId = InvalidOid;
-				address.objectSubId = 0;
+				/* no default, to let compiler warn about missing case */
 		}
+
+		if (!address.classId)
+			elog(ERROR, "unrecognized object type: %d", (int) objtype);
 
 		/*
 		 * If we could not find the supplied object, return without locking.
@@ -2439,19 +2438,14 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_TRIGGER:
 		case OBJECT_POLICY:
 		case OBJECT_TABCONSTRAINT:
-			if (!pg_class_ownercheck(RelationGetRelid(relation), roleid))
+			if (!object_ownercheck(RelationRelationId, RelationGetRelid(relation), roleid))
 				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
 							   RelationGetRelationName(relation));
-			break;
-		case OBJECT_DATABASE:
-			if (!pg_database_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   strVal(object));
 			break;
 		case OBJECT_TYPE:
 		case OBJECT_DOMAIN:
 		case OBJECT_ATTRIBUTE:
-			if (!pg_type_ownercheck(address.objectId, roleid))
+			if (!object_ownercheck(address.classId, address.objectId, roleid))
 				aclcheck_error_type(ACLCHECK_NOT_OWNER, address.objectId);
 			break;
 		case OBJECT_DOMCONSTRAINT:
@@ -2473,7 +2467,7 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 				 * Fallback to type ownership check in this case as this is
 				 * what domain constraints rely on.
 				 */
-				if (!pg_type_ownercheck(contypid, roleid))
+				if (!object_ownercheck(TypeRelationId, contypid, roleid))
 					aclcheck_error_type(ACLCHECK_NOT_OWNER, contypid);
 			}
 			break;
@@ -2481,68 +2475,39 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_FUNCTION:
 		case OBJECT_PROCEDURE:
 		case OBJECT_ROUTINE:
-			if (!pg_proc_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   NameListToString((castNode(ObjectWithArgs, object))->objname));
-			break;
 		case OBJECT_OPERATOR:
-			if (!pg_oper_ownercheck(address.objectId, roleid))
+			if (!object_ownercheck(address.classId, address.objectId, roleid))
 				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
 							   NameListToString((castNode(ObjectWithArgs, object))->objname));
 			break;
+		case OBJECT_DATABASE:
+		case OBJECT_EVENT_TRIGGER:
+		case OBJECT_EXTENSION:
+		case OBJECT_FDW:
+		case OBJECT_FOREIGN_SERVER:
+		case OBJECT_LANGUAGE:
+		case OBJECT_PUBLICATION:
 		case OBJECT_SCHEMA:
-			if (!pg_namespace_ownercheck(address.objectId, roleid))
+		case OBJECT_SUBSCRIPTION:
+		case OBJECT_TABLESPACE:
+			if (!object_ownercheck(address.classId, address.objectId, roleid))
 				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
 							   strVal(object));
 			break;
 		case OBJECT_COLLATION:
-			if (!pg_collation_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   NameListToString(castNode(List, object)));
-			break;
 		case OBJECT_CONVERSION:
-			if (!pg_conversion_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   NameListToString(castNode(List, object)));
-			break;
-		case OBJECT_EXTENSION:
-			if (!pg_extension_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   strVal(object));
-			break;
-		case OBJECT_FDW:
-			if (!pg_foreign_data_wrapper_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   strVal(object));
-			break;
-		case OBJECT_FOREIGN_SERVER:
-			if (!pg_foreign_server_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   strVal(object));
-			break;
-		case OBJECT_EVENT_TRIGGER:
-			if (!pg_event_trigger_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   strVal(object));
-			break;
-		case OBJECT_LANGUAGE:
-			if (!pg_language_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   strVal(object));
-			break;
 		case OBJECT_OPCLASS:
-			if (!pg_opclass_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   NameListToString(castNode(List, object)));
-			break;
 		case OBJECT_OPFAMILY:
-			if (!pg_opfamily_ownercheck(address.objectId, roleid))
+		case OBJECT_STATISTIC_EXT:
+		case OBJECT_TSDICTIONARY:
+		case OBJECT_TSCONFIGURATION:
+			if (!object_ownercheck(address.classId, address.objectId, roleid))
 				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
 							   NameListToString(castNode(List, object)));
 			break;
 		case OBJECT_LARGEOBJECT:
 			if (!lo_compat_privileges &&
-				!pg_largeobject_ownercheck(address.objectId, roleid))
+				!object_ownercheck(address.classId, address.objectId, roleid))
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 						 errmsg("must be owner of large object %u",
@@ -2556,8 +2521,8 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 				Oid			sourcetypeid = typenameTypeId(NULL, sourcetype);
 				Oid			targettypeid = typenameTypeId(NULL, targettype);
 
-				if (!pg_type_ownercheck(sourcetypeid, roleid)
-					&& !pg_type_ownercheck(targettypeid, roleid))
+				if (!object_ownercheck(TypeRelationId, sourcetypeid, roleid)
+					&& !object_ownercheck(TypeRelationId, targettypeid, roleid))
 					ereport(ERROR,
 							(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 							 errmsg("must be owner of type %s or type %s",
@@ -2565,39 +2530,14 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 									format_type_be(targettypeid))));
 			}
 			break;
-		case OBJECT_PUBLICATION:
-			if (!pg_publication_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   strVal(object));
-			break;
-		case OBJECT_SUBSCRIPTION:
-			if (!pg_subscription_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   strVal(object));
-			break;
 		case OBJECT_TRANSFORM:
 			{
 				TypeName   *typename = linitial_node(TypeName, castNode(List, object));
 				Oid			typeid = typenameTypeId(NULL, typename);
 
-				if (!pg_type_ownercheck(typeid, roleid))
+				if (!object_ownercheck(TypeRelationId, typeid, roleid))
 					aclcheck_error_type(ACLCHECK_NOT_OWNER, typeid);
 			}
-			break;
-		case OBJECT_TABLESPACE:
-			if (!pg_tablespace_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   strVal(object));
-			break;
-		case OBJECT_TSDICTIONARY:
-			if (!pg_ts_dict_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   NameListToString(castNode(List, object)));
-			break;
-		case OBJECT_TSCONFIGURATION:
-			if (!pg_ts_config_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   NameListToString(castNode(List, object)));
 			break;
 		case OBJECT_ROLE:
 
@@ -2630,14 +2570,16 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 						 errmsg("must be superuser")));
 			break;
-		case OBJECT_STATISTIC_EXT:
-			if (!pg_statistics_object_ownercheck(address.objectId, roleid))
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
-							   NameListToString(castNode(List, object)));
+		case OBJECT_AMOP:
+		case OBJECT_AMPROC:
+		case OBJECT_DEFAULT:
+		case OBJECT_DEFACL:
+		case OBJECT_PUBLICATION_NAMESPACE:
+		case OBJECT_PUBLICATION_REL:
+		case OBJECT_USER_MAPPING:
+			/* These are currently not supported or don't make sense here. */
+			elog(ERROR, "unsupported object type: %d", (int) objtype);
 			break;
-		default:
-			elog(ERROR, "unrecognized object type: %d",
-				 (int) objtype);
 	}
 }
 

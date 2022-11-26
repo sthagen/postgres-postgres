@@ -31,6 +31,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/multibitmapset.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/subscripting.h"
 #include "nodes/supportnodes.h"
@@ -382,12 +383,6 @@ contain_mutable_functions_walker(Node *node, void *context)
 								context))
 		return true;
 
-	if (IsA(node, SQLValueFunction))
-	{
-		/* all variants of SQLValueFunction are stable */
-		return true;
-	}
-
 	if (IsA(node, NextValueExpr))
 	{
 		/* NextValueExpr is volatile */
@@ -536,8 +531,8 @@ contain_volatile_functions_walker(Node *node, void *context)
 
 	/*
 	 * See notes in contain_mutable_functions_walker about why we treat
-	 * MinMaxExpr, XmlExpr, and CoerceToDomain as immutable, while
-	 * SQLValueFunction is stable.  Hence, none of them are of interest here.
+	 * MinMaxExpr, XmlExpr, and CoerceToDomain as immutable.  Hence, none of
+	 * them are of interest here.
 	 */
 
 	/* Recurse to check arguments */
@@ -582,10 +577,9 @@ contain_volatile_functions_not_nextval_walker(Node *node, void *context)
 
 	/*
 	 * See notes in contain_mutable_functions_walker about why we treat
-	 * MinMaxExpr, XmlExpr, and CoerceToDomain as immutable, while
-	 * SQLValueFunction is stable.  Hence, none of them are of interest here.
-	 * Also, since we're intentionally ignoring nextval(), presumably we
-	 * should ignore NextValueExpr.
+	 * MinMaxExpr, XmlExpr, and CoerceToDomain as immutable.  Hence, none of
+	 * them are of interest here.  Also, since we're intentionally ignoring
+	 * nextval(), presumably we should ignore NextValueExpr.
 	 */
 
 	/* Recurse to check arguments */
@@ -731,8 +725,8 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 	 * (Note: in principle that's wrong because a domain constraint could
 	 * contain a parallel-unsafe function; but useful constraints probably
 	 * never would have such, and assuming they do would cripple use of
-	 * parallel query in the presence of domain types.)  SQLValueFunction
-	 * should be safe in all cases.  NextValueExpr is parallel-unsafe.
+	 * parallel query in the presence of domain types.)  NextValueExpr is
+	 * parallel-unsafe.
 	 */
 	if (IsA(node, CoerceToDomain))
 	{
@@ -1179,7 +1173,6 @@ contain_leaked_vars_walker(Node *node, void *context)
 		case T_CaseExpr:
 		case T_CaseTestExpr:
 		case T_RowExpr:
-		case T_SQLValueFunction:
 		case T_NullTest:
 		case T_BooleanTest:
 		case T_NextValueExpr:
@@ -1566,7 +1559,7 @@ find_nonnullable_rels_walker(Node *node, bool top_level)
  * find_nonnullable_vars
  *		Determine which Vars are forced nonnullable by given clause.
  *
- * Returns a list of all level-zero Vars that are referenced in the clause in
+ * Returns the set of all level-zero Vars that are referenced in the clause in
  * such a way that the clause cannot possibly return TRUE if any of these Vars
  * is NULL.  (It is OK to err on the side of conservatism; hence the analysis
  * here is simplistic.)
@@ -1578,8 +1571,9 @@ find_nonnullable_rels_walker(Node *node, bool top_level)
  * the expression to have been AND/OR flattened and converted to implicit-AND
  * format.
  *
- * The result is a palloc'd List, but we have not copied the member Var nodes.
- * Also, we don't bother trying to eliminate duplicate entries.
+ * Attnos of the identified Vars are returned in a multibitmapset (a List of
+ * Bitmapsets).  List indexes correspond to relids (varnos), while the per-rel
+ * Bitmapsets hold varattnos offset by FirstLowInvalidHeapAttributeNumber.
  *
  * top_level is true while scanning top-level AND/OR structure; here, showing
  * the result is either FALSE or NULL is good enough.  top_level is false when
@@ -1608,7 +1602,9 @@ find_nonnullable_vars_walker(Node *node, bool top_level)
 		Var		   *var = (Var *) node;
 
 		if (var->varlevelsup == 0)
-			result = list_make1(var);
+			result = mbms_add_member(result,
+									 var->varno,
+									 var->varattno - FirstLowInvalidHeapAttributeNumber);
 	}
 	else if (IsA(node, List))
 	{
@@ -1623,9 +1619,9 @@ find_nonnullable_vars_walker(Node *node, bool top_level)
 		 */
 		foreach(l, (List *) node)
 		{
-			result = list_concat(result,
-								 find_nonnullable_vars_walker(lfirst(l),
-															  top_level));
+			result = mbms_add_members(result,
+									  find_nonnullable_vars_walker(lfirst(l),
+																   top_level));
 		}
 	}
 	else if (IsA(node, FuncExpr))
@@ -1657,7 +1653,12 @@ find_nonnullable_vars_walker(Node *node, bool top_level)
 		switch (expr->boolop)
 		{
 			case AND_EXPR:
-				/* At top level we can just recurse (to the List case) */
+
+				/*
+				 * At top level we can just recurse (to the List case), since
+				 * the result should be the union of what we can prove in each
+				 * arm.
+				 */
 				if (top_level)
 				{
 					result = find_nonnullable_vars_walker((Node *) expr->args,
@@ -1689,7 +1690,7 @@ find_nonnullable_vars_walker(Node *node, bool top_level)
 					if (result == NIL)	/* first subresult? */
 						result = subresult;
 					else
-						result = list_intersection(result, subresult);
+						result = mbms_int_members(result, subresult);
 
 					/*
 					 * If the intersection is empty, we can stop looking. This
@@ -1788,8 +1789,8 @@ find_nonnullable_vars_walker(Node *node, bool top_level)
  * side of conservatism; hence the analysis here is simplistic.  In fact,
  * we only detect simple "var IS NULL" tests at the top level.)
  *
- * The result is a palloc'd List, but we have not copied the member Var nodes.
- * Also, we don't bother trying to eliminate duplicate entries.
+ * As with find_nonnullable_vars, we return the varattnos of the identified
+ * Vars in a multibitmapset.
  */
 List *
 find_forced_null_vars(Node *node)
@@ -1804,7 +1805,9 @@ find_forced_null_vars(Node *node)
 	var = find_forced_null_var(node);
 	if (var)
 	{
-		result = list_make1(var);
+		result = mbms_add_member(result,
+								 var->varno,
+								 var->varattno - FirstLowInvalidHeapAttributeNumber);
 	}
 	/* Otherwise, handle AND-conditions */
 	else if (IsA(node, List))
@@ -1815,8 +1818,8 @@ find_forced_null_vars(Node *node)
 		 */
 		foreach(l, (List *) node)
 		{
-			result = list_concat(result,
-								 find_forced_null_vars(lfirst(l)));
+			result = mbms_add_members(result,
+									  find_forced_null_vars((Node *) lfirst(l)));
 		}
 	}
 	else if (IsA(node, BoolExpr))
@@ -3183,23 +3186,6 @@ eval_const_expressions_mutator(Node *node,
 				newcoalesce->location = coalesceexpr->location;
 				return (Node *) newcoalesce;
 			}
-		case T_SQLValueFunction:
-			{
-				/*
-				 * All variants of SQLValueFunction are stable, so if we are
-				 * estimating the expression's value, we should evaluate the
-				 * current function value.  Otherwise just copy.
-				 */
-				SQLValueFunction *svf = (SQLValueFunction *) node;
-
-				if (context->estimate)
-					return (Node *) evaluate_expr((Expr *) svf,
-												  svf->type,
-												  svf->typmod,
-												  InvalidOid);
-				else
-					return copyObject((Node *) svf);
-			}
 		case T_FieldSelect:
 			{
 				/*
@@ -4436,7 +4422,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 		return NULL;
 
 	/* Check permission to call function (fail later, if not) */
-	if (pg_proc_aclcheck(funcid, GetUserId(), ACL_EXECUTE) != ACLCHECK_OK)
+	if (object_aclcheck(ProcedureRelationId, funcid, GetUserId(), ACL_EXECUTE) != ACLCHECK_OK)
 		return NULL;
 
 	/* Check whether a plugin wants to hook function entry/exit */
@@ -4978,7 +4964,7 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 		return NULL;
 
 	/* Check permission to call function (fail later, if not) */
-	if (pg_proc_aclcheck(func_oid, GetUserId(), ACL_EXECUTE) != ACLCHECK_OK)
+	if (object_aclcheck(ProcedureRelationId, func_oid, GetUserId(), ACL_EXECUTE) != ACLCHECK_OK)
 		return NULL;
 
 	/* Check whether a plugin wants to hook function entry/exit */

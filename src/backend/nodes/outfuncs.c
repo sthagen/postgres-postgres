@@ -314,6 +314,9 @@ _outList(StringInfo str, const List *node)
  *	   converts a bitmap set of integers
  *
  * Note: the output format is "(b int int ...)", similar to an integer List.
+ *
+ * We export this function for use by extensions that define extensible nodes.
+ * That's somewhat historical, though, because calling outNode() will work.
  */
 void
 outBitmapset(StringInfo str, const Bitmapset *bms)
@@ -557,7 +560,7 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 	WRITE_BOOL_FIELD(lateral);
 	WRITE_BOOL_FIELD(inh);
 	WRITE_BOOL_FIELD(inFromCl);
-	WRITE_UINT_FIELD(requiredPerms);
+	WRITE_UINT64_FIELD(requiredPerms);
 	WRITE_OID_FIELD(checkAsUser);
 	WRITE_BITMAPSET_FIELD(selectedCols);
 	WRITE_BITMAPSET_FIELD(insertedCols);
@@ -844,6 +847,8 @@ outNode(StringInfo str, const void *obj)
 		_outString(str, (String *) obj);
 	else if (IsA(obj, BitString))
 		_outBitString(str, (BitString *) obj);
+	else if (IsA(obj, Bitmapset))
+		outBitmapset(str, (Bitmapset *) obj);
 	else
 	{
 		appendStringInfoChar(str, '{');

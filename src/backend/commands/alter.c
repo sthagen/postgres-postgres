@@ -228,7 +228,7 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 		/* User must have CREATE privilege on the namespace */
 		if (OidIsValid(namespaceId))
 		{
-			aclresult = pg_namespace_aclcheck(namespaceId, GetUserId(),
+			aclresult = object_aclcheck(NamespaceRelationId, namespaceId, GetUserId(),
 											  ACL_CREATE);
 			if (aclresult != ACLCHECK_OK)
 				aclcheck_error(aclresult, OBJECT_SCHEMA,
@@ -757,7 +757,7 @@ AlterObjectNamespace_internal(Relation rel, Oid objid, Oid nspOid)
 						   NameStr(*(DatumGetName(name))));
 
 		/* User must have CREATE privilege on new namespace */
-		aclresult = pg_namespace_aclcheck(nspOid, GetUserId(), ACL_CREATE);
+		aclresult = object_aclcheck(NamespaceRelationId, nspOid, GetUserId(), ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
 			aclcheck_error(aclresult, OBJECT_SCHEMA,
 						   get_namespace_name(nspOid));
@@ -999,14 +999,14 @@ AlterObjectOwner_internal(Relation rel, Oid objectId, Oid new_ownerId)
 							   objname);
 			}
 			/* Must be able to become new owner */
-			check_is_member_of_role(GetUserId(), new_ownerId);
+			check_can_set_role(GetUserId(), new_ownerId);
 
 			/* New owner must have CREATE privilege on namespace */
 			if (OidIsValid(namespaceId))
 			{
 				AclResult	aclresult;
 
-				aclresult = pg_namespace_aclcheck(namespaceId, new_ownerId,
+				aclresult = object_aclcheck(NamespaceRelationId, namespaceId, new_ownerId,
 												  ACL_CREATE);
 				if (aclresult != ACLCHECK_OK)
 					aclcheck_error(aclresult, OBJECT_SCHEMA,

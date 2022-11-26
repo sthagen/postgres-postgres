@@ -34,6 +34,7 @@
 #include "catalog/objectaccess.h"
 #include "catalog/partition.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_database.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/toasting.h"
 #include "commands/cluster.h"
@@ -364,7 +365,7 @@ cluster_rel(Oid tableOid, Oid indexOid, ClusterParams *params)
 	if (recheck)
 	{
 		/* Check that the user still owns the relation */
-		if (!pg_class_ownercheck(tableOid, save_userid))
+		if (!object_ownercheck(RelationRelationId, tableOid, save_userid))
 		{
 			relation_close(OldHeap, AccessExclusiveLock);
 			goto out;
@@ -822,6 +823,7 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	Form_pg_class relform;
 	TupleDesc	oldTupDesc PG_USED_FOR_ASSERTS_ONLY;
 	TupleDesc	newTupDesc PG_USED_FOR_ASSERTS_ONLY;
+	VacuumParams params;
 	TransactionId OldestXmin,
 				FreezeXid;
 	MultiXactId OldestMxact,
@@ -913,7 +915,8 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	 * Since we're going to rewrite the whole table anyway, there's no reason
 	 * not to be aggressive about this.
 	 */
-	vacuum_set_xid_limits(OldHeap, 0, 0, 0, 0, &OldestXmin, &OldestMxact,
+	memset(&params, 0, sizeof(VacuumParams));
+	vacuum_set_xid_limits(OldHeap, &params, &OldestXmin, &OldestMxact,
 						  &FreezeXid, &MultiXactCutoff);
 
 	/*
@@ -1641,7 +1644,7 @@ get_tables_to_cluster(MemoryContext cluster_context)
 
 		index = (Form_pg_index) GETSTRUCT(indexTuple);
 
-		if (!pg_class_ownercheck(index->indrelid, GetUserId()))
+		if (!object_ownercheck(RelationRelationId, index->indrelid, GetUserId()))
 			continue;
 
 		/* Use a permanent memory context for the result list */
@@ -1690,8 +1693,8 @@ get_tables_to_cluster_partitioned(MemoryContext cluster_context, Oid indexOid)
 			continue;
 
 		/* Silently skip partitions which the user has no access to. */
-		if (!pg_class_ownercheck(relid, GetUserId()) &&
-			(!pg_database_ownercheck(MyDatabaseId, GetUserId()) ||
+		if (!object_ownercheck(RelationRelationId, relid, GetUserId()) &&
+			(!object_ownercheck(DatabaseRelationId, MyDatabaseId, GetUserId()) ||
 			 IsSharedRelation(relid)))
 			continue;
 

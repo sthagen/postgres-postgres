@@ -42,6 +42,7 @@
 #include "catalog/objectaccess.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_collation.h"
+#include "catalog/pg_database.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_extension.h"
 #include "catalog/pg_namespace.h"
@@ -59,6 +60,7 @@
 #include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/conffiles.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -514,7 +516,8 @@ parse_extension_control_file(ExtensionControlFile *control,
 	 * Parse the file content, using GUC's file parsing code.  We need not
 	 * check the return value since any errors will be thrown at ERROR level.
 	 */
-	(void) ParseConfigFp(file, filename, 0, ERROR, &head, &tail);
+	(void) ParseConfigFp(file, filename, CONF_FILE_START_DEPTH, ERROR,
+						 &head, &tail);
 
 	FreeFile(file);
 
@@ -832,7 +835,7 @@ extension_is_trusted(ExtensionControlFile *control)
 	if (!control->trusted)
 		return false;
 	/* Allow if user has CREATE privilege on current database */
-	aclresult = pg_database_aclcheck(MyDatabaseId, GetUserId(), ACL_CREATE);
+	aclresult = object_aclcheck(DatabaseRelationId, MyDatabaseId, GetUserId(), ACL_CREATE);
 	if (aclresult == ACLCHECK_OK)
 		return true;
 	return false;
@@ -2727,12 +2730,12 @@ AlterExtensionNamespace(const char *extensionName, const char *newschema, Oid *o
 	 * Permission check: must own extension.  Note that we don't bother to
 	 * check ownership of the individual member objects ...
 	 */
-	if (!pg_extension_ownercheck(extensionOid, GetUserId()))
+	if (!object_ownercheck(ExtensionRelationId, extensionOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_EXTENSION,
 					   extensionName);
 
 	/* Permission check: must have creation rights in target namespace */
-	aclresult = pg_namespace_aclcheck(nspOid, GetUserId(), ACL_CREATE);
+	aclresult = object_aclcheck(NamespaceRelationId, nspOid, GetUserId(), ACL_CREATE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_SCHEMA, newschema);
 
@@ -2947,7 +2950,7 @@ ExecAlterExtensionStmt(ParseState *pstate, AlterExtensionStmt *stmt)
 	table_close(extRel, AccessShareLock);
 
 	/* Permission check: must own extension */
-	if (!pg_extension_ownercheck(extensionOid, GetUserId()))
+	if (!object_ownercheck(ExtensionRelationId, extensionOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_EXTENSION,
 					   stmt->extname);
 
@@ -3229,7 +3232,7 @@ ExecAlterExtensionContentsStmt(AlterExtensionContentsStmt *stmt,
 								   &relation, AccessShareLock, false);
 
 	/* Permission check: must own extension */
-	if (!pg_extension_ownercheck(extension.objectId, GetUserId()))
+	if (!object_ownercheck(ExtensionRelationId, extension.objectId, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_EXTENSION,
 					   stmt->extname);
 

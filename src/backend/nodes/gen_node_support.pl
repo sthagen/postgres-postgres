@@ -65,6 +65,7 @@ my @all_input_files = qw(
   commands/trigger.h
   executor/tuptable.h
   foreign/fdwapi.h
+  nodes/bitmapset.h
   nodes/extensible.h
   nodes/lockoptions.h
   nodes/replnodes.h
@@ -953,7 +954,6 @@ _read${n}(void)
 		}
 		elsif ($t eq 'uint32'
 			|| $t eq 'bits32'
-			|| $t eq 'AclMode'
 			|| $t eq 'BlockNumber'
 			|| $t eq 'Index'
 			|| $t eq 'SubTransactionId')
@@ -961,7 +961,8 @@ _read${n}(void)
 			print $off "\tWRITE_UINT_FIELD($f);\n";
 			print $rff "\tREAD_UINT_FIELD($f);\n" unless $no_read;
 		}
-		elsif ($t eq 'uint64')
+		elsif ($t eq 'uint64'
+			|| $t eq 'AclMode')
 		{
 			print $off "\tWRITE_UINT64_FIELD($f);\n";
 			print $rff "\tREAD_UINT64_FIELD($f);\n" unless $no_read;

@@ -2409,7 +2409,7 @@ GetSnapshotData(Snapshot snapshot)
 		 * We could try to store xids into xip[] first and then into subxip[]
 		 * if there are too many xids. That only works if the snapshot doesn't
 		 * overflow because we do not search subxip[] in that case. A simpler
-		 * way is to just store all xids in the subxact array because this is
+		 * way is to just store all xids in the subxip array because this is
 		 * by far the bigger array. We just leave the xip array empty.
 		 *
 		 * Either way we need to change the way XidInMVCCSnapshot() works
@@ -3337,12 +3337,17 @@ GetCurrentVirtualXIDs(TransactionId limitXmin, bool excludeXmin0,
  * GetConflictingVirtualXIDs -- returns an array of currently active VXIDs.
  *
  * Usage is limited to conflict resolution during recovery on standby servers.
- * limitXmin is supplied as either latestRemovedXid, or InvalidTransactionId
- * in cases where we cannot accurately determine a value for latestRemovedXid.
+ * limitXmin is supplied as either a cutoff with snapshotConflictHorizon
+ * semantics, or InvalidTransactionId in cases where caller cannot accurately
+ * determine a safe snapshotConflictHorizon value.
  *
  * If limitXmin is InvalidTransactionId then we want to kill everybody,
  * so we're not worried if they have a snapshot or not, nor does it really
- * matter what type of lock we hold.
+ * matter what type of lock we hold.  Caller must avoid calling here with
+ * snapshotConflictHorizon style cutoffs that were set to InvalidTransactionId
+ * during original execution, since that actually indicates that there is
+ * definitely no need for a recovery conflict (the snapshotConflictHorizon
+ * convention for InvalidTransactionId values is the opposite of our own!).
  *
  * All callers that are checking xmins always now supply a valid and useful
  * value for limitXmin. The limitXmin is always lower than the lowest
@@ -3896,6 +3901,9 @@ ProcArraySetReplicationSlotXmin(TransactionId xmin, TransactionId catalog_xmin,
 
 	if (!already_locked)
 		LWLockRelease(ProcArrayLock);
+
+	elog(DEBUG1, "xmin required by slots: data %u, catalog %u",
+		 xmin, catalog_xmin);
 }
 
 /*

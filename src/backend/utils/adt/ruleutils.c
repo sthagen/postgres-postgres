@@ -4855,14 +4855,9 @@ expand_colnames_array_to(deparse_columns *colinfo, int n)
 	if (n > colinfo->num_cols)
 	{
 		if (colinfo->colnames == NULL)
-			colinfo->colnames = (char **) palloc0(n * sizeof(char *));
+			colinfo->colnames = palloc0_array(char *, n);
 		else
-		{
-			colinfo->colnames = (char **) repalloc(colinfo->colnames,
-												   n * sizeof(char *));
-			memset(colinfo->colnames + colinfo->num_cols, 0,
-				   (n - colinfo->num_cols) * sizeof(char *));
-		}
+			colinfo->colnames = repalloc0_array(colinfo->colnames, char *, colinfo->num_cols, n);
 		colinfo->num_cols = n;
 	}
 }
@@ -7901,12 +7896,10 @@ find_param_referent(Param *param, deparse_context *context,
 	{
 		deparse_namespace *dpns;
 		Plan	   *child_plan;
-		bool		in_same_plan_level;
 		ListCell   *lc;
 
 		dpns = (deparse_namespace *) linitial(context->namespaces);
 		child_plan = dpns->plan;
-		in_same_plan_level = true;
 
 		foreach(lc, dpns->ancestors)
 		{
@@ -7914,13 +7907,10 @@ find_param_referent(Param *param, deparse_context *context,
 			ListCell   *lc2;
 
 			/*
-			 * NestLoops transmit params to their inner child only; also, once
-			 * we've crawled up out of a subplan, this couldn't possibly be
-			 * the right match.
+			 * NestLoops transmit params to their inner child only.
 			 */
 			if (IsA(ancestor, NestLoop) &&
-				child_plan == innerPlan(ancestor) &&
-				in_same_plan_level)
+				child_plan == innerPlan(ancestor))
 			{
 				NestLoop   *nl = (NestLoop *) ancestor;
 
@@ -7978,34 +7968,14 @@ find_param_referent(Param *param, deparse_context *context,
 					}
 				}
 
-				/* We have emerged from a subplan. */
-				in_same_plan_level = false;
-
 				/* SubPlan isn't a kind of Plan, so skip the rest */
 				continue;
 			}
 
 			/*
-			 * Check to see if we're emerging from an initplan of the current
-			 * ancestor plan.  Initplans never have any parParams, so no need
-			 * to search that list, but we need to know if we should reset
-			 * in_same_plan_level.
+			 * We need not consider the ancestor's initPlan list, since
+			 * initplans never have any parParams.
 			 */
-			foreach(lc2, ((Plan *) ancestor)->initPlan)
-			{
-				SubPlan    *subplan = lfirst_node(SubPlan, lc2);
-
-				if (child_plan != (Plan *) list_nth(dpns->subplans,
-													subplan->plan_id - 1))
-					continue;
-
-				/* No parameters to be had here. */
-				Assert(subplan->parParam == NIL);
-
-				/* We have emerged from an initplan. */
-				in_same_plan_level = false;
-				break;
-			}
 
 			/* No luck, crawl up to next ancestor */
 			child_plan = (Plan *) ancestor;
@@ -8180,7 +8150,6 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 		case T_RowExpr:
 		case T_CoalesceExpr:
 		case T_MinMaxExpr:
-		case T_SQLValueFunction:
 		case T_XmlExpr:
 		case T_NextValueExpr:
 		case T_NullIfExpr:
@@ -9160,67 +9129,6 @@ get_rule_expr(Node *node, deparse_context *context,
 			}
 			break;
 
-		case T_SQLValueFunction:
-			{
-				SQLValueFunction *svf = (SQLValueFunction *) node;
-
-				/*
-				 * Note: this code knows that typmod for time, timestamp, and
-				 * timestamptz just prints as integer.
-				 */
-				switch (svf->op)
-				{
-					case SVFOP_CURRENT_DATE:
-						appendStringInfoString(buf, "CURRENT_DATE");
-						break;
-					case SVFOP_CURRENT_TIME:
-						appendStringInfoString(buf, "CURRENT_TIME");
-						break;
-					case SVFOP_CURRENT_TIME_N:
-						appendStringInfo(buf, "CURRENT_TIME(%d)", svf->typmod);
-						break;
-					case SVFOP_CURRENT_TIMESTAMP:
-						appendStringInfoString(buf, "CURRENT_TIMESTAMP");
-						break;
-					case SVFOP_CURRENT_TIMESTAMP_N:
-						appendStringInfo(buf, "CURRENT_TIMESTAMP(%d)",
-										 svf->typmod);
-						break;
-					case SVFOP_LOCALTIME:
-						appendStringInfoString(buf, "LOCALTIME");
-						break;
-					case SVFOP_LOCALTIME_N:
-						appendStringInfo(buf, "LOCALTIME(%d)", svf->typmod);
-						break;
-					case SVFOP_LOCALTIMESTAMP:
-						appendStringInfoString(buf, "LOCALTIMESTAMP");
-						break;
-					case SVFOP_LOCALTIMESTAMP_N:
-						appendStringInfo(buf, "LOCALTIMESTAMP(%d)",
-										 svf->typmod);
-						break;
-					case SVFOP_CURRENT_ROLE:
-						appendStringInfoString(buf, "CURRENT_ROLE");
-						break;
-					case SVFOP_CURRENT_USER:
-						appendStringInfoString(buf, "CURRENT_USER");
-						break;
-					case SVFOP_USER:
-						appendStringInfoString(buf, "USER");
-						break;
-					case SVFOP_SESSION_USER:
-						appendStringInfoString(buf, "SESSION_USER");
-						break;
-					case SVFOP_CURRENT_CATALOG:
-						appendStringInfoString(buf, "CURRENT_CATALOG");
-						break;
-					case SVFOP_CURRENT_SCHEMA:
-						appendStringInfoString(buf, "CURRENT_SCHEMA");
-						break;
-				}
-			}
-			break;
-
 		case T_XmlExpr:
 			{
 				XmlExpr    *xexpr = (XmlExpr *) node;
@@ -9746,7 +9654,6 @@ looks_like_function(Node *node)
 		case T_NullIfExpr:
 		case T_CoalesceExpr:
 		case T_MinMaxExpr:
-		case T_SQLValueFunction:
 		case T_XmlExpr:
 			/* these are all accepted by func_expr_common_subexpr */
 			return true;
@@ -10091,6 +9998,33 @@ get_windowfunc_expr(WindowFunc *wfunc, deparse_context *context)
 }
 
 /*
+ * get_func_sql_syntax_time
+ *
+ * Parse back argument of SQL-syntax function call related to a time or a
+ * timestamp.  These require a specific handling when their typmod is given
+ * by the function caller through their SQL keyword.
+ */
+static void
+get_func_sql_syntax_time(List *args, deparse_context *context)
+{
+	StringInfo	buf = context->buf;
+	Const	   *cons;
+
+	if (list_length(args) != 1)
+		return;
+
+	cons = (Const *) linitial(args);
+	Assert(IsA(cons, Const));
+
+	if (!cons->constisnull)
+	{
+		appendStringInfoString(buf, "(");
+		get_rule_expr((Node *) cons, context, false);
+		appendStringInfoString(buf, ")");
+	}
+}
+
+/*
  * get_func_sql_syntax		- Parse back a SQL-syntax function call
  *
  * Returns true if we successfully deparsed, false if we did not
@@ -10318,8 +10252,46 @@ get_func_sql_syntax(FuncExpr *expr, deparse_context *context)
 			appendStringInfoChar(buf, ')');
 			return true;
 
+		case F_CURRENT_CATALOG:
+			appendStringInfoString(buf, "CURRENT_CATALOG");
+			return true;
+		case F_CURRENT_ROLE:
+			appendStringInfoString(buf, "CURRENT_ROLE");
+			return true;
+		case F_CURRENT_SCHEMA:
+			appendStringInfoString(buf, "CURRENT_SCHEMA");
+			return true;
+		case F_CURRENT_USER:
+			appendStringInfoString(buf, "CURRENT_USER");
+			return true;
+		case F_USER:
+			appendStringInfoString(buf, "USER");
+			return true;
+		case F_SESSION_USER:
+			appendStringInfoString(buf, "SESSION_USER");
+			return true;
 		case F_SYSTEM_USER:
 			appendStringInfoString(buf, "SYSTEM_USER");
+			return true;
+
+		case F_CURRENT_DATE:
+			appendStringInfoString(buf, "CURRENT_DATE");
+			return true;
+		case F_CURRENT_TIME:
+			appendStringInfoString(buf, "CURRENT_TIME");
+			get_func_sql_syntax_time(expr->args, context);
+			return true;
+		case F_CURRENT_TIMESTAMP:
+			appendStringInfoString(buf, "CURRENT_TIMESTAMP");
+			get_func_sql_syntax_time(expr->args, context);
+			return true;
+		case F_LOCALTIME:
+			appendStringInfoString(buf, "LOCALTIME");
+			get_func_sql_syntax_time(expr->args, context);
+			return true;
+		case F_LOCALTIMESTAMP:
+			appendStringInfoString(buf, "LOCALTIMESTAMP");
+			get_func_sql_syntax_time(expr->args, context);
 			return true;
 
 		case F_XMLEXISTS:
