@@ -85,12 +85,26 @@ decimalLength64(const uint64 v)
 	return t + (v >= PowersOfTen[t]);
 }
 
+static const int8 hexlookup[128] = {
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1, -1, -1, -1, -1, -1,
+	-1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+};
+
 /*
  * Convert input string to a signed 16 bit integer.
  *
- * Allows any number of leading or trailing whitespace characters. Will throw
- * ereport() upon bad input format or overflow.
+ * Allows any number of leading or trailing whitespace characters.
  *
+ * pg_strtoint16() will throw ereport() upon bad input format or overflow;
+ * while pg_strtoint16_safe() instead returns such complaints in *escontext,
+ * if it's an ErrorSaveContext.
+*
  * NB: Accumulate input as an unsigned number, to deal with two's complement
  * representation of the most negative number, which can't be represented as a
  * signed positive number.
@@ -98,7 +112,14 @@ decimalLength64(const uint64 v)
 int16
 pg_strtoint16(const char *s)
 {
+	return pg_strtoint16_safe(s, NULL);
+}
+
+int16
+pg_strtoint16_safe(const char *s, Node *escontext)
+{
 	const char *ptr = s;
+	const char *firstdigit;
 	uint16		tmp = 0;
 	bool		neg = false;
 
@@ -115,18 +136,59 @@ pg_strtoint16(const char *s)
 	else if (*ptr == '+')
 		ptr++;
 
-	/* require at least one digit */
-	if (unlikely(!isdigit((unsigned char) *ptr)))
-		goto invalid_syntax;
-
 	/* process digits */
-	while (*ptr && isdigit((unsigned char) *ptr))
+	if (ptr[0] == '0' && (ptr[1] == 'x' || ptr[1] == 'X'))
 	{
-		if (unlikely(tmp > (PG_INT16_MAX / 10)))
-			goto out_of_range;
+		firstdigit = ptr += 2;
 
-		tmp = tmp * 10 + (*ptr++ - '0');
+		while (*ptr && isxdigit((unsigned char) *ptr))
+		{
+			if (unlikely(tmp > -(PG_INT16_MIN / 16)))
+				goto out_of_range;
+
+			tmp = tmp * 16 + hexlookup[(unsigned char) *ptr++];
+		}
 	}
+	else if (ptr[0] == '0' && (ptr[1] == 'o' || ptr[1] == 'O'))
+	{
+		firstdigit = ptr += 2;
+
+		while (*ptr && (*ptr >= '0' && *ptr <= '7'))
+		{
+			if (unlikely(tmp > -(PG_INT16_MIN / 8)))
+				goto out_of_range;
+
+			tmp = tmp * 8 + (*ptr++ - '0');
+		}
+	}
+	else if (ptr[0] == '0' && (ptr[1] == 'b' || ptr[1] == 'B'))
+	{
+		firstdigit = ptr += 2;
+
+		while (*ptr && (*ptr >= '0' && *ptr <= '1'))
+		{
+			if (unlikely(tmp > -(PG_INT16_MIN / 2)))
+				goto out_of_range;
+
+			tmp = tmp * 2 + (*ptr++ - '0');
+		}
+	}
+	else
+	{
+		firstdigit = ptr;
+
+		while (*ptr && isdigit((unsigned char) *ptr))
+		{
+			if (unlikely(tmp > -(PG_INT16_MIN / 10)))
+				goto out_of_range;
+
+			tmp = tmp * 10 + (*ptr++ - '0');
+		}
+	}
+
+	/* require at least one digit */
+	if (unlikely(ptr == firstdigit))
+		goto invalid_syntax;
 
 	/* allow trailing whitespace, but not other trailing chars */
 	while (*ptr != '\0' && isspace((unsigned char) *ptr))
@@ -149,25 +211,26 @@ pg_strtoint16(const char *s)
 	return (int16) tmp;
 
 out_of_range:
-	ereport(ERROR,
+	ereturn(escontext, 0,
 			(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 			 errmsg("value \"%s\" is out of range for type %s",
 					s, "smallint")));
 
 invalid_syntax:
-	ereport(ERROR,
+	ereturn(escontext, 0,
 			(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 			 errmsg("invalid input syntax for type %s: \"%s\"",
 					"smallint", s)));
-
-	return 0;					/* keep compiler quiet */
 }
 
 /*
  * Convert input string to a signed 32 bit integer.
  *
- * Allows any number of leading or trailing whitespace characters. Will throw
- * ereport() upon bad input format or overflow.
+ * Allows any number of leading or trailing whitespace characters.
+ *
+ * pg_strtoint32() will throw ereport() upon bad input format or overflow;
+ * while pg_strtoint32_safe() instead returns such complaints in *escontext,
+ * if it's an ErrorSaveContext.
  *
  * NB: Accumulate input as an unsigned number, to deal with two's complement
  * representation of the most negative number, which can't be represented as a
@@ -176,7 +239,14 @@ invalid_syntax:
 int32
 pg_strtoint32(const char *s)
 {
+	return pg_strtoint32_safe(s, NULL);
+}
+
+int32
+pg_strtoint32_safe(const char *s, Node *escontext)
+{
 	const char *ptr = s;
+	const char *firstdigit;
 	uint32		tmp = 0;
 	bool		neg = false;
 
@@ -193,18 +263,59 @@ pg_strtoint32(const char *s)
 	else if (*ptr == '+')
 		ptr++;
 
-	/* require at least one digit */
-	if (unlikely(!isdigit((unsigned char) *ptr)))
-		goto invalid_syntax;
-
 	/* process digits */
-	while (*ptr && isdigit((unsigned char) *ptr))
+	if (ptr[0] == '0' && (ptr[1] == 'x' || ptr[1] == 'X'))
 	{
-		if (unlikely(tmp > (PG_INT32_MAX / 10)))
-			goto out_of_range;
+		firstdigit = ptr += 2;
 
-		tmp = tmp * 10 + (*ptr++ - '0');
+		while (*ptr && isxdigit((unsigned char) *ptr))
+		{
+			if (unlikely(tmp > -(PG_INT32_MIN / 16)))
+				goto out_of_range;
+
+			tmp = tmp * 16 + hexlookup[(unsigned char) *ptr++];
+		}
 	}
+	else if (ptr[0] == '0' && (ptr[1] == 'o' || ptr[1] == 'O'))
+	{
+		firstdigit = ptr += 2;
+
+		while (*ptr && (*ptr >= '0' && *ptr <= '7'))
+		{
+			if (unlikely(tmp > -(PG_INT32_MIN / 8)))
+				goto out_of_range;
+
+			tmp = tmp * 8 + (*ptr++ - '0');
+		}
+	}
+	else if (ptr[0] == '0' && (ptr[1] == 'b' || ptr[1] == 'B'))
+	{
+		firstdigit = ptr += 2;
+
+		while (*ptr && (*ptr >= '0' && *ptr <= '1'))
+		{
+			if (unlikely(tmp > -(PG_INT32_MIN / 2)))
+				goto out_of_range;
+
+			tmp = tmp * 2 + (*ptr++ - '0');
+		}
+	}
+	else
+	{
+		firstdigit = ptr;
+
+		while (*ptr && isdigit((unsigned char) *ptr))
+		{
+			if (unlikely(tmp > -(PG_INT32_MIN / 10)))
+				goto out_of_range;
+
+			tmp = tmp * 10 + (*ptr++ - '0');
+		}
+	}
+
+	/* require at least one digit */
+	if (unlikely(ptr == firstdigit))
+		goto invalid_syntax;
 
 	/* allow trailing whitespace, but not other trailing chars */
 	while (*ptr != '\0' && isspace((unsigned char) *ptr))
@@ -227,25 +338,26 @@ pg_strtoint32(const char *s)
 	return (int32) tmp;
 
 out_of_range:
-	ereport(ERROR,
+	ereturn(escontext, 0,
 			(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 			 errmsg("value \"%s\" is out of range for type %s",
 					s, "integer")));
 
 invalid_syntax:
-	ereport(ERROR,
+	ereturn(escontext, 0,
 			(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 			 errmsg("invalid input syntax for type %s: \"%s\"",
 					"integer", s)));
-
-	return 0;					/* keep compiler quiet */
 }
 
 /*
  * Convert input string to a signed 64 bit integer.
  *
- * Allows any number of leading or trailing whitespace characters. Will throw
- * ereport() upon bad input format or overflow.
+ * Allows any number of leading or trailing whitespace characters.
+ *
+ * pg_strtoint64() will throw ereport() upon bad input format or overflow;
+ * while pg_strtoint64_safe() instead returns such complaints in *escontext,
+ * if it's an ErrorSaveContext.
  *
  * NB: Accumulate input as an unsigned number, to deal with two's complement
  * representation of the most negative number, which can't be represented as a
@@ -254,7 +366,14 @@ invalid_syntax:
 int64
 pg_strtoint64(const char *s)
 {
+	return pg_strtoint64_safe(s, NULL);
+}
+
+int64
+pg_strtoint64_safe(const char *s, Node *escontext)
+{
 	const char *ptr = s;
+	const char *firstdigit;
 	uint64		tmp = 0;
 	bool		neg = false;
 
@@ -271,18 +390,59 @@ pg_strtoint64(const char *s)
 	else if (*ptr == '+')
 		ptr++;
 
-	/* require at least one digit */
-	if (unlikely(!isdigit((unsigned char) *ptr)))
-		goto invalid_syntax;
-
 	/* process digits */
-	while (*ptr && isdigit((unsigned char) *ptr))
+	if (ptr[0] == '0' && (ptr[1] == 'x' || ptr[1] == 'X'))
 	{
-		if (unlikely(tmp > (PG_INT64_MAX / 10)))
-			goto out_of_range;
+		firstdigit = ptr += 2;
 
-		tmp = tmp * 10 + (*ptr++ - '0');
+		while (*ptr && isxdigit((unsigned char) *ptr))
+		{
+			if (unlikely(tmp > -(PG_INT64_MIN / 16)))
+				goto out_of_range;
+
+			tmp = tmp * 16 + hexlookup[(unsigned char) *ptr++];
+		}
 	}
+	else if (ptr[0] == '0' && (ptr[1] == 'o' || ptr[1] == 'O'))
+	{
+		firstdigit = ptr += 2;
+
+		while (*ptr && (*ptr >= '0' && *ptr <= '7'))
+		{
+			if (unlikely(tmp > -(PG_INT64_MIN / 8)))
+				goto out_of_range;
+
+			tmp = tmp * 8 + (*ptr++ - '0');
+		}
+	}
+	else if (ptr[0] == '0' && (ptr[1] == 'b' || ptr[1] == 'B'))
+	{
+		firstdigit = ptr += 2;
+
+		while (*ptr && (*ptr >= '0' && *ptr <= '1'))
+		{
+			if (unlikely(tmp > -(PG_INT64_MIN / 2)))
+				goto out_of_range;
+
+			tmp = tmp * 2 + (*ptr++ - '0');
+		}
+	}
+	else
+	{
+		firstdigit = ptr;
+
+		while (*ptr && isdigit((unsigned char) *ptr))
+		{
+			if (unlikely(tmp > -(PG_INT64_MIN / 10)))
+				goto out_of_range;
+
+			tmp = tmp * 10 + (*ptr++ - '0');
+		}
+	}
+
+	/* require at least one digit */
+	if (unlikely(ptr == firstdigit))
+		goto invalid_syntax;
 
 	/* allow trailing whitespace, but not other trailing chars */
 	while (*ptr != '\0' && isspace((unsigned char) *ptr))
@@ -305,18 +465,16 @@ pg_strtoint64(const char *s)
 	return (int64) tmp;
 
 out_of_range:
-	ereport(ERROR,
+	ereturn(escontext, 0,
 			(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 			 errmsg("value \"%s\" is out of range for type %s",
 					s, "bigint")));
 
 invalid_syntax:
-	ereport(ERROR,
+	ereturn(escontext, 0,
 			(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 			 errmsg("invalid input syntax for type %s: \"%s\"",
 					"bigint", s)));
-
-	return 0;					/* keep compiler quiet */
 }
 
 /*

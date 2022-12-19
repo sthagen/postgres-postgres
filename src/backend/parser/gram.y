@@ -1621,6 +1621,26 @@ generic_set:
 					n->args = $3;
 					$$ = n;
 				}
+			| var_name TO var_list USER SET
+				{
+					VariableSetStmt *n = makeNode(VariableSetStmt);
+
+					n->kind = VAR_SET_VALUE;
+					n->name = $1;
+					n->args = $3;
+					n->user_set = true;
+					$$ = n;
+				}
+			| var_name '=' var_list USER SET
+				{
+					VariableSetStmt *n = makeNode(VariableSetStmt);
+
+					n->kind = VAR_SET_VALUE;
+					n->name = $1;
+					n->args = $3;
+					n->user_set = true;
+					$$ = n;
+				}
 			| var_name TO DEFAULT
 				{
 					VariableSetStmt *n = makeNode(VariableSetStmt);
@@ -7479,13 +7499,6 @@ privilege:	SELECT opt_column_list
 			{
 				AccessPriv *n = makeNode(AccessPriv);
 				n->priv_name = pstrdup("alter system");
-				n->cols = NIL;
-				$$ = n;
-			}
-		| analyze_keyword
-			{
-				AccessPriv *n = makeNode(AccessPriv);
-				n->priv_name = pstrdup("analyze");
 				n->cols = NIL;
 				$$ = n;
 			}
