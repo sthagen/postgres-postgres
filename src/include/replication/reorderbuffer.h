@@ -2,7 +2,7 @@
  * reorderbuffer.h
  *	  PostgreSQL logical replay/reorder buffer management.
  *
- * Copyright (c) 2012-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2023, PostgreSQL Global Development Group
  *
  * src/include/replication/reorderbuffer.h
  */
@@ -18,6 +18,14 @@
 #include "utils/timestamp.h"
 
 extern PGDLLIMPORT int logical_decoding_work_mem;
+extern PGDLLIMPORT int logical_decoding_mode;
+
+/* possible values for logical_decoding_mode */
+typedef enum
+{
+	LOGICAL_DECODING_MODE_BUFFERED,
+	LOGICAL_DECODING_MODE_IMMEDIATE
+} LogicalDecodingMode;
 
 /* an individual tuple, stored in one chunk of memory */
 typedef struct ReorderBufferTupleBuf

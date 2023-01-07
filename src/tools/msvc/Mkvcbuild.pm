@@ -1,5 +1,5 @@
 
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
+# Copyright (c) 2021-2023, PostgreSQL Global Development Group
 
 package Mkvcbuild;
 
@@ -404,8 +404,8 @@ sub mkvcbuild
 	$pgbasebackup->AddFile('src/bin/pg_basebackup/bbstreamer_gzip.c');
 	$pgbasebackup->AddFile('src/bin/pg_basebackup/bbstreamer_inject.c');
 	$pgbasebackup->AddFile('src/bin/pg_basebackup/bbstreamer_lz4.c');
-	$pgbasebackup->AddFile('src/bin/pg_basebackup/bbstreamer_zstd.c');
 	$pgbasebackup->AddFile('src/bin/pg_basebackup/bbstreamer_tar.c');
+	$pgbasebackup->AddFile('src/bin/pg_basebackup/bbstreamer_zstd.c');
 	$pgbasebackup->AddLibrary('ws2_32.lib');
 
 	my $pgreceivewal = AddSimpleFrontend('pg_basebackup', 1);

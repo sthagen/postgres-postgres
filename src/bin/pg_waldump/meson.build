@@ -1,4 +1,4 @@
-# Copyright (c) 2022, PostgreSQL Global Development Group
+# Copyright (c) 2022-2023, PostgreSQL Global Development Group
 
 pg_waldump_sources = files(
   'compat.c',
@@ -31,6 +31,7 @@ tests += {
   'tap': {
     'tests': [
       't/001_basic.pl',
+      't/002_save_fullpage.pl',
     ],
   },
 }

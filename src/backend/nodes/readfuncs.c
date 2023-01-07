@@ -3,7 +3,7 @@
  * readfuncs.c
  *	  Reader functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -537,7 +537,6 @@ _readRangeTblEntry(void)
 	READ_BOOL_FIELD(lateral);
 	READ_BOOL_FIELD(inh);
 	READ_BOOL_FIELD(inFromCl);
-	READ_BITMAPSET_FIELD(extraUpdatedCols);
 	READ_NODE_FIELD(securityQuals);
 
 	READ_DONE();

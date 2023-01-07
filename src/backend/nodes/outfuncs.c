@@ -3,7 +3,7 @@
  * outfuncs.c
  *	  Output functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -561,7 +561,6 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 	WRITE_BOOL_FIELD(lateral);
 	WRITE_BOOL_FIELD(inh);
 	WRITE_BOOL_FIELD(inFromCl);
-	WRITE_BITMAPSET_FIELD(extraUpdatedCols);
 	WRITE_NODE_FIELD(securityQuals);
 }
 

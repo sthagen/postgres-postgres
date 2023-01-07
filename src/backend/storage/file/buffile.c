@@ -3,7 +3,7 @@
  * buffile.c
  *	  Management of large buffered temporary files.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -607,7 +607,7 @@ BufFileRead(BufFile *file, void *ptr, size_t size)
 		memcpy(ptr, file->buffer.data + file->pos, nthistime);
 
 		file->pos += nthistime;
-		ptr = (void *) ((char *) ptr + nthistime);
+		ptr = (char *) ptr + nthistime;
 		size -= nthistime;
 		nread += nthistime;
 	}
@@ -622,7 +622,7 @@ BufFileRead(BufFile *file, void *ptr, size_t size)
  * ereport().
  */
 void
-BufFileWrite(BufFile *file, void *ptr, size_t size)
+BufFileWrite(BufFile *file, const void *ptr, size_t size)
 {
 	size_t		nthistime;
 
@@ -655,7 +655,7 @@ BufFileWrite(BufFile *file, void *ptr, size_t size)
 		file->pos += nthistime;
 		if (file->nbytes < file->pos)
 			file->nbytes = file->pos;
-		ptr = (void *) ((char *) ptr + nthistime);
+		ptr = (const char *) ptr + nthistime;
 		size -= nthistime;
 	}
 }

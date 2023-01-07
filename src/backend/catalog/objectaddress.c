@@ -3,7 +3,7 @@
  * objectaddress.c
  *	  functions for working with ObjectAddresses
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -2182,7 +2182,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("name or argument lists may not contain nulls")));
-		typename = typeStringToTypeName(TextDatumGetCString(elems[0]));
+		typename = typeStringToTypeName(TextDatumGetCString(elems[0]), NULL);
 	}
 	else if (type == OBJECT_LARGEOBJECT)
 	{
@@ -2238,7 +2238,8 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("name or argument lists may not contain nulls")));
 			args = lappend(args,
-						   typeStringToTypeName(TextDatumGetCString(elems[i])));
+						   typeStringToTypeName(TextDatumGetCString(elems[i]),
+												NULL));
 		}
 	}
 	else

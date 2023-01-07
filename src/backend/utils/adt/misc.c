@@ -3,7 +3,7 @@
  * misc.c
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -724,7 +724,7 @@ pg_input_is_valid_common(FunctionCallInfo fcinfo,
 		Oid			typoid;
 
 		/* Parse type-name argument to obtain type OID and encoded typmod. */
-		parseTypeString(typnamestr, &typoid, &my_extra->typmod, false);
+		(void) parseTypeString(typnamestr, &typoid, &my_extra->typmod, NULL);
 
 		/* Update type-specific info if typoid changed. */
 		if (my_extra->typoid != typoid)

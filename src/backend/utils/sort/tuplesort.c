@@ -88,7 +88,7 @@
  * produce exactly one output run from their partial input.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -2908,7 +2908,7 @@ markrunend(LogicalTape *tape)
 {
 	unsigned int len = 0;
 
-	LogicalTapeWrite(tape, (void *) &len, sizeof(len));
+	LogicalTapeWrite(tape, &len, sizeof(len));
 }
 
 /*

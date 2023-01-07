@@ -1,4 +1,4 @@
-# Copyright (c) 2022, PostgreSQL Global Development Group
+# Copyright (c) 2022-2023, PostgreSQL Global Development Group
 
 # FIXME: prevent install during main install, but not during test :/
 
@@ -32,6 +32,6 @@ tests += {
     'sql': [
       'test_pg_db_role_setting',
     ],
-    'regress_args': ['--no-locale', '--encoding=UTF8'],
+    'runningcheck': false,
   },
 }

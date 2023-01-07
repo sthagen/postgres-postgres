@@ -10,7 +10,7 @@
  * their fields are intended to be constant, some fields change at runtime.
  *
  *
- * Copyright (c) 2000-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2023, PostgreSQL Global Development Group
  * Written by Peter Eisentraut <peter_e@gmx.net>.
  *
  * IDENTIFICATION
@@ -392,6 +392,12 @@ static const struct config_enum_entry ssl_protocol_versions_info[] = {
 	{"TLSv1.1", PG_TLS1_1_VERSION, false},
 	{"TLSv1.2", PG_TLS1_2_VERSION, false},
 	{"TLSv1.3", PG_TLS1_3_VERSION, false},
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry logical_decoding_mode_options[] = {
+	{"buffered", LOGICAL_DECODING_MODE_BUFFERED, false},
+	{"immediate", LOGICAL_DECODING_MODE_IMMEDIATE, false},
 	{NULL, 0, false}
 };
 
@@ -4874,6 +4880,17 @@ struct config_enum ConfigureNamesEnum[] =
 		},
 		&recovery_init_sync_method,
 		RECOVERY_INIT_SYNC_METHOD_FSYNC, recovery_init_sync_method_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"logical_decoding_mode", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Allows streaming or serializing each change in logical decoding."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&logical_decoding_mode,
+		LOGICAL_DECODING_MODE_BUFFERED, logical_decoding_mode_options,
 		NULL, NULL, NULL
 	},
 

@@ -3,7 +3,7 @@
  * backup_manifest.c
  *	  code for generating and sending a backup manifest
  *
- * Portions Copyright (c) 2010-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2023, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/backup/backup_manifest.c
@@ -21,7 +21,7 @@
 #include "utils/builtins.h"
 #include "utils/json.h"
 
-static void AppendStringToManifest(backup_manifest_info *manifest, char *s);
+static void AppendStringToManifest(backup_manifest_info *manifest, const char *s);
 
 /*
  * Does the user want a backup manifest?
@@ -385,7 +385,7 @@ SendBackupManifest(backup_manifest_info *manifest, bbsink *sink)
  * Append a cstring to the manifest.
  */
 static void
-AppendStringToManifest(backup_manifest_info *manifest, char *s)
+AppendStringToManifest(backup_manifest_info *manifest, const char *s)
 {
 	int			len = strlen(s);
 

@@ -4,7 +4,7 @@
  *	 Cleanup query from NOT values and/or stopword
  *	 Utility functions to correct work.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -383,7 +383,7 @@ calcstrlen(NODE *node)
  * Remove QI_VALSTOP (stopword) nodes from TSQuery.
  */
 TSQuery
-cleanup_tsquery_stopwords(TSQuery in)
+cleanup_tsquery_stopwords(TSQuery in, bool noisy)
 {
 	int32		len,
 				lenstr,
@@ -403,8 +403,9 @@ cleanup_tsquery_stopwords(TSQuery in)
 	root = clean_stopword_intree(maketree(GETQUERY(in)), &ladd, &radd);
 	if (root == NULL)
 	{
-		ereport(NOTICE,
-				(errmsg("text-search query contains only stop words or doesn't contain lexemes, ignored")));
+		if (noisy)
+			ereport(NOTICE,
+					(errmsg("text-search query contains only stop words or doesn't contain lexemes, ignored")));
 		out = palloc(HDRSIZETQ);
 		out->size = 0;
 		SET_VARSIZE(out, HDRSIZETQ);

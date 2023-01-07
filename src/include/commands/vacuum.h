@@ -4,7 +4,7 @@
  *	  header file for postgres vacuum cleaner and statistics analyzer
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/commands/vacuum.h
@@ -188,6 +188,8 @@ typedef struct VacAttrStats
 #define VACOPT_SKIP_LOCKED 0x20 /* skip if cannot get lock */
 #define VACOPT_PROCESS_TOAST 0x40	/* process the TOAST table, if any */
 #define VACOPT_DISABLE_PAGE_SKIPPING 0x80	/* don't skip any pages */
+#define VACOPT_SKIP_DATABASE_STATS 0x100	/* skip vac_update_datfrozenxid() */
+#define VACOPT_ONLY_DATABASE_STATS 0x200	/* only vac_update_datfrozenxid() */
 
 /*
  * Values used by index_cleanup and truncate params.

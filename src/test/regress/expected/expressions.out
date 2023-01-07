@@ -36,7 +36,7 @@ SELECT now()::time(3)::text = localtime(3)::text;
  t
 (1 row)
 
--- current_timestamp / localtimestamp (always matches because of transactional behaviour)
+-- current_time[stamp]/ localtime[stamp] (always matches because of transactional behaviour)
 SELECT current_timestamp = NOW();
  ?column? 
 ----------
@@ -57,7 +57,36 @@ SELECT now()::timestamp::text = localtimestamp::text;
  t
 (1 row)
 
--- current_role/user/user is tested in rolnames.sql
+-- precision overflow
+SELECT current_time = current_time(7);
+WARNING:  TIME(7) WITH TIME ZONE precision reduced to maximum allowed, 6
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT current_timestamp = current_timestamp(7);
+WARNING:  TIMESTAMP(7) WITH TIME ZONE precision reduced to maximum allowed, 6
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT localtime = localtime(7);
+WARNING:  TIME(7) precision reduced to maximum allowed, 6
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT localtimestamp = localtimestamp(7);
+WARNING:  TIMESTAMP(7) precision reduced to maximum allowed, 6
+ ?column? 
+----------
+ t
+(1 row)
+
+-- current_role/user/user is tested in rolenames.sql
 -- current database / catalog
 SELECT current_catalog = current_database();
  ?column? 
