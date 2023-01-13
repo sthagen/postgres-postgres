@@ -3003,6 +3003,18 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"max_parallel_apply_workers_per_subscription",
+			PGC_SIGHUP,
+			REPLICATION_SUBSCRIBERS,
+			gettext_noop("Maximum number of parallel apply workers per subscription."),
+			NULL,
+		},
+		&max_parallel_apply_workers_per_subscription,
+		2, 0, MAX_PARALLEL_WORKER_LIMIT,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"log_rotation_age", PGC_SIGHUP, LOGGING_WHERE,
 			gettext_noop("Sets the amount of time to wait before forcing "
 						 "log file rotation."),
@@ -3935,6 +3947,18 @@ struct config_string ConfigureNamesString[] =
 		&temp_tablespaces,
 		"",
 		check_temp_tablespaces, assign_temp_tablespaces, NULL
+	},
+
+	{
+		{"createrole_self_grant", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets whether a CREATEROLE user automatically grants "
+						 "the role to themselves, and with which options."),
+			NULL,
+			GUC_LIST_INPUT
+		},
+		&createrole_self_grant,
+		"",
+		check_createrole_self_grant, assign_createrole_self_grant, NULL
 	},
 
 	{

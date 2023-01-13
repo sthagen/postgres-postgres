@@ -4533,7 +4533,7 @@ getSubscriptions(Archive *fout)
 	if (fout->remoteVersion >= 140000)
 		appendPQExpBufferStr(query, " s.substream,\n");
 	else
-		appendPQExpBufferStr(query, " false AS substream,\n");
+		appendPQExpBufferStr(query, " 'f' AS substream,\n");
 
 	if (fout->remoteVersion >= 150000)
 		appendPQExpBufferStr(query,
@@ -4670,8 +4670,10 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
 	if (strcmp(subinfo->subbinary, "t") == 0)
 		appendPQExpBufferStr(query, ", binary = true");
 
-	if (strcmp(subinfo->substream, "f") != 0)
+	if (strcmp(subinfo->substream, "t") == 0)
 		appendPQExpBufferStr(query, ", streaming = on");
+	else if (strcmp(subinfo->substream, "p") == 0)
+		appendPQExpBufferStr(query, ", streaming = parallel");
 
 	if (strcmp(subinfo->subtwophasestate, two_phase_disabled) != 0)
 		appendPQExpBufferStr(query, ", two_phase = on");
@@ -8527,17 +8529,11 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			{
 				/*
 				 * Column generation expressions cannot be dumped separately,
-				 * because there is no syntax for it.  The !shouldPrintColumn
-				 * case below will be tempted to set them to separate if they
-				 * are attached to an inherited column without a local
-				 * definition, but that would be wrong and unnecessary,
-				 * because generation expressions are always inherited, so
-				 * there is no need to set them again in child tables, and
-				 * there is no syntax for it either.  By setting separate to
+				 * because there is no syntax for it.  By setting separate to
 				 * false here we prevent the "default" from being processed as
 				 * its own dumpable object, and flagInhAttrs() will remove it
-				 * from the table when it detects that it belongs to an
-				 * inherited column.
+				 * from the table if possible (that is, if it can be inherited
+				 * from a parent).
 				 */
 				attrdefs[j].separate = false;
 			}

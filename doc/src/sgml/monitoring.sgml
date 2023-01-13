@@ -1132,6 +1132,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry>Waiting in main loop of logical replication launcher process.</entry>
      </row>
      <row>
+      <entry><literal>LogicalParallelApplyMain</literal></entry>
+      <entry>Waiting in main loop of logical replication parallel apply
+       process.</entry>
+     </row>
+     <row>
       <entry><literal>RecoveryWalStream</literal></entry>
       <entry>Waiting in main loop of startup process for WAL to arrive, during
        streaming recovery.</entry>
@@ -1728,6 +1733,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
        tuples into new buckets.</entry>
      </row>
      <row>
+      <entry><literal>LogicalParallelApplyStateChange</literal></entry>
+      <entry>Waiting for a logical replication parallel apply process to change
+       state.</entry>
+     </row>
+     <row>
       <entry><literal>LogicalSyncData</literal></entry>
       <entry>Waiting for a logical replication remote server to send data for
        initial table synchronization.</entry>
@@ -1857,6 +1867,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>advisory</literal></entry>
       <entry>Waiting to acquire an advisory user lock.</entry>
+     </row>
+     <row>
+      <entry><literal>applytransaction</literal></entry>
+      <entry>Waiting to acquire a lock on a remote transaction being applied
+      by a logical replication subscriber.</entry>
      </row>
      <row>
       <entry><literal>extend</literal></entry>
