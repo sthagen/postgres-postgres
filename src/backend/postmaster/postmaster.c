@@ -102,6 +102,7 @@
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
 #include "libpq/pqsignal.h"
+#include "nodes/queryjumble.h"
 #include "pg_getopt.h"
 #include "pgstat.h"
 #include "port/pg_bswap.h"
@@ -126,7 +127,6 @@
 #include "utils/memutils.h"
 #include "utils/pidfile.h"
 #include "utils/ps_status.h"
-#include "utils/queryjumble.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
@@ -204,15 +204,25 @@ char	   *Unix_socket_directories;
 char	   *ListenAddresses;
 
 /*
- * ReservedBackends is the number of backends reserved for superuser use.
- * This number is taken out of the pool size given by MaxConnections so
- * number of backend slots available to non-superusers is
- * (MaxConnections - ReservedBackends).  Note what this really means is
- * "if there are <= ReservedBackends connections available, only superusers
- * can make new connections" --- pre-existing superuser connections don't
- * count against the limit.
+ * SuperuserReservedConnections is the number of backends reserved for
+ * superuser use, and ReservedConnections is the number of backends reserved
+ * for use by roles with privileges of the pg_use_reserved_connections
+ * predefined role.  These are taken out of the pool of MaxConnections backend
+ * slots, so the number of backend slots available for roles that are neither
+ * superuser nor have privileges of pg_use_reserved_connections is
+ * (MaxConnections - SuperuserReservedConnections - ReservedConnections).
+ *
+ * If the number of remaining slots is less than or equal to
+ * SuperuserReservedConnections, only superusers can make new connections.  If
+ * the number of remaining slots is greater than SuperuserReservedConnections
+ * but less than or equal to
+ * (SuperuserReservedConnections + ReservedConnections), only superusers and
+ * roles with privileges of pg_use_reserved_connections can make new
+ * connections.  Note that pre-existing superuser and
+ * pg_use_reserved_connections connections don't count against the limits.
  */
-int			ReservedBackends;
+int			SuperuserReservedConnections;
+int			ReservedConnections;
 
 /* The socket(s) we're listening to. */
 #define MAXLISTEN	64
@@ -908,11 +918,12 @@ PostmasterMain(int argc, char *argv[])
 	/*
 	 * Check for invalid combinations of GUC settings.
 	 */
-	if (ReservedBackends >= MaxConnections)
+	if (SuperuserReservedConnections + ReservedConnections >= MaxConnections)
 	{
-		write_stderr("%s: superuser_reserved_connections (%d) must be less than max_connections (%d)\n",
+		write_stderr("%s: superuser_reserved_connections (%d) plus reserved_connections (%d) must be less than max_connections (%d)\n",
 					 progname,
-					 ReservedBackends, MaxConnections);
+					 SuperuserReservedConnections, ReservedConnections,
+					 MaxConnections);
 		ExitPostmaster(1);
 	}
 	if (XLogArchiveMode > ARCHIVE_MODE_OFF && wal_level == WAL_LEVEL_MINIMAL)
@@ -2005,6 +2016,13 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 
 	if (proto == CANCEL_REQUEST_CODE)
 	{
+		if (len != sizeof(CancelRequestPacket))
+		{
+			ereport(COMMERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("invalid length of startup packet")));
+			return STATUS_ERROR;
+		}
 		processCancelRequest(port, buf);
 		/* Not really an error, but we don't want to proceed further */
 		return STATUS_ERROR;

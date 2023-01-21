@@ -692,6 +692,7 @@ static char *GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli);
 static XLogRecPtr XLogBytePosToRecPtr(uint64 bytepos);
 static XLogRecPtr XLogBytePosToEndRecPtr(uint64 bytepos);
 static uint64 XLogRecPtrToBytePos(XLogRecPtr ptr);
+static void GetOldestRestartPointFileName(char *fname);
 
 static void WALInsertLockAcquire(void);
 static void WALInsertLockAcquireExclusive(void);
@@ -2190,6 +2191,8 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 				/* Measure I/O timing to write WAL data */
 				if (track_wal_io_timing)
 					INSTR_TIME_SET_CURRENT(start);
+				else
+					INSTR_TIME_SET_ZERO(start);
 
 				pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
 				written = pg_pwrite(openLogFile, from, nleft, startoffset);
@@ -4887,10 +4890,12 @@ CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI, XLogRecPtr EndOfLog,
 	 * Execute the recovery_end_command, if any.
 	 */
 	if (recoveryEndCommand && strcmp(recoveryEndCommand, "") != 0)
-		ExecuteRecoveryCommand(recoveryEndCommand,
-							   "recovery_end_command",
-							   true,
-							   WAIT_EVENT_RECOVERY_END_COMMAND);
+	{
+		char		lastRestartPointFname[MAXFNAMELEN];
+
+		GetOldestRestartPointFileName(lastRestartPointFname);
+		shell_recovery_end(lastRestartPointFname);
+	}
 
 	/*
 	 * We switched to a new timeline. Clean up segments on the old timeline.
@@ -7307,10 +7312,12 @@ CreateRestartPoint(int flags)
 	 * Finally, execute archive_cleanup_command, if any.
 	 */
 	if (archiveCleanupCommand && strcmp(archiveCleanupCommand, "") != 0)
-		ExecuteRecoveryCommand(archiveCleanupCommand,
-							   "archive_cleanup_command",
-							   false,
-							   WAIT_EVENT_ARCHIVE_CLEANUP_COMMAND);
+	{
+		char		lastRestartPointFname[MAXFNAMELEN];
+
+		GetOldestRestartPointFileName(lastRestartPointFname);
+		shell_archive_cleanup(lastRestartPointFname);
+	}
 
 	return true;
 }
@@ -7333,7 +7340,8 @@ CreateRestartPoint(int flags)
  *   above.
  *
  * * WALAVAIL_REMOVED means it has been removed. A replication stream on
- *   a slot with this LSN cannot continue after a restart.
+ *   a slot with this LSN cannot continue.  (Any associated walsender
+ *   processes should have been terminated already.)
  *
  * * WALAVAIL_INVALID_LSN means the slot hasn't been set to reserve WAL.
  */
@@ -8145,6 +8153,8 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 	/* Measure I/O timing to sync the WAL file */
 	if (track_wal_io_timing)
 		INSTR_TIME_SET_CURRENT(start);
+	else
+		INSTR_TIME_SET_ZERO(start);
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_SYNC);
 	switch (sync_method)
@@ -8882,6 +8892,22 @@ GetOldestRestartPoint(XLogRecPtr *oldrecptr, TimeLineID *oldtli)
 	*oldrecptr = ControlFile->checkPointCopy.redo;
 	*oldtli = ControlFile->checkPointCopy.ThisTimeLineID;
 	LWLockRelease(ControlFileLock);
+}
+
+/*
+ * Returns the WAL file name for the last checkpoint or restartpoint.  This is
+ * the oldest WAL file that we still need if we have to restart recovery.
+ */
+static void
+GetOldestRestartPointFileName(char *fname)
+{
+	XLogRecPtr	restartRedoPtr;
+	TimeLineID	restartTli;
+	XLogSegNo	restartSegNo;
+
+	GetOldestRestartPoint(&restartRedoPtr, &restartTli);
+	XLByteToSeg(restartRedoPtr, restartSegNo, wal_segment_size);
+	XLogFileName(fname, restartTli, restartSegNo, wal_segment_size);
 }
 
 /* Thin wrapper around ShutdownWalRcv(). */

@@ -43,6 +43,7 @@
 #include "jit/jit.h"
 #include "libpq/auth.h"
 #include "libpq/libpq.h"
+#include "nodes/queryjumble.h"
 #include "optimizer/cost.h"
 #include "optimizer/geqo.h"
 #include "optimizer/optimizer.h"
@@ -77,7 +78,6 @@
 #include "utils/pg_locale.h"
 #include "utils/portal.h"
 #include "utils/ps_status.h"
-#include "utils/queryjumble.h"
 #include "utils/inval.h"
 #include "utils/xml.h"
 
@@ -2163,8 +2163,19 @@ struct config_int ConfigureNamesInt[] =
 			gettext_noop("Sets the number of connection slots reserved for superusers."),
 			NULL
 		},
-		&ReservedBackends,
+		&SuperuserReservedConnections,
 		3, 0, MAX_BACKENDS,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"reserved_connections", PGC_POSTMASTER, CONN_AUTH_SETTINGS,
+			gettext_noop("Sets the number of connection slots reserved for roles "
+						 "with privileges of pg_use_reserved_connections."),
+			NULL
+		},
+		&ReservedConnections,
+		0, 0, MAX_BACKENDS,
 		NULL, NULL, NULL
 	},
 
@@ -3713,7 +3724,7 @@ struct config_real ConfigureNamesReal[] =
 		},
 		&CheckPointCompletionTarget,
 		0.9, 0.0, 1.0,
-		NULL, NULL, NULL
+		NULL, assign_checkpoint_completion_target, NULL
 	},
 
 	{
