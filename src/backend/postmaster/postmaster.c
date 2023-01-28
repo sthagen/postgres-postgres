@@ -359,17 +359,17 @@ bool		ClientAuthInProgress = false;	/* T during new-client
 bool		redirection_done = false;	/* stderr redirected for syslogger? */
 
 /* received START_AUTOVAC_LAUNCHER signal */
-static volatile sig_atomic_t start_autovac_launcher = false;
+static bool start_autovac_launcher = false;
 
 /* the launcher needs to be signaled to communicate some condition */
-static volatile bool avlauncher_needs_signal = false;
+static bool avlauncher_needs_signal = false;
 
 /* received START_WALRECEIVER signal */
-static volatile sig_atomic_t WalReceiverRequested = false;
+static bool WalReceiverRequested = false;
 
 /* set when there's a worker that needs to be started up */
-static volatile bool StartWorkerNeeded = true;
-static volatile bool HaveCrashedWorker = false;
+static bool StartWorkerNeeded = true;
+static bool HaveCrashedWorker = false;
 
 /* set when signals arrive */
 static volatile sig_atomic_t pending_pm_pmsignal;
@@ -1670,11 +1670,12 @@ DetermineSleepTime(void)
 
 	if (next_wakeup != 0)
 	{
-		/* Ensure we don't exceed one minute, or go under 0. */
-		return Max(0,
-				   Min(60 * 1000,
-					   TimestampDifferenceMilliseconds(GetCurrentTimestamp(),
-													   next_wakeup)));
+		int			ms;
+
+		/* result of TimestampDifferenceMilliseconds is in [0, INT_MAX] */
+		ms = (int) TimestampDifferenceMilliseconds(GetCurrentTimestamp(),
+												   next_wakeup);
+		return Min(60 * 1000, ms);
 	}
 
 	return 60 * 1000;
@@ -1750,20 +1751,25 @@ ServerLoop(void)
 		for (int i = 0; i < nevents; i++)
 		{
 			if (events[i].events & WL_LATCH_SET)
-			{
 				ResetLatch(MyLatch);
 
-				/* Process work requested via signal handlers. */
-				if (pending_pm_shutdown_request)
-					process_pm_shutdown_request();
-				if (pending_pm_child_exit)
-					process_pm_child_exit();
-				if (pending_pm_reload_request)
-					process_pm_reload_request();
-				if (pending_pm_pmsignal)
-					process_pm_pmsignal();
-			}
-			else if (events[i].events & WL_SOCKET_ACCEPT)
+			/*
+			 * The following requests are handled unconditionally, even if we
+			 * didn't see WL_LATCH_SET.  This gives high priority to shutdown
+			 * and reload requests where the latch happens to appear later in
+			 * events[] or will be reported by a later call to
+			 * WaitEventSetWait().
+			 */
+			if (pending_pm_shutdown_request)
+				process_pm_shutdown_request();
+			if (pending_pm_reload_request)
+				process_pm_reload_request();
+			if (pending_pm_child_exit)
+				process_pm_child_exit();
+			if (pending_pm_pmsignal)
+				process_pm_pmsignal();
+
+			if (events[i].events & WL_SOCKET_ACCEPT)
 			{
 				Port	   *port;
 
