@@ -2308,8 +2308,8 @@ order by 1, 2;
 (5 rows)
 
 --
--- regression test: check a case where join_clause_is_movable_into() gives
--- an imprecise result, causing an assertion failure
+-- regression test: check a case where join_clause_is_movable_into()
+-- used to give an imprecise result, causing an assertion failure
 --
 select count(*)
 from
@@ -2335,17 +2335,17 @@ select a.f1, b.f1, t.thousand, t.tenthous from
   (select sum(f1)+1 as f1 from int4_tbl i4a) a,
   (select sum(f1) as f1 from int4_tbl i4b) b
 where b.f1 = t.thousand and a.f1 = b.f1 and (a.f1+b.f1+999) = t.tenthous;
-                                                      QUERY PLAN                                                       
------------------------------------------------------------------------------------------------------------------------
+                                                   QUERY PLAN                                                    
+-----------------------------------------------------------------------------------------------------------------
  Nested Loop
-   ->  Aggregate
-         ->  Seq Scan on int4_tbl i4b
    ->  Nested Loop
          Join Filter: ((sum(i4b.f1)) = ((sum(i4a.f1) + 1)))
          ->  Aggregate
                ->  Seq Scan on int4_tbl i4a
-         ->  Index Only Scan using tenk1_thous_tenthous on tenk1 t
-               Index Cond: ((thousand = (sum(i4b.f1))) AND (tenthous = ((((sum(i4a.f1) + 1)) + (sum(i4b.f1))) + 999)))
+         ->  Aggregate
+               ->  Seq Scan on int4_tbl i4b
+   ->  Index Only Scan using tenk1_thous_tenthous on tenk1 t
+         Index Cond: ((thousand = (sum(i4b.f1))) AND (tenthous = ((((sum(i4a.f1) + 1)) + (sum(i4b.f1))) + 999)))
 (9 rows)
 
 select a.f1, b.f1, t.thousand, t.tenthous from
@@ -3599,6 +3599,20 @@ where f1 in ( select c3.f1 from ctetable c2 full join ctetable c3 on true );
   1
 (1 row)
 
+-- Test PHV that winds up in a Result node, despite having nonempty nullingrels
+explain (verbose, costs off)
+select table_catalog, table_name
+from int4_tbl t1
+  inner join (int8_tbl t2
+              left join information_schema.column_udt_usage on null)
+  on null;
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Result
+   Output: (current_database())::information_schema.sql_identifier, (c.relname)::information_schema.sql_identifier
+   One-Time Filter: false
+(3 rows)
+
 --
 -- test inlining of immutable functions
 --
@@ -4020,10 +4034,10 @@ explain (costs off)
 select q1, unique2, thousand, hundred
   from int8_tbl a left join tenk1 b on q1 = unique2
   where coalesce(thousand,123) = q1 and q1 = coalesce(hundred,123);
-                                      QUERY PLAN                                      
---------------------------------------------------------------------------------------
+                                                QUERY PLAN                                                
+----------------------------------------------------------------------------------------------------------
  Nested Loop Left Join
-   Filter: ((COALESCE(b.thousand, 123) = a.q1) AND (a.q1 = COALESCE(b.hundred, 123)))
+   Filter: ((COALESCE(b.thousand, 123) = COALESCE(b.hundred, 123)) AND (a.q1 = COALESCE(b.hundred, 123)))
    ->  Seq Scan on int8_tbl a
    ->  Index Scan using tenk1_unique2 on tenk1 b
          Index Cond: (unique2 = a.q1)
@@ -4064,8 +4078,8 @@ explain (costs off)
 select a.unique1, b.unique1, c.unique1, coalesce(b.twothousand, a.twothousand)
   from tenk1 a left join tenk1 b on b.thousand = a.unique1                        left join tenk1 c on c.unique2 = coalesce(b.twothousand, a.twothousand)
   where a.unique2 < 10 and coalesce(b.twothousand, a.twothousand) = 44;
-                                         QUERY PLAN                                          
----------------------------------------------------------------------------------------------
+                          QUERY PLAN                           
+---------------------------------------------------------------
  Nested Loop Left Join
    ->  Nested Loop Left Join
          Filter: (COALESCE(b.twothousand, a.twothousand) = 44)
@@ -4076,7 +4090,7 @@ select a.unique1, b.unique1, c.unique1, coalesce(b.twothousand, a.twothousand)
                ->  Bitmap Index Scan on tenk1_thous_tenthous
                      Index Cond: (thousand = a.unique1)
    ->  Index Scan using tenk1_unique2 on tenk1 c
-         Index Cond: ((unique2 = COALESCE(b.twothousand, a.twothousand)) AND (unique2 = 44))
+         Index Cond: (unique2 = 44)
 (11 rows)
 
 select a.unique1, b.unique1, c.unique1, coalesce(b.twothousand, a.twothousand)
@@ -4137,6 +4151,60 @@ using (join_key);
        0 |       0 |       666
        1 |         |          
 (2 rows)
+
+--
+-- check handling of a variable-free join alias
+--
+explain (verbose, costs off)
+select * from
+int4_tbl i0 left join
+( (select *, 123 as x from int4_tbl i1) ss1
+  left join
+  (select *, q2 as x from int8_tbl i2) ss2
+  using (x)
+) ss0
+on (i0.f1 = ss0.f1)
+order by i0.f1, x;
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Sort
+   Output: i0.f1, ('123'::bigint), i1.f1, i2.q1, i2.q2
+   Sort Key: i0.f1, ('123'::bigint)
+   ->  Hash Right Join
+         Output: i0.f1, ('123'::bigint), i1.f1, i2.q1, i2.q2
+         Hash Cond: (i1.f1 = i0.f1)
+         ->  Nested Loop Left Join
+               Output: i1.f1, i2.q1, i2.q2, '123'::bigint
+               ->  Seq Scan on public.int4_tbl i1
+                     Output: i1.f1
+               ->  Materialize
+                     Output: i2.q1, i2.q2
+                     ->  Seq Scan on public.int8_tbl i2
+                           Output: i2.q1, i2.q2
+                           Filter: (123 = i2.q2)
+         ->  Hash
+               Output: i0.f1
+               ->  Seq Scan on public.int4_tbl i0
+                     Output: i0.f1
+(19 rows)
+
+select * from
+int4_tbl i0 left join
+( (select *, 123 as x from int4_tbl i1) ss1
+  left join
+  (select *, q2 as x from int8_tbl i2) ss2
+  using (x)
+) ss0
+on (i0.f1 = ss0.f1)
+order by i0.f1, x;
+     f1      |  x  |     f1      |        q1        | q2  
+-------------+-----+-------------+------------------+-----
+ -2147483647 | 123 | -2147483647 | 4567890123456789 | 123
+     -123456 | 123 |     -123456 | 4567890123456789 | 123
+           0 | 123 |           0 | 4567890123456789 | 123
+      123456 | 123 |      123456 | 4567890123456789 | 123
+  2147483647 | 123 |  2147483647 | 4567890123456789 | 123
+(5 rows)
 
 --
 -- test successful handling of nested outer joins with degenerate join quals
@@ -4507,7 +4575,6 @@ where tt1.f1 = ss1.c0;
                Output: tt4.f1
                ->  Nested Loop Left Join
                      Output: tt4.f1
-                     Join Filter: (tt3.f1 = tt4.f1)
                      ->  Seq Scan on public.text_tbl tt3
                            Output: tt3.f1
                            Filter: (tt3.f1 = 'foo'::text)
@@ -4525,7 +4592,7 @@ where tt1.f1 = ss1.c0;
                      Output: (tt4.f1)
                      ->  Seq Scan on public.text_tbl tt5
                            Output: tt4.f1
-(33 rows)
+(32 rows)
 
 select 1 from
   text_tbl as tt1
@@ -4632,24 +4699,22 @@ explain (costs off)
                    QUERY PLAN                    
 -------------------------------------------------
  Nested Loop Left Join
-   Join Filter: (a.f1 = b.unique2)
    ->  Seq Scan on int4_tbl a
          Filter: (f1 = 0)
    ->  Index Scan using tenk1_unique2 on tenk1 b
          Index Cond: (unique2 = 0)
-(6 rows)
+(5 rows)
 
 explain (costs off)
   select * from tenk1 a full join tenk1 b using(unique2) where unique2 = 42;
                    QUERY PLAN                    
 -------------------------------------------------
  Merge Full Join
-   Merge Cond: (a.unique2 = b.unique2)
    ->  Index Scan using tenk1_unique2 on tenk1 a
          Index Cond: (unique2 = 42)
    ->  Index Scan using tenk1_unique2 on tenk1 b
          Index Cond: (unique2 = 42)
-(6 rows)
+(5 rows)
 
 --
 -- test that quals attached to an outer join have correct semantics,
@@ -4725,6 +4790,101 @@ select a.unique1, b.unique2
  unique1 | unique2 
 ---------+---------
      123 |     123
+(1 row)
+
+--
+-- test full-join strength reduction
+--
+explain (costs off)
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where a.unique1 = 42;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Nested Loop Left Join
+   ->  Index Only Scan using onek_unique1 on onek a
+         Index Cond: (unique1 = 42)
+   ->  Index Only Scan using onek_unique2 on onek b
+         Index Cond: (unique2 = 42)
+(5 rows)
+
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where a.unique1 = 42;
+ unique1 | unique2 
+---------+---------
+      42 |      42
+(1 row)
+
+explain (costs off)
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where b.unique2 = 43;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Nested Loop Left Join
+   ->  Index Only Scan using onek_unique2 on onek b
+         Index Cond: (unique2 = 43)
+   ->  Index Only Scan using onek_unique1 on onek a
+         Index Cond: (unique1 = 43)
+(5 rows)
+
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where b.unique2 = 43;
+ unique1 | unique2 
+---------+---------
+      43 |      43
+(1 row)
+
+explain (costs off)
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where a.unique1 = 42 and b.unique2 = 42;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Nested Loop
+   ->  Index Only Scan using onek_unique1 on onek a
+         Index Cond: (unique1 = 42)
+   ->  Index Only Scan using onek_unique2 on onek b
+         Index Cond: (unique2 = 42)
+(5 rows)
+
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where a.unique1 = 42 and b.unique2 = 42;
+ unique1 | unique2 
+---------+---------
+      42 |      42
+(1 row)
+
+--
+-- test result-RTE removal underneath a full join
+--
+explain (costs off)
+select * from
+  (select * from int8_tbl i81 join (values(123,2)) v(v1,v2) on q2=v1) ss1
+full join
+  (select * from (values(456,2)) w(v1,v2) join int8_tbl i82 on q2=v1) ss2
+on true;
+              QUERY PLAN              
+--------------------------------------
+ Merge Full Join
+   ->  Seq Scan on int8_tbl i81
+         Filter: (q2 = 123)
+   ->  Materialize
+         ->  Seq Scan on int8_tbl i82
+               Filter: (q2 = 456)
+(6 rows)
+
+select * from
+  (select * from int8_tbl i81 join (values(123,2)) v(v1,v2) on q2=v1) ss1
+full join
+  (select * from (values(456,2)) w(v1,v2) join int8_tbl i82 on q2=v1) ss2
+on true;
+        q1        | q2  | v1  | v2 | v1  | v2 | q1  | q2  
+------------------+-----+-----+----+-----+----+-----+-----
+ 4567890123456789 | 123 | 123 |  2 | 456 |  2 | 123 | 456
 (1 row)
 
 --
@@ -4988,6 +5148,21 @@ SELECT * FROM
  1 | 4567890123456789 |               123 |               42
  1 | 4567890123456789 |  4567890123456789 | 4567890123456789
  1 | 4567890123456789 | -4567890123456789 | 4567890123456789
+(5 rows)
+
+-- join removal bug #17769: can't remove if there's a pushed-down reference
+EXPLAIN (COSTS OFF)
+SELECT q2 FROM
+  (SELECT *
+   FROM int8_tbl LEFT JOIN innertab ON q2 = id) ss
+ WHERE COALESCE(dat1, 0) = q1;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Nested Loop Left Join
+   Filter: (COALESCE(innertab.dat1, '0'::bigint) = int8_tbl.q1)
+   ->  Seq Scan on int8_tbl
+   ->  Index Scan using innertab_pkey on innertab
+         Index Cond: (id = int8_tbl.q2)
 (5 rows)
 
 rollback;
@@ -6043,6 +6218,28 @@ select * from
          Output: 3
 (11 rows)
 
+-- a new postponed-quals issue (bug #17768)
+explain (costs off)
+select * from int4_tbl t1,
+  lateral (select * from int4_tbl t2 inner join int4_tbl t3 on t1.f1 = 1
+           inner join (int4_tbl t4 left join int4_tbl t5 on true) on true) ss;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Nested Loop Left Join
+   ->  Nested Loop
+         ->  Nested Loop
+               ->  Nested Loop
+                     ->  Seq Scan on int4_tbl t1
+                           Filter: (f1 = 1)
+                     ->  Seq Scan on int4_tbl t2
+               ->  Materialize
+                     ->  Seq Scan on int4_tbl t3
+         ->  Materialize
+               ->  Seq Scan on int4_tbl t4
+   ->  Materialize
+         ->  Seq Scan on int4_tbl t5
+(13 rows)
+
 -- check dummy rels with lateral references (bug #15694)
 explain (verbose, costs off)
 select * from int8_tbl i8 left join lateral
@@ -6051,12 +6248,13 @@ select * from int8_tbl i8 left join lateral
 --------------------------------------
  Nested Loop Left Join
    Output: i8.q1, i8.q2, f1, (i8.q2)
+   Join Filter: false
    ->  Seq Scan on public.int8_tbl i8
          Output: i8.q1, i8.q2
    ->  Result
          Output: f1, i8.q2
          One-Time Filter: false
-(7 rows)
+(8 rows)
 
 explain (verbose, costs off)
 select * from int8_tbl i8 left join lateral

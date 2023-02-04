@@ -411,8 +411,8 @@ select * from int8_tbl i1 left join (int8_tbl i2 join
 order by 1, 2;
 
 --
--- regression test: check a case where join_clause_is_movable_into() gives
--- an imprecise result, causing an assertion failure
+-- regression test: check a case where join_clause_is_movable_into()
+-- used to give an imprecise result, causing an assertion failure
 --
 select count(*)
 from
@@ -1181,6 +1181,14 @@ with ctetable as not materialized ( select 1 as f1 )
 select * from ctetable c1
 where f1 in ( select c3.f1 from ctetable c2 full join ctetable c3 on true );
 
+-- Test PHV that winds up in a Result node, despite having nonempty nullingrels
+explain (verbose, costs off)
+select table_catalog, table_name
+from int4_tbl t1
+  inner join (int8_tbl t2
+              left join information_schema.column_udt_usage on null)
+  on null;
+
 --
 -- test inlining of immutable functions
 --
@@ -1408,6 +1416,30 @@ left join
    using (join_key)
   ) foo3
 using (join_key);
+
+--
+-- check handling of a variable-free join alias
+--
+explain (verbose, costs off)
+select * from
+int4_tbl i0 left join
+( (select *, 123 as x from int4_tbl i1) ss1
+  left join
+  (select *, q2 as x from int8_tbl i2) ss2
+  using (x)
+) ss0
+on (i0.f1 = ss0.f1)
+order by i0.f1, x;
+
+select * from
+int4_tbl i0 left join
+( (select *, 123 as x from int4_tbl i1) ss1
+  left join
+  (select *, q2 as x from int8_tbl i2) ss2
+  using (x)
+) ss0
+on (i0.f1 = ss0.f1)
+order by i0.f1, x;
 
 --
 -- test successful handling of nested outer joins with degenerate join quals
@@ -1642,6 +1674,54 @@ select a.unique1, b.unique2
   where b.unique2 = any (select q1 from int8_tbl c where c.q1 < b.unique1);
 
 --
+-- test full-join strength reduction
+--
+
+explain (costs off)
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where a.unique1 = 42;
+
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where a.unique1 = 42;
+
+explain (costs off)
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where b.unique2 = 43;
+
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where b.unique2 = 43;
+
+explain (costs off)
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where a.unique1 = 42 and b.unique2 = 42;
+
+select a.unique1, b.unique2
+  from onek a full join onek b on a.unique1 = b.unique2
+  where a.unique1 = 42 and b.unique2 = 42;
+
+--
+-- test result-RTE removal underneath a full join
+--
+
+explain (costs off)
+select * from
+  (select * from int8_tbl i81 join (values(123,2)) v(v1,v2) on q2=v1) ss1
+full join
+  (select * from (values(456,2)) w(v1,v2) join int8_tbl i82 on q2=v1) ss2
+on true;
+
+select * from
+  (select * from int8_tbl i81 join (values(123,2)) v(v1,v2) on q2=v1) ss1
+full join
+  (select * from (values(456,2)) w(v1,v2) join int8_tbl i82 on q2=v1) ss2
+on true;
+
+--
 -- test join removal
 --
 
@@ -1779,6 +1859,13 @@ SELECT * FROM
     (SELECT q1, q2, COALESCE(dat1, q1) AS y
      FROM int8_tbl LEFT JOIN innertab ON q2 = id) ss2
   ON true;
+
+-- join removal bug #17769: can't remove if there's a pushed-down reference
+EXPLAIN (COSTS OFF)
+SELECT q2 FROM
+  (SELECT *
+   FROM int8_tbl LEFT JOIN innertab ON q2 = id) ss
+ WHERE COALESCE(dat1, 0) = q1;
 
 rollback;
 
@@ -2078,6 +2165,12 @@ select * from
   left join lateral (
     select * from (select 3 as z offset 0) z where z.z = x.x
   ) zz on zz.z = y.y;
+
+-- a new postponed-quals issue (bug #17768)
+explain (costs off)
+select * from int4_tbl t1,
+  lateral (select * from int4_tbl t2 inner join int4_tbl t3 on t1.f1 = 1
+           inner join (int4_tbl t4 left join int4_tbl t5 on true) on true) ss;
 
 -- check dummy rels with lateral references (bug #15694)
 explain (verbose, costs off)

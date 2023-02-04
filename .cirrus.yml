@@ -404,7 +404,7 @@ task:
 
 
 task:
-  name: macOS - Monterey - Meson
+  name: macOS - Ventura - Meson
 
   env:
     CPUS: 4 # always get that much for cirrusci macOS instances
@@ -429,7 +429,7 @@ task:
   only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*' || $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:[^\n]*(macos|darwin|osx).*'
 
   macos_instance:
-    image: ghcr.io/cirruslabs/macos-monterey-base:latest
+    image: ghcr.io/cirruslabs/macos-ventura-base:latest
 
   sysinfo_script: |
     id
@@ -549,8 +549,10 @@ task:
   depends_on: SanityCheck
   only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*' || $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:[^\n]*windows.*'
 
-  windows_container:
-    image: $CONTAINER_REPO/windows_ci_vs_2019:latest
+  compute_engine_instance:
+    image_project: $IMAGE_PROJECT
+    image: family/pg-ci-windows-ci-vs-2019
+    platform: windows
     cpu: $CPUS
     memory: 4G
 
@@ -589,8 +591,10 @@ task:
   # otherwise it'll be sorted before other tasks
   depends_on: SanityCheck
 
-  windows_container:
-    image: $CONTAINER_REPO/windows_ci_mingw64:latest
+  compute_engine_instance:
+    image_project: $IMAGE_PROJECT
+    image: family/pg-ci-windows-ci-mingw64
+    platform: windows
     cpu: $CPUS
     memory: 4G
 

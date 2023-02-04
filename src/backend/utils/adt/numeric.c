@@ -3693,8 +3693,21 @@ numeric_sqrt(PG_FUNCTION_ARGS)
 
 	init_var(&result);
 
-	/* Assume the input was normalized, so arg.weight is accurate */
-	sweight = (arg.weight + 1) * DEC_DIGITS / 2 - 1;
+	/*
+	 * Assume the input was normalized, so arg.weight is accurate.  The result
+	 * then has at least sweight = floor(arg.weight * DEC_DIGITS / 2 + 1)
+	 * digits before the decimal point.  When DEC_DIGITS is even, we can save
+	 * a few cycles, since the division is exact and there is no need to round
+	 * towards negative infinity.
+	 */
+#if DEC_DIGITS == ((DEC_DIGITS / 2) * 2)
+	sweight = arg.weight * DEC_DIGITS / 2 + 1;
+#else
+	if (arg.weight >= 0)
+		sweight = arg.weight * DEC_DIGITS / 2 + 1;
+	else
+		sweight = 1 - (1 - arg.weight * DEC_DIGITS) / 2;
+#endif
 
 	rscale = NUMERIC_MIN_SIG_DIGITS - sweight;
 	rscale = Max(rscale, arg.dscale);
@@ -4222,7 +4235,7 @@ int64_to_numeric(int64 val)
 }
 
 /*
- * Convert val1/(10**val2) to numeric.  This is much faster than normal
+ * Convert val1/(10**log10val2) to numeric.  This is much faster than normal
  * numeric division.
  */
 Numeric
@@ -4230,51 +4243,78 @@ int64_div_fast_to_numeric(int64 val1, int log10val2)
 {
 	Numeric		res;
 	NumericVar	result;
-	int64		saved_val1 = val1;
+	int			rscale;
 	int			w;
 	int			m;
 
+	init_var(&result);
+
+	/* result scale */
+	rscale = log10val2 < 0 ? 0 : log10val2;
+
 	/* how much to decrease the weight by */
 	w = log10val2 / DEC_DIGITS;
-	/* how much is left */
+	/* how much is left to divide by */
 	m = log10val2 % DEC_DIGITS;
+	if (m < 0)
+	{
+		m += DEC_DIGITS;
+		w--;
+	}
 
 	/*
-	 * If there is anything left, multiply the dividend by what's left, then
-	 * shift the weight by one more.
+	 * If there is anything left to divide by (10^m with 0 < m < DEC_DIGITS),
+	 * multiply the dividend by 10^(DEC_DIGITS - m), and shift the weight by
+	 * one more.
 	 */
 	if (m > 0)
 	{
-		static int	pow10[] = {1, 10, 100, 1000};
+#if DEC_DIGITS == 4
+		static const int pow10[] = {1, 10, 100, 1000};
+#elif DEC_DIGITS == 2
+		static const int pow10[] = {1, 10};
+#elif DEC_DIGITS == 1
+		static const int pow10[] = {1};
+#else
+#error unsupported NBASE
+#endif
+		int64		factor = pow10[DEC_DIGITS - m];
+		int64		new_val1;
 
 		StaticAssertDecl(lengthof(pow10) == DEC_DIGITS, "mismatch with DEC_DIGITS");
 
-		if (unlikely(pg_mul_s64_overflow(val1, pow10[DEC_DIGITS - m], &val1)))
+		if (unlikely(pg_mul_s64_overflow(val1, factor, &new_val1)))
 		{
-			/*
-			 * If it doesn't fit, do the whole computation in numeric the slow
-			 * way.  Note that va1l may have been overwritten, so use
-			 * saved_val1 instead.
-			 */
-			int			val2 = 1;
+#ifdef HAVE_INT128
+			/* do the multiplication using 128-bit integers */
+			int128		tmp;
 
-			for (int i = 0; i < log10val2; i++)
-				val2 *= 10;
-			res = numeric_div_opt_error(int64_to_numeric(saved_val1), int64_to_numeric(val2), NULL);
-			res = DatumGetNumeric(DirectFunctionCall2(numeric_round,
-													  NumericGetDatum(res),
-													  Int32GetDatum(log10val2)));
-			return res;
+			tmp = (int128) val1 * (int128) factor;
+
+			int128_to_numericvar(tmp, &result);
+#else
+			/* do the multiplication using numerics */
+			NumericVar	tmp;
+
+			init_var(&tmp);
+
+			int64_to_numericvar(val1, &result);
+			int64_to_numericvar(factor, &tmp);
+			mul_var(&result, &tmp, &result, 0);
+
+			free_var(&tmp);
+#endif
 		}
+		else
+			int64_to_numericvar(new_val1, &result);
+
 		w++;
 	}
-
-	init_var(&result);
-
-	int64_to_numericvar(val1, &result);
+	else
+		int64_to_numericvar(val1, &result);
 
 	result.weight -= w;
-	result.dscale += w * DEC_DIGITS - (DEC_DIGITS - m);
+	result.dscale = rscale;
 
 	res = make_result(&result);
 
@@ -6928,10 +6968,7 @@ set_var_from_str(const char *str, const char *cp,
 	}
 
 	if (!isdigit((unsigned char) *cp))
-		ereturn(escontext, false,
-				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid input syntax for type %s: \"%s\"",
-						"numeric", str)));
+		goto invalid_syntax;
 
 	decdigits = (unsigned char *) palloc(strlen(cp) + DEC_DIGITS * 2);
 
@@ -6952,12 +6989,19 @@ set_var_from_str(const char *str, const char *cp,
 		else if (*cp == '.')
 		{
 			if (have_dp)
-				ereturn(escontext, false,
-						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-						 errmsg("invalid input syntax for type %s: \"%s\"",
-								"numeric", str)));
+				goto invalid_syntax;
 			have_dp = true;
 			cp++;
+			/* decimal point must not be followed by underscore */
+			if (*cp == '_')
+				goto invalid_syntax;
+		}
+		else if (*cp == '_')
+		{
+			/* underscore must be followed by more digits */
+			cp++;
+			if (!isdigit((unsigned char) *cp))
+				goto invalid_syntax;
 		}
 		else
 			break;
@@ -6970,17 +7014,8 @@ set_var_from_str(const char *str, const char *cp,
 	/* Handle exponent, if any */
 	if (*cp == 'e' || *cp == 'E')
 	{
-		long		exponent;
-		char	   *endptr;
-
-		cp++;
-		exponent = strtol(cp, &endptr, 10);
-		if (endptr == cp)
-			ereturn(escontext, false,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for type %s: \"%s\"",
-							"numeric", str)));
-		cp = endptr;
+		int64		exponent = 0;
+		bool		neg = false;
 
 		/*
 		 * At this point, dweight and dscale can't be more than about
@@ -6990,10 +7025,43 @@ set_var_from_str(const char *str, const char *cp,
 		 * fit in storage format, make_result() will complain about it later;
 		 * for consistency use the same ereport errcode/text as make_result().
 		 */
-		if (exponent >= INT_MAX / 2 || exponent <= -(INT_MAX / 2))
-			ereturn(escontext, false,
-					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-					 errmsg("value overflows numeric format")));
+
+		/* exponent sign */
+		cp++;
+		if (*cp == '+')
+			cp++;
+		else if (*cp == '-')
+		{
+			neg = true;
+			cp++;
+		}
+
+		/* exponent digits */
+		if (!isdigit((unsigned char) *cp))
+			goto invalid_syntax;
+
+		while (*cp)
+		{
+			if (isdigit((unsigned char) *cp))
+			{
+				exponent = exponent * 10 + (*cp++ - '0');
+				if (exponent > PG_INT32_MAX / 2)
+					goto out_of_range;
+			}
+			else if (*cp == '_')
+			{
+				/* underscore must be followed by more digits */
+				cp++;
+				if (!isdigit((unsigned char) *cp))
+					goto invalid_syntax;
+			}
+			else
+				break;
+		}
+
+		if (neg)
+			exponent = -exponent;
+
 		dweight += (int) exponent;
 		dscale -= (int) exponent;
 		if (dscale < 0)
@@ -7045,6 +7113,17 @@ set_var_from_str(const char *str, const char *cp,
 	*endptr = cp;
 
 	return true;
+
+out_of_range:
+	ereturn(escontext, false,
+			(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+			 errmsg("value overflows numeric format")));
+
+invalid_syntax:
+	ereturn(escontext, false,
+			(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+			 errmsg("invalid input syntax for type %s: \"%s\"",
+					"numeric", str)));
 }
 
 
@@ -7127,6 +7206,13 @@ set_var_from_non_decimal_integer_str(const char *str, const char *cp, int sign,
 				tmp = tmp * 16 + xdigit_value(*cp++);
 				mul = mul * 16;
 			}
+			else if (*cp == '_')
+			{
+				/* Underscore must be followed by more digits */
+				cp++;
+				if (!isxdigit((unsigned char) *cp))
+					goto invalid_syntax;
+			}
 			else
 				break;
 		}
@@ -7157,6 +7243,13 @@ set_var_from_non_decimal_integer_str(const char *str, const char *cp, int sign,
 				tmp = tmp * 8 + (*cp++ - '0');
 				mul = mul * 8;
 			}
+			else if (*cp == '_')
+			{
+				/* Underscore must be followed by more digits */
+				cp++;
+				if (*cp < '0' || *cp > '7')
+					goto invalid_syntax;
+			}
 			else
 				break;
 		}
@@ -7186,6 +7279,13 @@ set_var_from_non_decimal_integer_str(const char *str, const char *cp, int sign,
 
 				tmp = tmp * 2 + (*cp++ - '0');
 				mul = mul * 2;
+			}
+			else if (*cp == '_')
+			{
+				/* Underscore must be followed by more digits */
+				cp++;
+				if (*cp < '0' || *cp > '1')
+					goto invalid_syntax;
 			}
 			else
 				break;

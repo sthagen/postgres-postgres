@@ -982,9 +982,7 @@ create_samplescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer
  * 'indexorderbycols' is an integer list of index column numbers (zero based)
  *			the ordering operators can be used with.
  * 'pathkeys' describes the ordering of the path.
- * 'indexscandir' is ForwardScanDirection or BackwardScanDirection
- *			for an ordered index, or NoMovementScanDirection for
- *			an unordered index.
+ * 'indexscandir' is either ForwardScanDirection or BackwardScanDirection.
  * 'indexonly' is true if an index-only scan is wanted.
  * 'required_outer' is the set of outer relids for a parameterized path.
  * 'loop_count' is the number of repetitions of the indexscan to factor into
@@ -1307,7 +1305,7 @@ create_append_path(PlannerInfo *root,
 	 * Apply query-wide LIMIT if known and path is for sole base relation.
 	 * (Handling this at this low level is a bit klugy.)
 	 */
-	if (root != NULL && bms_equal(rel->relids, root->all_baserels))
+	if (root != NULL && bms_equal(rel->relids, root->all_query_rels))
 		pathnode->limit_tuples = root->limit_tuples;
 	else
 		pathnode->limit_tuples = -1.0;
@@ -1436,7 +1434,7 @@ create_merge_append_path(PlannerInfo *root,
 	 * Apply query-wide LIMIT if known and path is for sole base relation.
 	 * (Handling this at this low level is a bit klugy.)
 	 */
-	if (bms_equal(rel->relids, root->all_baserels))
+	if (bms_equal(rel->relids, root->all_query_rels))
 		pathnode->limit_tuples = root->limit_tuples;
 	else
 		pathnode->limit_tuples = -1.0;
@@ -2442,12 +2440,12 @@ create_nestloop_path(PlannerInfo *root,
 	 * restrict_clauses that are due to be moved into the inner path.  We have
 	 * to do this now, rather than postpone the work till createplan time,
 	 * because the restrict_clauses list can affect the size and cost
-	 * estimates for this path.
+	 * estimates for this path.  We detect such clauses by checking for serial
+	 * number match to clauses already enforced in the inner path.
 	 */
 	if (bms_overlap(inner_req_outer, outer_path->parent->relids))
 	{
-		Relids		inner_and_outer = bms_union(inner_path->parent->relids,
-												inner_req_outer);
+		Bitmapset  *enforced_serials = get_param_path_clause_serials(inner_path);
 		List	   *jclauses = NIL;
 		ListCell   *lc;
 
@@ -2455,9 +2453,7 @@ create_nestloop_path(PlannerInfo *root,
 		{
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
 
-			if (!join_clause_is_movable_into(rinfo,
-											 inner_path->parent->relids,
-											 inner_and_outer))
+			if (!bms_is_member(rinfo->rinfo_serial, enforced_serials))
 				jclauses = lappend(jclauses, rinfo);
 		}
 		restrict_clauses = jclauses;
@@ -4298,6 +4294,7 @@ do { \
 		new_ppi->ppi_rows = old_ppi->ppi_rows;
 		new_ppi->ppi_clauses = old_ppi->ppi_clauses;
 		ADJUST_CHILD_ATTRS(new_ppi->ppi_clauses);
+		new_ppi->ppi_serials = bms_copy(old_ppi->ppi_serials);
 		rel->ppilist = lappend(rel->ppilist, new_ppi);
 
 		MemoryContextSwitchTo(oldcontext);

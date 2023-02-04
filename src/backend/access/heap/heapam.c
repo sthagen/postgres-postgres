@@ -483,15 +483,234 @@ heapgetpage(TableScanDesc sscan, BlockNumber block)
 	scan->rs_ntuples = ntup;
 }
 
+/*
+ * heapgettup_initial_block - return the first BlockNumber to scan
+ *
+ * Returns InvalidBlockNumber when there are no blocks to scan.  This can
+ * occur with empty tables and in parallel scans when parallel workers get all
+ * of the pages before we can get a chance to get our first page.
+ */
+static BlockNumber
+heapgettup_initial_block(HeapScanDesc scan, ScanDirection dir)
+{
+	Assert(!scan->rs_inited);
+
+	/* When there are no pages to scan, return InvalidBlockNumber */
+	if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
+		return InvalidBlockNumber;
+
+	if (ScanDirectionIsForward(dir))
+	{
+		/* serial scan */
+		if (scan->rs_base.rs_parallel == NULL)
+			return scan->rs_startblock;
+		else
+		{
+			/* parallel scan */
+			table_block_parallelscan_startblock_init(scan->rs_base.rs_rd,
+													 scan->rs_parallelworkerdata,
+													 (ParallelBlockTableScanDesc) scan->rs_base.rs_parallel);
+
+			/* may return InvalidBlockNumber if there are no more blocks */
+			return table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+													 scan->rs_parallelworkerdata,
+													 (ParallelBlockTableScanDesc) scan->rs_base.rs_parallel);
+		}
+	}
+	else
+	{
+		/* backward parallel scan not supported */
+		Assert(scan->rs_base.rs_parallel == NULL);
+
+		/*
+		 * Disable reporting to syncscan logic in a backwards scan; it's not
+		 * very likely anyone else is doing the same thing at the same time,
+		 * and much more likely that we'll just bollix things for forward
+		 * scanners.
+		 */
+		scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
+
+		/*
+		 * Start from last page of the scan.  Ensure we take into account
+		 * rs_numblocks if it's been adjusted by heap_setscanlimits().
+		 */
+		if (scan->rs_numblocks != InvalidBlockNumber)
+			return (scan->rs_startblock + scan->rs_numblocks - 1) % scan->rs_nblocks;
+
+		if (scan->rs_startblock > 0)
+			return scan->rs_startblock - 1;
+
+		return scan->rs_nblocks - 1;
+	}
+}
+
+
+/*
+ * heapgettup_start_page - helper function for heapgettup()
+ *
+ * Return the next page to scan based on the scan->rs_cbuf and set *linesleft
+ * to the number of tuples on this page.  Also set *lineoff to the first
+ * offset to scan with forward scans getting the first offset and backward
+ * getting the final offset on the page.
+ */
+static Page
+heapgettup_start_page(HeapScanDesc scan, ScanDirection dir, int *linesleft,
+					  OffsetNumber *lineoff)
+{
+	Page		page;
+
+	Assert(scan->rs_inited);
+	Assert(BufferIsValid(scan->rs_cbuf));
+
+	/* Caller is responsible for ensuring buffer is locked if needed */
+	page = BufferGetPage(scan->rs_cbuf);
+
+	TestForOldSnapshot(scan->rs_base.rs_snapshot, scan->rs_base.rs_rd, page);
+
+	*linesleft = PageGetMaxOffsetNumber((Page) page) - FirstOffsetNumber + 1;
+
+	if (ScanDirectionIsForward(dir))
+		*lineoff = FirstOffsetNumber;
+	else
+		*lineoff = (OffsetNumber) (*linesleft);
+
+	/* lineoff now references the physically previous or next tid */
+	return page;
+}
+
+
+/*
+ * heapgettup_continue_page - helper function for heapgettup()
+ *
+ * Return the next page to scan based on the scan->rs_cbuf and set *linesleft
+ * to the number of tuples left to scan on this page.  Also set *lineoff to
+ * the next offset to scan according to the ScanDirection in 'dir'.
+ */
+static inline Page
+heapgettup_continue_page(HeapScanDesc scan, ScanDirection dir, int *linesleft,
+						 OffsetNumber *lineoff)
+{
+	Page		page;
+
+	Assert(scan->rs_inited);
+	Assert(BufferIsValid(scan->rs_cbuf));
+
+	/* Caller is responsible for ensuring buffer is locked if needed */
+	page = BufferGetPage(scan->rs_cbuf);
+
+	TestForOldSnapshot(scan->rs_base.rs_snapshot, scan->rs_base.rs_rd, page);
+
+	if (ScanDirectionIsForward(dir))
+	{
+		*lineoff = OffsetNumberNext(scan->rs_coffset);
+		*linesleft = PageGetMaxOffsetNumber(page) - (*lineoff) + 1;
+	}
+	else
+	{
+		/*
+		 * The previous returned tuple may have been vacuumed since the
+		 * previous scan when we use a non-MVCC snapshot, so we must
+		 * re-establish the lineoff <= PageGetMaxOffsetNumber(page) invariant
+		 */
+		*lineoff = Min(PageGetMaxOffsetNumber(page), OffsetNumberPrev(scan->rs_coffset));
+		*linesleft = *lineoff;
+	}
+
+	/* lineoff now references the physically previous or next tid */
+	return page;
+}
+
+/*
+ * heapgettup_advance_block - helper for heapgettup() and heapgettup_pagemode()
+ *
+ * Given the current block number, the scan direction, and various information
+ * contained in the scan descriptor, calculate the BlockNumber to scan next
+ * and return it.  If there are no further blocks to scan, return
+ * InvalidBlockNumber to indicate this fact to the caller.
+ *
+ * This should not be called to determine the initial block number -- only for
+ * subsequent blocks.
+ *
+ * This also adjusts rs_numblocks when a limit has been imposed by
+ * heap_setscanlimits().
+ */
+static inline BlockNumber
+heapgettup_advance_block(HeapScanDesc scan, BlockNumber block, ScanDirection dir)
+{
+	if (ScanDirectionIsForward(dir))
+	{
+		if (scan->rs_base.rs_parallel == NULL)
+		{
+			block++;
+
+			/* wrap back to the start of the heap */
+			if (block >= scan->rs_nblocks)
+				block = 0;
+
+			/* we're done if we're back at where we started */
+			if (block == scan->rs_startblock)
+				return InvalidBlockNumber;
+
+			/* check if the limit imposed by heap_setscanlimits() is met */
+			if (scan->rs_numblocks != InvalidBlockNumber)
+			{
+				if (--scan->rs_numblocks == 0)
+					return InvalidBlockNumber;
+			}
+
+			/*
+			 * Report our new scan position for synchronization purposes. We
+			 * don't do that when moving backwards, however. That would just
+			 * mess up any other forward-moving scanners.
+			 *
+			 * Note: we do this before checking for end of scan so that the
+			 * final state of the position hint is back at the start of the
+			 * rel.  That's not strictly necessary, but otherwise when you run
+			 * the same query multiple times the starting position would shift
+			 * a little bit backwards on every invocation, which is confusing.
+			 * We don't guarantee any specific ordering in general, though.
+			 */
+			if (scan->rs_base.rs_flags & SO_ALLOW_SYNC)
+				ss_report_location(scan->rs_base.rs_rd, block);
+
+			return block;
+		}
+		else
+		{
+			return table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+													 scan->rs_parallelworkerdata, (ParallelBlockTableScanDesc)
+													 scan->rs_base.rs_parallel);
+		}
+	}
+	else
+	{
+		/* we're done if the last block is the start position */
+		if (block == scan->rs_startblock)
+			return InvalidBlockNumber;
+
+		/* check if the limit imposed by heap_setscanlimits() is met */
+		if (scan->rs_numblocks != InvalidBlockNumber)
+		{
+			if (--scan->rs_numblocks == 0)
+				return InvalidBlockNumber;
+		}
+
+		/* wrap to the end of the heap when the last page was page 0 */
+		if (block == 0)
+			block = scan->rs_nblocks;
+
+		block--;
+
+		return block;
+	}
+}
+
 /* ----------------
  *		heapgettup - fetch next heap tuple
  *
  *		Initialize the scan if not already done; then advance to the next
  *		tuple as indicated by "dir"; return the next tuple in scan->rs_ctup,
  *		or set scan->rs_ctup.t_data = NULL if no more tuples.
- *
- * dir == NoMovementScanDirection means "re-fetch the tuple indicated
- * by scan->rs_ctup".
  *
  * Note: the reason nkeys/key are passed separately, even though they are
  * kept in the scan descriptor, is that the caller may not want us to check
@@ -513,173 +732,42 @@ heapgettup(HeapScanDesc scan,
 		   ScanKey key)
 {
 	HeapTuple	tuple = &(scan->rs_ctup);
-	Snapshot	snapshot = scan->rs_base.rs_snapshot;
 	bool		backward = ScanDirectionIsBackward(dir);
 	BlockNumber block;
-	bool		finished;
 	Page		page;
-	int			lines;
 	OffsetNumber lineoff;
 	int			linesleft;
 	ItemId		lpp;
 
-	/*
-	 * calculate next starting lineoff, given scan direction
-	 */
-	if (ScanDirectionIsForward(dir))
+	if (unlikely(!scan->rs_inited))
 	{
-		if (!scan->rs_inited)
-		{
-			/*
-			 * return null immediately if relation is empty
-			 */
-			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
-			{
-				Assert(!BufferIsValid(scan->rs_cbuf));
-				tuple->t_data = NULL;
-				return;
-			}
-			if (scan->rs_base.rs_parallel != NULL)
-			{
-				ParallelBlockTableScanDesc pbscan =
-				(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
-				ParallelBlockTableScanWorker pbscanwork =
-				scan->rs_parallelworkerdata;
+		block = heapgettup_initial_block(scan, dir);
 
-				table_block_parallelscan_startblock_init(scan->rs_base.rs_rd,
-														 pbscanwork, pbscan);
-
-				block = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
-														  pbscanwork, pbscan);
-
-				/* Other processes might have already finished the scan. */
-				if (block == InvalidBlockNumber)
-				{
-					Assert(!BufferIsValid(scan->rs_cbuf));
-					tuple->t_data = NULL;
-					return;
-				}
-			}
-			else
-				block = scan->rs_startblock;	/* first page */
-			heapgetpage((TableScanDesc) scan, block);
-			lineoff = FirstOffsetNumber;	/* first offnum */
-			scan->rs_inited = true;
-		}
-		else
-		{
-			/* continue from previously returned page/tuple */
-			block = scan->rs_cblock;	/* current page */
-			lineoff =			/* next offnum */
-				OffsetNumberNext(ItemPointerGetOffsetNumber(&(tuple->t_self)));
-		}
-
-		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
-
-		page = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_base.rs_rd, page);
-		lines = PageGetMaxOffsetNumber(page);
-		/* block and lineoff now reference the physically next tid */
-
-		linesleft = lines - lineoff + 1;
-	}
-	else if (backward)
-	{
-		/* backward parallel scan not supported */
-		Assert(scan->rs_base.rs_parallel == NULL);
-
-		if (!scan->rs_inited)
-		{
-			/*
-			 * return null immediately if relation is empty
-			 */
-			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
-			{
-				Assert(!BufferIsValid(scan->rs_cbuf));
-				tuple->t_data = NULL;
-				return;
-			}
-
-			/*
-			 * Disable reporting to syncscan logic in a backwards scan; it's
-			 * not very likely anyone else is doing the same thing at the same
-			 * time, and much more likely that we'll just bollix things for
-			 * forward scanners.
-			 */
-			scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
-
-			/*
-			 * Start from last page of the scan.  Ensure we take into account
-			 * rs_numblocks if it's been adjusted by heap_setscanlimits().
-			 */
-			if (scan->rs_numblocks != InvalidBlockNumber)
-				block = (scan->rs_startblock + scan->rs_numblocks - 1) % scan->rs_nblocks;
-			else if (scan->rs_startblock > 0)
-				block = scan->rs_startblock - 1;
-			else
-				block = scan->rs_nblocks - 1;
-			heapgetpage((TableScanDesc) scan, block);
-		}
-		else
-		{
-			/* continue from previously returned page/tuple */
-			block = scan->rs_cblock;	/* current page */
-		}
-
-		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
-
-		page = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_base.rs_rd, page);
-		lines = PageGetMaxOffsetNumber(page);
-
-		if (!scan->rs_inited)
-		{
-			lineoff = lines;	/* final offnum */
-			scan->rs_inited = true;
-		}
-		else
-		{
-			/*
-			 * The previous returned tuple may have been vacuumed since the
-			 * previous scan when we use a non-MVCC snapshot, so we must
-			 * re-establish the lineoff <= PageGetMaxOffsetNumber(page)
-			 * invariant
-			 */
-			lineoff =			/* previous offnum */
-				Min(lines,
-					OffsetNumberPrev(ItemPointerGetOffsetNumber(&(tuple->t_self))));
-		}
-		/* block and lineoff now reference the physically previous tid */
-
-		linesleft = lineoff;
-	}
-	else
-	{
 		/*
-		 * ``no movement'' scan direction: refetch prior tuple
+		 * Check if we have reached the end of the scan already. This could
+		 * happen if the table is empty or if the parallel workers have
+		 * already finished the scan before we did anything ourselves
 		 */
-		if (!scan->rs_inited)
+		if (block == InvalidBlockNumber)
 		{
 			Assert(!BufferIsValid(scan->rs_cbuf));
 			tuple->t_data = NULL;
 			return;
 		}
+		scan->rs_inited = true;
 
-		block = ItemPointerGetBlockNumber(&(tuple->t_self));
-		if (block != scan->rs_cblock)
-			heapgetpage((TableScanDesc) scan, block);
+		heapgetpage((TableScanDesc) scan, block);
 
-		/* Since the tuple was previously fetched, needn't lock page here */
-		page = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_base.rs_rd, page);
-		lineoff = ItemPointerGetOffsetNumber(&(tuple->t_self));
-		lpp = PageGetItemId(page, lineoff);
-		Assert(ItemIdIsNormal(lpp));
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+		page = heapgettup_start_page(scan, dir, &linesleft, &lineoff);
+	}
+	else
+	{
+		/* continue from previously returned page/tuple */
+		block = scan->rs_cblock;
 
-		tuple->t_data = (HeapTupleHeader) PageGetItem(page, lpp);
-		tuple->t_len = ItemIdGetLength(lpp);
-
-		return;
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+		page = heapgettup_continue_page(scan, dir, &linesleft, &lineoff);
 	}
 
 	/*
@@ -710,12 +798,12 @@ heapgettup(HeapScanDesc scan,
 				 * if current tuple qualifies, return it.
 				 */
 				valid = HeapTupleSatisfiesVisibility(tuple,
-													 snapshot,
+													 scan->rs_base.rs_snapshot,
 													 scan->rs_cbuf);
 
 				HeapCheckForSerializableConflictOut(valid, scan->rs_base.rs_rd,
 													tuple, scan->rs_cbuf,
-													snapshot);
+													scan->rs_base.rs_snapshot);
 
 				if (valid && key != NULL)
 					valid = HeapKeyTest(tuple, RelationGetDescr(scan->rs_base.rs_rd),
@@ -724,6 +812,7 @@ heapgettup(HeapScanDesc scan,
 				if (valid)
 				{
 					LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+					scan->rs_coffset = lineoff;
 					return;
 				}
 			}
@@ -750,56 +839,13 @@ heapgettup(HeapScanDesc scan,
 		 */
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 
-		/*
-		 * advance to next/prior page and detect end of scan
-		 */
-		if (backward)
-		{
-			finished = (block == scan->rs_startblock) ||
-				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
-			if (block == 0)
-				block = scan->rs_nblocks;
-			block--;
-		}
-		else if (scan->rs_base.rs_parallel != NULL)
-		{
-			ParallelBlockTableScanDesc pbscan =
-			(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
-			ParallelBlockTableScanWorker pbscanwork =
-			scan->rs_parallelworkerdata;
-
-			block = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
-													  pbscanwork, pbscan);
-			finished = (block == InvalidBlockNumber);
-		}
-		else
-		{
-			block++;
-			if (block >= scan->rs_nblocks)
-				block = 0;
-			finished = (block == scan->rs_startblock) ||
-				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
-
-			/*
-			 * Report our new scan position for synchronization purposes. We
-			 * don't do that when moving backwards, however. That would just
-			 * mess up any other forward-moving scanners.
-			 *
-			 * Note: we do this before checking for end of scan so that the
-			 * final state of the position hint is back at the start of the
-			 * rel.  That's not strictly necessary, but otherwise when you run
-			 * the same query multiple times the starting position would shift
-			 * a little bit backwards on every invocation, which is confusing.
-			 * We don't guarantee any specific ordering in general, though.
-			 */
-			if (scan->rs_base.rs_flags & SO_ALLOW_SYNC)
-				ss_report_location(scan->rs_base.rs_rd, block);
-		}
+		/* get the BlockNumber to scan next */
+		block = heapgettup_advance_block(scan, block, dir);
 
 		/*
 		 * return NULL if we've exhausted all the pages
 		 */
-		if (finished)
+		if (block == InvalidBlockNumber)
 		{
 			if (BufferIsValid(scan->rs_cbuf))
 				ReleaseBuffer(scan->rs_cbuf);
@@ -815,13 +861,13 @@ heapgettup(HeapScanDesc scan,
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 		page = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_base.rs_rd, page);
-		lines = PageGetMaxOffsetNumber(page);
-		linesleft = lines;
+		TestForOldSnapshot(scan->rs_base.rs_snapshot, scan->rs_base.rs_rd,
+						   page);
+		linesleft = PageGetMaxOffsetNumber(page);
 		if (backward)
 		{
-			lineoff = lines;
-			lpp = PageGetItemId(page, lines);
+			lineoff = linesleft;
+			lpp = PageGetItemId(page, linesleft);
 		}
 		else
 		{
@@ -853,162 +899,47 @@ heapgettup_pagemode(HeapScanDesc scan,
 	HeapTuple	tuple = &(scan->rs_ctup);
 	bool		backward = ScanDirectionIsBackward(dir);
 	BlockNumber block;
-	bool		finished;
 	Page		page;
-	int			lines;
 	int			lineindex;
 	OffsetNumber lineoff;
 	int			linesleft;
 	ItemId		lpp;
 
-	/*
-	 * calculate next starting lineindex, given scan direction
-	 */
-	if (ScanDirectionIsForward(dir))
+	if (unlikely(!scan->rs_inited))
 	{
-		if (!scan->rs_inited)
-		{
-			/*
-			 * return null immediately if relation is empty
-			 */
-			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
-			{
-				Assert(!BufferIsValid(scan->rs_cbuf));
-				tuple->t_data = NULL;
-				return;
-			}
-			if (scan->rs_base.rs_parallel != NULL)
-			{
-				ParallelBlockTableScanDesc pbscan =
-				(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
-				ParallelBlockTableScanWorker pbscanwork =
-				scan->rs_parallelworkerdata;
+		block = heapgettup_initial_block(scan, dir);
 
-				table_block_parallelscan_startblock_init(scan->rs_base.rs_rd,
-														 pbscanwork, pbscan);
-
-				block = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
-														  pbscanwork, pbscan);
-
-				/* Other processes might have already finished the scan. */
-				if (block == InvalidBlockNumber)
-				{
-					Assert(!BufferIsValid(scan->rs_cbuf));
-					tuple->t_data = NULL;
-					return;
-				}
-			}
-			else
-				block = scan->rs_startblock;	/* first page */
-			heapgetpage((TableScanDesc) scan, block);
-			lineindex = 0;
-			scan->rs_inited = true;
-		}
-		else
-		{
-			/* continue from previously returned page/tuple */
-			block = scan->rs_cblock;	/* current page */
-			lineindex = scan->rs_cindex + 1;
-		}
-
-		page = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_base.rs_snapshot, scan->rs_base.rs_rd, page);
-		lines = scan->rs_ntuples;
-		/* block and lineindex now reference the next visible tid */
-
-		linesleft = lines - lineindex;
-	}
-	else if (backward)
-	{
-		/* backward parallel scan not supported */
-		Assert(scan->rs_base.rs_parallel == NULL);
-
-		if (!scan->rs_inited)
-		{
-			/*
-			 * return null immediately if relation is empty
-			 */
-			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
-			{
-				Assert(!BufferIsValid(scan->rs_cbuf));
-				tuple->t_data = NULL;
-				return;
-			}
-
-			/*
-			 * Disable reporting to syncscan logic in a backwards scan; it's
-			 * not very likely anyone else is doing the same thing at the same
-			 * time, and much more likely that we'll just bollix things for
-			 * forward scanners.
-			 */
-			scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
-
-			/*
-			 * Start from last page of the scan.  Ensure we take into account
-			 * rs_numblocks if it's been adjusted by heap_setscanlimits().
-			 */
-			if (scan->rs_numblocks != InvalidBlockNumber)
-				block = (scan->rs_startblock + scan->rs_numblocks - 1) % scan->rs_nblocks;
-			else if (scan->rs_startblock > 0)
-				block = scan->rs_startblock - 1;
-			else
-				block = scan->rs_nblocks - 1;
-			heapgetpage((TableScanDesc) scan, block);
-		}
-		else
-		{
-			/* continue from previously returned page/tuple */
-			block = scan->rs_cblock;	/* current page */
-		}
-
-		page = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_base.rs_snapshot, scan->rs_base.rs_rd, page);
-		lines = scan->rs_ntuples;
-
-		if (!scan->rs_inited)
-		{
-			lineindex = lines - 1;
-			scan->rs_inited = true;
-		}
-		else
-		{
-			lineindex = scan->rs_cindex - 1;
-		}
-		/* block and lineindex now reference the previous visible tid */
-
-		linesleft = lineindex + 1;
-	}
-	else
-	{
 		/*
-		 * ``no movement'' scan direction: refetch prior tuple
+		 * Check if we have reached the end of the scan already. This could
+		 * happen if the table is empty or if the other workers in a parallel
+		 * scan have already finished the scan.
 		 */
-		if (!scan->rs_inited)
+		if (block == InvalidBlockNumber)
 		{
 			Assert(!BufferIsValid(scan->rs_cbuf));
 			tuple->t_data = NULL;
 			return;
 		}
 
-		block = ItemPointerGetBlockNumber(&(tuple->t_self));
-		if (block != scan->rs_cblock)
-			heapgetpage((TableScanDesc) scan, block);
-
-		/* Since the tuple was previously fetched, needn't lock page here */
+		heapgetpage((TableScanDesc) scan, block);
 		page = BufferGetPage(scan->rs_cbuf);
 		TestForOldSnapshot(scan->rs_base.rs_snapshot, scan->rs_base.rs_rd, page);
-		lineoff = ItemPointerGetOffsetNumber(&(tuple->t_self));
-		lpp = PageGetItemId(page, lineoff);
-		Assert(ItemIdIsNormal(lpp));
+		linesleft = scan->rs_ntuples;
+		lineindex = ScanDirectionIsForward(dir) ? 0 : linesleft - 1;
+		scan->rs_inited = true;
+	}
+	else
+	{
+		/* continue from previously returned page/tuple */
+		block = scan->rs_cblock;	/* current page */
+		page = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(scan->rs_base.rs_snapshot, scan->rs_base.rs_rd, page);
 
-		tuple->t_data = (HeapTupleHeader) PageGetItem(page, lpp);
-		tuple->t_len = ItemIdGetLength(lpp);
-
-		/* check that rs_cindex is in sync */
-		Assert(scan->rs_cindex < scan->rs_ntuples);
-		Assert(lineoff == scan->rs_vistuples[scan->rs_cindex]);
-
-		return;
+		lineindex = scan->rs_cindex + dir;
+		if (ScanDirectionIsForward(dir))
+			linesleft = scan->rs_ntuples - lineindex;
+		else
+			linesleft = scan->rs_cindex;
 	}
 
 	/*
@@ -1058,57 +989,13 @@ heapgettup_pagemode(HeapScanDesc scan,
 				++lineindex;
 		}
 
-		/*
-		 * if we get here, it means we've exhausted the items on this page and
-		 * it's time to move to the next.
-		 */
-		if (backward)
-		{
-			finished = (block == scan->rs_startblock) ||
-				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
-			if (block == 0)
-				block = scan->rs_nblocks;
-			block--;
-		}
-		else if (scan->rs_base.rs_parallel != NULL)
-		{
-			ParallelBlockTableScanDesc pbscan =
-			(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
-			ParallelBlockTableScanWorker pbscanwork =
-			scan->rs_parallelworkerdata;
-
-			block = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
-													  pbscanwork, pbscan);
-			finished = (block == InvalidBlockNumber);
-		}
-		else
-		{
-			block++;
-			if (block >= scan->rs_nblocks)
-				block = 0;
-			finished = (block == scan->rs_startblock) ||
-				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
-
-			/*
-			 * Report our new scan position for synchronization purposes. We
-			 * don't do that when moving backwards, however. That would just
-			 * mess up any other forward-moving scanners.
-			 *
-			 * Note: we do this before checking for end of scan so that the
-			 * final state of the position hint is back at the start of the
-			 * rel.  That's not strictly necessary, but otherwise when you run
-			 * the same query multiple times the starting position would shift
-			 * a little bit backwards on every invocation, which is confusing.
-			 * We don't guarantee any specific ordering in general, though.
-			 */
-			if (scan->rs_base.rs_flags & SO_ALLOW_SYNC)
-				ss_report_location(scan->rs_base.rs_rd, block);
-		}
+		/* get the BlockNumber to scan next */
+		block = heapgettup_advance_block(scan, block, dir);
 
 		/*
 		 * return NULL if we've exhausted all the pages
 		 */
-		if (finished)
+		if (block == InvalidBlockNumber)
 		{
 			if (BufferIsValid(scan->rs_cbuf))
 				ReleaseBuffer(scan->rs_cbuf);
@@ -1123,10 +1010,9 @@ heapgettup_pagemode(HeapScanDesc scan,
 
 		page = BufferGetPage(scan->rs_cbuf);
 		TestForOldSnapshot(scan->rs_base.rs_snapshot, scan->rs_base.rs_rd, page);
-		lines = scan->rs_ntuples;
-		linesleft = lines;
+		linesleft = scan->rs_ntuples;
 		if (backward)
-			lineindex = lines - 1;
+			lineindex = linesleft - 1;
 		else
 			lineindex = 0;
 	}
