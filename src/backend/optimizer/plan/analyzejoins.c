@@ -29,6 +29,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
+#include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
 #include "utils/lsyscache.h"
 
@@ -36,6 +37,8 @@
 static bool join_is_removable(PlannerInfo *root, SpecialJoinInfo *sjinfo);
 static void remove_rel_from_query(PlannerInfo *root, int relid, int ojrelid,
 								  Relids joinrelids);
+static void remove_rel_from_restrictinfo(RestrictInfo *rinfo,
+										 int relid, int ojrelid);
 static List *remove_rel_from_joinlist(List *joinlist, int relid, int *nremoved);
 static bool rel_supports_distinctness(PlannerInfo *root, RelOptInfo *rel);
 static bool rel_is_distinct_for(PlannerInfo *root, RelOptInfo *rel,
@@ -217,12 +220,12 @@ join_is_removable(PlannerInfo *root, SpecialJoinInfo *sjinfo)
 
 	/*
 	 * Similarly check that the inner rel isn't needed by any PlaceHolderVars
-	 * that will be used above the join.  We only need to fail if such a PHV
-	 * actually references some inner-rel attributes; but the correct check
-	 * for that is relatively expensive, so we first check against ph_eval_at,
-	 * which must mention the inner rel if the PHV uses any inner-rel attrs as
-	 * non-lateral references.  Note that if the PHV's syntactic scope is just
-	 * the inner rel, we can't drop the rel even if the PHV is variable-free.
+	 * that will be used above the join.  The PHV case is a little bit more
+	 * complicated, because PHVs may have been assigned a ph_eval_at location
+	 * that includes the innerrel, yet their contained expression might not
+	 * actually reference the innerrel (it could be just a constant, for
+	 * instance).  If such a PHV is due to be evaluated above the join then it
+	 * needn't prevent join removal.
 	 */
 	foreach(l, root->placeholder_list)
 	{
@@ -230,15 +233,23 @@ join_is_removable(PlannerInfo *root, SpecialJoinInfo *sjinfo)
 
 		if (bms_overlap(phinfo->ph_lateral, innerrel->relids))
 			return false;		/* it references innerrel laterally */
-		if (bms_is_subset(phinfo->ph_needed, inputrelids))
-			continue;			/* PHV is not used above the join */
 		if (!bms_overlap(phinfo->ph_eval_at, innerrel->relids))
 			continue;			/* it definitely doesn't reference innerrel */
-		if (bms_is_subset(phinfo->ph_eval_at, innerrel->relids))
+		if (bms_is_subset(phinfo->ph_needed, inputrelids))
+			continue;			/* PHV is not used above the join */
+		if (!bms_is_member(sjinfo->ojrelid, phinfo->ph_eval_at))
+			return false;		/* it has to be evaluated below the join */
+
+		/*
+		 * We need to be sure there will still be a place to evaluate the PHV
+		 * if we remove the join, ie that ph_eval_at wouldn't become empty.
+		 */
+		if (!bms_overlap(sjinfo->min_lefthand, phinfo->ph_eval_at))
 			return false;		/* there isn't any other place to eval PHV */
+		/* Check contained expression last, since this is a bit expensive */
 		if (bms_overlap(pull_varnos(root, (Node *) phinfo->ph_var->phexpr),
 						innerrel->relids))
-			return false;		/* it does reference innerrel */
+			return false;		/* contained expression references innerrel */
 	}
 
 	/*
@@ -270,15 +281,7 @@ join_is_removable(PlannerInfo *root, SpecialJoinInfo *sjinfo)
 		 * be from WHERE, for example).
 		 */
 		if (RINFO_IS_PUSHED_DOWN(restrictinfo, joinrelids))
-		{
-			/*
-			 * If such a clause actually references the inner rel then join
-			 * removal has to be disallowed.  The previous attr_needed checks
-			 * should have caught this, though.
-			 */
-			Assert(!bms_is_member(innerrelid, restrictinfo->clause_relids));
 			continue;			/* ignore; not useful here */
-		}
 
 		/* Ignore if it's not a mergejoinable clause */
 		if (!restrictinfo->can_join ||
@@ -316,12 +319,8 @@ join_is_removable(PlannerInfo *root, SpecialJoinInfo *sjinfo)
  * Remove the target relid from the planner's data structures, having
  * determined that there is no need to include it in the query.
  *
- * We are not terribly thorough here.  We must make sure that the rel is
- * no longer treated as a baserel, and that attributes of other baserels
- * are no longer marked as being needed at joins involving this rel.
- * Also, join quals involving the rel have to be removed from the joininfo
- * lists, but only if they belong to the outer join identified by ojrelid
- * and joinrelids.
+ * We are not terribly thorough here.  We only bother to update parts of
+ * the planner's data structures that will actually be consulted later.
  */
 static void
 remove_rel_from_query(PlannerInfo *root, int relid, int ojrelid,
@@ -429,11 +428,18 @@ remove_rel_from_query(PlannerInfo *root, int relid, int ojrelid,
 		}
 		else
 		{
+			PlaceHolderVar *phv = phinfo->ph_var;
+
 			phinfo->ph_eval_at = bms_del_member(phinfo->ph_eval_at, relid);
 			phinfo->ph_eval_at = bms_del_member(phinfo->ph_eval_at, ojrelid);
-			Assert(!bms_is_empty(phinfo->ph_eval_at));
+			Assert(!bms_is_empty(phinfo->ph_eval_at));	/* checked previously */
 			phinfo->ph_needed = bms_del_member(phinfo->ph_needed, relid);
 			phinfo->ph_needed = bms_del_member(phinfo->ph_needed, ojrelid);
+			/* ph_needed might or might not become empty */
+			phv->phrels = bms_del_member(phv->phrels, relid);
+			phv->phrels = bms_del_member(phv->phrels, ojrelid);
+			Assert(!bms_is_empty(phv->phrels));
+			Assert(phv->phnullingrels == NULL); /* no need to adjust */
 		}
 	}
 
@@ -465,18 +471,14 @@ remove_rel_from_query(PlannerInfo *root, int relid, int ojrelid,
 		 */
 		if (bms_is_member(ojrelid, rinfo->required_relids))
 		{
-			/* Recheck that qual doesn't actually reference the target rel */
-			Assert(!bms_is_member(relid, rinfo->clause_relids));
-
 			/*
-			 * The required_relids probably aren't shared with anything else,
-			 * but let's copy them just to be sure.
+			 * There might be references to relid or ojrelid in the
+			 * RestrictInfo, as a consequence of PHVs having ph_eval_at sets
+			 * that include those.  We already checked above that any such PHV
+			 * is safe, so we can just drop those references.
 			 */
-			rinfo->required_relids = bms_copy(rinfo->required_relids);
-			rinfo->required_relids = bms_del_member(rinfo->required_relids,
-													relid);
-			rinfo->required_relids = bms_del_member(rinfo->required_relids,
-													ojrelid);
+			remove_rel_from_restrictinfo(rinfo, relid, ojrelid);
+			/* Now throw it back into the joininfo lists */
 			distribute_restrictinfo_to_rels(root, rinfo);
 		}
 	}
@@ -485,6 +487,62 @@ remove_rel_from_query(PlannerInfo *root, int relid, int ojrelid,
 	 * There may be references to the rel in root->fkey_list, but if so,
 	 * match_foreign_keys_to_quals() will get rid of them.
 	 */
+}
+
+/*
+ * Remove any references to relid or ojrelid from the RestrictInfo.
+ *
+ * We only bother to clean out bits in clause_relids and required_relids,
+ * not nullingrel bits in contained Vars and PHVs.  (This might have to be
+ * improved sometime.)  However, if the RestrictInfo contains an OR clause
+ * we have to also clean up the sub-clauses.
+ */
+static void
+remove_rel_from_restrictinfo(RestrictInfo *rinfo, int relid, int ojrelid)
+{
+	/*
+	 * The clause_relids probably aren't shared with anything else, but let's
+	 * copy them just to be sure.
+	 */
+	rinfo->clause_relids = bms_copy(rinfo->clause_relids);
+	rinfo->clause_relids = bms_del_member(rinfo->clause_relids, relid);
+	rinfo->clause_relids = bms_del_member(rinfo->clause_relids, ojrelid);
+	/* Likewise for required_relids */
+	rinfo->required_relids = bms_copy(rinfo->required_relids);
+	rinfo->required_relids = bms_del_member(rinfo->required_relids, relid);
+	rinfo->required_relids = bms_del_member(rinfo->required_relids, ojrelid);
+
+	/* If it's an OR, recurse to clean up sub-clauses */
+	if (restriction_is_or_clause(rinfo))
+	{
+		ListCell   *lc;
+
+		Assert(is_orclause(rinfo->orclause));
+		foreach(lc, ((BoolExpr *) rinfo->orclause)->args)
+		{
+			Node	   *orarg = (Node *) lfirst(lc);
+
+			/* OR arguments should be ANDs or sub-RestrictInfos */
+			if (is_andclause(orarg))
+			{
+				List	   *andargs = ((BoolExpr *) orarg)->args;
+				ListCell   *lc2;
+
+				foreach(lc2, andargs)
+				{
+					RestrictInfo *rinfo2 = lfirst_node(RestrictInfo, lc2);
+
+					remove_rel_from_restrictinfo(rinfo2, relid, ojrelid);
+				}
+			}
+			else
+			{
+				RestrictInfo *rinfo2 = castNode(RestrictInfo, orarg);
+
+				remove_rel_from_restrictinfo(rinfo2, relid, ojrelid);
+			}
+		}
+	}
 }
 
 /*

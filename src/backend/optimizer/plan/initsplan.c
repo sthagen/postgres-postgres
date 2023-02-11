@@ -1189,23 +1189,8 @@ deconstruct_distribute(PlannerInfo *root, JoinTreeItem *jtitem)
 			if (j->jointype == JOIN_SEMI)
 				ojscope = NULL;
 			else
-			{
 				ojscope = bms_union(sjinfo->min_lefthand,
 									sjinfo->min_righthand);
-
-				/*
-				 * Add back any commutable lower OJ relids that were removed
-				 * from min_lefthand or min_righthand, else the ojscope
-				 * cross-check in distribute_qual_to_rels will complain.  If
-				 * any such OJs were removed, we will postpone processing of
-				 * non-degenerate clauses, so this addition doesn't affect
-				 * anything except that cross-check and some Asserts.  Real
-				 * clause positioning decisions will be made later, when we
-				 * revisit the postponed clauses.
-				 */
-				if (sjinfo->commute_below)
-					ojscope = bms_add_members(ojscope, sjinfo->commute_below);
-			}
 		}
 		else
 		{
@@ -1221,7 +1206,21 @@ deconstruct_distribute(PlannerInfo *root, JoinTreeItem *jtitem)
 		 * they will drop down below this join anyway.)
 		 */
 		if (j->jointype == JOIN_LEFT && sjinfo->lhs_strict)
+		{
 			postponed_oj_qual_list = &jtitem->oj_joinclauses;
+
+			/*
+			 * Add back any commutable lower OJ relids that were removed from
+			 * min_lefthand or min_righthand, else the ojscope cross-check in
+			 * distribute_qual_to_rels will complain.  Since we are postponing
+			 * processing of non-degenerate clauses, this addition doesn't
+			 * affect anything except that cross-check.  Real clause
+			 * positioning decisions will be made later, when we revisit the
+			 * postponed clauses.
+			 */
+			if (sjinfo->commute_below)
+				ojscope = bms_add_members(ojscope, sjinfo->commute_below);
+		}
 		else
 			postponed_oj_qual_list = NULL;
 
@@ -1359,6 +1358,8 @@ make_outerjoininfo(PlannerInfo *root,
 	Relids		strict_relids;
 	Relids		min_lefthand;
 	Relids		min_righthand;
+	Relids		commute_below_l;
+	Relids		commute_below_r;
 	ListCell   *l;
 
 	/*
@@ -1446,7 +1447,14 @@ make_outerjoininfo(PlannerInfo *root,
 
 	/*
 	 * Now check previous outer joins for ordering restrictions.
+	 *
+	 * commute_below_l and commute_below_r accumulate the relids of lower
+	 * outer joins that we think this one can commute with.  These decisions
+	 * are just tentative within this loop, since we might find an
+	 * intermediate outer join that prevents commutation.  Surviving relids
+	 * will get merged into the SpecialJoinInfo structs afterwards.
 	 */
+	commute_below_l = commute_below_r = NULL;
 	foreach(l, root->join_info_list)
 	{
 		SpecialJoinInfo *otherinfo = (SpecialJoinInfo *) lfirst(l);
@@ -1459,6 +1467,7 @@ make_outerjoininfo(PlannerInfo *root,
 		 */
 		if (otherinfo->jointype == JOIN_FULL)
 		{
+			Assert(otherinfo->ojrelid != 0);
 			if (bms_overlap(left_rels, otherinfo->syn_lefthand) ||
 				bms_overlap(left_rels, otherinfo->syn_righthand))
 			{
@@ -1466,9 +1475,8 @@ make_outerjoininfo(PlannerInfo *root,
 											   otherinfo->syn_lefthand);
 				min_lefthand = bms_add_members(min_lefthand,
 											   otherinfo->syn_righthand);
-				if (otherinfo->ojrelid != 0)
-					min_lefthand = bms_add_member(min_lefthand,
-												  otherinfo->ojrelid);
+				min_lefthand = bms_add_member(min_lefthand,
+											  otherinfo->ojrelid);
 			}
 			if (bms_overlap(right_rels, otherinfo->syn_lefthand) ||
 				bms_overlap(right_rels, otherinfo->syn_righthand))
@@ -1477,9 +1485,8 @@ make_outerjoininfo(PlannerInfo *root,
 												otherinfo->syn_lefthand);
 				min_righthand = bms_add_members(min_righthand,
 												otherinfo->syn_righthand);
-				if (otherinfo->ojrelid != 0)
-					min_righthand = bms_add_member(min_righthand,
-												   otherinfo->ojrelid);
+				min_righthand = bms_add_member(min_righthand,
+											   otherinfo->ojrelid);
 			}
 			/* Needn't do anything else with the full join */
 			continue;
@@ -1533,15 +1540,14 @@ make_outerjoininfo(PlannerInfo *root,
 			}
 			else if (jointype == JOIN_LEFT &&
 					 otherinfo->jointype == JOIN_LEFT &&
-					 bms_overlap(strict_relids, otherinfo->min_righthand))
+					 bms_overlap(strict_relids, otherinfo->min_righthand) &&
+					 !bms_overlap(clause_relids, otherinfo->syn_lefthand))
 			{
 				/* Identity 3 applies, so remove the ordering restriction */
 				min_lefthand = bms_del_member(min_lefthand, otherinfo->ojrelid);
-				/* Add commutability markers to both SpecialJoinInfos */
-				otherinfo->commute_above_l =
-					bms_add_member(otherinfo->commute_above_l, ojrelid);
-				sjinfo->commute_below =
-					bms_add_member(sjinfo->commute_below, otherinfo->ojrelid);
+				/* Record the (still tentative) commutability relationship */
+				commute_below_l =
+					bms_add_member(commute_below_l, otherinfo->ojrelid);
 			}
 		}
 
@@ -1590,11 +1596,9 @@ make_outerjoininfo(PlannerInfo *root,
 				/* Identity 3 applies, so remove the ordering restriction */
 				min_righthand = bms_del_member(min_righthand,
 											   otherinfo->ojrelid);
-				/* Add commutability markers to both SpecialJoinInfos */
-				otherinfo->commute_above_r =
-					bms_add_member(otherinfo->commute_above_r, ojrelid);
-				sjinfo->commute_below =
-					bms_add_member(sjinfo->commute_below, otherinfo->ojrelid);
+				/* Record the (still tentative) commutability relationship */
+				commute_below_r =
+					bms_add_member(commute_below_r, otherinfo->ojrelid);
 			}
 		}
 	}
@@ -1639,6 +1643,44 @@ make_outerjoininfo(PlannerInfo *root,
 
 	sjinfo->min_lefthand = min_lefthand;
 	sjinfo->min_righthand = min_righthand;
+
+	/*
+	 * Now that we've identified the correct min_lefthand and min_righthand,
+	 * any commute_below_l or commute_below_r relids that have not gotten
+	 * added back into those sets (due to intervening outer joins) are indeed
+	 * commutable with this one.  Update the derived data in the
+	 * SpecialJoinInfos.
+	 */
+	if (commute_below_l || commute_below_r)
+	{
+		Relids		commute_below;
+
+		/*
+		 * Delete any subsequently-added-back relids (this is easier than
+		 * maintaining commute_below_l/r precisely through all the above).
+		 */
+		commute_below_l = bms_del_members(commute_below_l, min_lefthand);
+		commute_below_r = bms_del_members(commute_below_r, min_righthand);
+
+		/* Anything left? */
+		commute_below = bms_union(commute_below_l, commute_below_r);
+		if (!bms_is_empty(commute_below))
+		{
+			/* Yup, so we must update the data structures */
+			sjinfo->commute_below = commute_below;
+			foreach(l, root->join_info_list)
+			{
+				SpecialJoinInfo *otherinfo = (SpecialJoinInfo *) lfirst(l);
+
+				if (bms_is_member(otherinfo->ojrelid, commute_below_l))
+					otherinfo->commute_above_l =
+						bms_add_member(otherinfo->commute_above_l, ojrelid);
+				else if (bms_is_member(otherinfo->ojrelid, commute_below_r))
+					otherinfo->commute_above_r =
+						bms_add_member(otherinfo->commute_above_r, ojrelid);
+			}
+		}
+	}
 
 	return sjinfo;
 }
@@ -1862,13 +1904,6 @@ deconstruct_distribute_oj_quals(PlannerInfo *root,
 		int			save_last_rinfo_serial;
 		ListCell   *lc;
 
-		/*
-		 * Put any OJ relids that were removed from min_righthand back into
-		 * ojscope, else distribute_qual_to_rels will complain.
-		 */
-		ojscope = bms_join(ojscope, bms_intersect(sjinfo->commute_below,
-												  sjinfo->syn_righthand));
-
 		/* Identify the outer joins this one commutes with */
 		joins_above = sjinfo->commute_above_r;
 		joins_below = bms_intersect(sjinfo->commute_below,
@@ -1951,12 +1986,18 @@ deconstruct_distribute_oj_quals(PlannerInfo *root,
 			/*
 			 * When we are looking at joins above sjinfo, we are envisioning
 			 * pushing sjinfo to above othersj, so add othersj's nulling bit
-			 * before distributing the quals.
+			 * before distributing the quals.  We should add it to Vars coming
+			 * from the current join's LHS: we want to transform the second
+			 * form of OJ identity 3 to the first form, in which Vars of
+			 * relation B will appear nulled by the syntactically-upper OJ
+			 * within the Pbc clause, but those of relation C will not.  (In
+			 * the notation used by optimizer/README, we're converting a qual
+			 * of the form Pbc to Pb*c.)
 			 */
 			if (above_sjinfo)
 				quals = (List *)
 					add_nulling_relids((Node *) quals,
-									   othersj->min_righthand,
+									   sjinfo->syn_lefthand,
 									   bms_make_singleton(othersj->ojrelid));
 
 			/* Compute qualscope and ojscope for this join level */
@@ -2007,12 +2048,16 @@ deconstruct_distribute_oj_quals(PlannerInfo *root,
 			/*
 			 * Adjust qual nulling bits for next level up, if needed.  We
 			 * don't want to put sjinfo's own bit in at all, and if we're
-			 * above sjinfo then we did it already.
+			 * above sjinfo then we did it already.  Here, we should mark all
+			 * Vars coming from the lower join's RHS.  (Again, we are
+			 * converting a qual of the form Pbc to Pb*c, but now we are
+			 * putting back bits that were there in the parser output and were
+			 * temporarily stripped above.)
 			 */
 			if (below_sjinfo)
 				quals = (List *)
 					add_nulling_relids((Node *) quals,
-									   othersj->min_righthand,
+									   othersj->syn_righthand,
 									   bms_make_singleton(othersj->ojrelid));
 
 			/* ... and track joins processed so far */

@@ -210,7 +210,7 @@ static int	EOXactTupleDescArrayLen = 0;
 do { \
 	RelIdCacheEnt *hentry; bool found; \
 	hentry = (RelIdCacheEnt *) hash_search(RelationIdCache, \
-										   (void *) &((RELATION)->rd_id), \
+										   &((RELATION)->rd_id), \
 										   HASH_ENTER, &found); \
 	if (found) \
 	{ \
@@ -232,7 +232,7 @@ do { \
 do { \
 	RelIdCacheEnt *hentry; \
 	hentry = (RelIdCacheEnt *) hash_search(RelationIdCache, \
-										   (void *) &(ID), \
+										   &(ID), \
 										   HASH_FIND, NULL); \
 	if (hentry) \
 		RELATION = hentry->reldesc; \
@@ -244,7 +244,7 @@ do { \
 do { \
 	RelIdCacheEnt *hentry; \
 	hentry = (RelIdCacheEnt *) hash_search(RelationIdCache, \
-										   (void *) &((RELATION)->rd_id), \
+										   &((RELATION)->rd_id), \
 										   HASH_REMOVE, NULL); \
 	if (hentry == NULL) \
 		elog(WARNING, "failed to delete relcache entry for OID %u", \
@@ -1663,7 +1663,7 @@ LookupOpclassInfo(Oid operatorClassOid,
 	}
 
 	opcentry = (OpClassCacheEnt *) hash_search(OpClassCache,
-											   (void *) &operatorClassOid,
+											   &operatorClassOid,
 											   HASH_ENTER, &found);
 
 	if (!found)
@@ -3210,7 +3210,7 @@ AtEOXact_RelationCache(bool isCommit)
 		for (i = 0; i < eoxact_list_len; i++)
 		{
 			idhentry = (RelIdCacheEnt *) hash_search(RelationIdCache,
-													 (void *) &eoxact_list[i],
+													 &eoxact_list[i],
 													 HASH_FIND,
 													 NULL);
 			if (idhentry != NULL)
@@ -3359,7 +3359,7 @@ AtEOSubXact_RelationCache(bool isCommit, SubTransactionId mySubid,
 		for (i = 0; i < eoxact_list_len; i++)
 		{
 			idhentry = (RelIdCacheEnt *) hash_search(RelationIdCache,
-													 (void *) &eoxact_list[i],
+													 &eoxact_list[i],
 													 HASH_FIND,
 													 NULL);
 			if (idhentry != NULL)
@@ -6141,7 +6141,7 @@ load_relcache_init_file(bool shared)
 			if (rel->rd_isnailed)
 				nailed_indexes++;
 
-			/* next, read the pg_index tuple */
+			/* read the pg_index tuple */
 			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
 				goto read_failed;
 
@@ -6172,7 +6172,7 @@ load_relcache_init_file(bool shared)
 			 */
 			InitIndexAmRoutine(rel);
 
-			/* next, read the vector of opfamily OIDs */
+			/* read the vector of opfamily OIDs */
 			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
 				goto read_failed;
 
@@ -6182,7 +6182,7 @@ load_relcache_init_file(bool shared)
 
 			rel->rd_opfamily = opfamily;
 
-			/* next, read the vector of opcintype OIDs */
+			/* read the vector of opcintype OIDs */
 			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
 				goto read_failed;
 
@@ -6192,7 +6192,7 @@ load_relcache_init_file(bool shared)
 
 			rel->rd_opcintype = opcintype;
 
-			/* next, read the vector of support procedure OIDs */
+			/* read the vector of support procedure OIDs */
 			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
 				goto read_failed;
 			support = (RegProcedure *) MemoryContextAlloc(indexcxt, len);
@@ -6201,7 +6201,7 @@ load_relcache_init_file(bool shared)
 
 			rel->rd_support = support;
 
-			/* next, read the vector of collation OIDs */
+			/* read the vector of collation OIDs */
 			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
 				goto read_failed;
 
@@ -6211,7 +6211,7 @@ load_relcache_init_file(bool shared)
 
 			rel->rd_indcollation = indcollation;
 
-			/* finally, read the vector of indoption values */
+			/* read the vector of indoption values */
 			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
 				goto read_failed;
 
@@ -6221,7 +6221,7 @@ load_relcache_init_file(bool shared)
 
 			rel->rd_indoption = indoption;
 
-			/* finally, read the vector of opcoptions values */
+			/* read the vector of opcoptions values */
 			rel->rd_opcoptions = (bytea **)
 				MemoryContextAllocZero(indexcxt, sizeof(*rel->rd_opcoptions) * relform->relnatts);
 
@@ -6530,34 +6530,34 @@ write_relcache_init_file(bool shared)
 					   HEAPTUPLESIZE + rel->rd_indextuple->t_len,
 					   fp);
 
-			/* next, write the vector of opfamily OIDs */
+			/* write the vector of opfamily OIDs */
 			write_item(rel->rd_opfamily,
 					   relform->relnatts * sizeof(Oid),
 					   fp);
 
-			/* next, write the vector of opcintype OIDs */
+			/* write the vector of opcintype OIDs */
 			write_item(rel->rd_opcintype,
 					   relform->relnatts * sizeof(Oid),
 					   fp);
 
-			/* next, write the vector of support procedure OIDs */
+			/* write the vector of support procedure OIDs */
 			write_item(rel->rd_support,
 					   relform->relnatts * (rel->rd_indam->amsupport * sizeof(RegProcedure)),
 					   fp);
 
-			/* next, write the vector of collation OIDs */
+			/* write the vector of collation OIDs */
 			write_item(rel->rd_indcollation,
 					   relform->relnatts * sizeof(Oid),
 					   fp);
 
-			/* finally, write the vector of indoption values */
+			/* write the vector of indoption values */
 			write_item(rel->rd_indoption,
 					   relform->relnatts * sizeof(int16),
 					   fp);
 
 			Assert(rel->rd_opcoptions);
 
-			/* finally, write the vector of opcoptions values */
+			/* write the vector of opcoptions values */
 			for (i = 0; i < relform->relnatts; i++)
 			{
 				bytea	   *opt = rel->rd_opcoptions[i];
