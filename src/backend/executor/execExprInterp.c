@@ -4250,11 +4250,12 @@ ExecEvalPreOrderedDistinctSingle(AggState *aggstate, AggStatePerTrans pertrans)
 
 	if (!pertrans->haslast ||
 		pertrans->lastisnull != isnull ||
-		!DatumGetBool(FunctionCall2Coll(&pertrans->equalfnOne,
-										pertrans->aggCollation,
-										pertrans->lastdatum, value)))
+		(!isnull && !DatumGetBool(FunctionCall2Coll(&pertrans->equalfnOne,
+													pertrans->aggCollation,
+													pertrans->lastdatum, value))))
 	{
-		if (pertrans->haslast && !pertrans->inputtypeByVal)
+		if (pertrans->haslast && !pertrans->inputtypeByVal &&
+			!pertrans->lastisnull)
 			pfree(DatumGetPointer(pertrans->lastdatum));
 
 		pertrans->haslast = true;

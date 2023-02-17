@@ -334,9 +334,6 @@
 /* Define to 1 if you have the `ppoll' function. */
 #undef HAVE_PPOLL
 
-/* Define to 1 if the PS_STRINGS thing exists. */
-#undef HAVE_PS_STRINGS
-
 /* Define if you have POSIX threads libraries and header files. */
 #undef HAVE_PTHREAD
 
@@ -522,6 +519,9 @@
 
 /* Define to 1 if you have the `wcstombs_l' function. */
 #undef HAVE_WCSTOMBS_L
+
+/* Define to 1 if you have the `X509_get_signature_info' function. */
+#undef HAVE_X509_GET_SIGNATURE_INFO
 
 /* Define to 1 if you have the `X509_get_signature_nid' function. */
 #undef HAVE_X509_GET_SIGNATURE_NID

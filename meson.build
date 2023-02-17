@@ -1223,6 +1223,9 @@ if get_option('ssl') == 'openssl'
     # thread-safety. In 1.1.0, it's no longer required, and CRYPTO_lock()
     # function was removed.
     ['CRYPTO_lock'],
+
+    # Function introduced in OpenSSL 1.1.1
+    ['X509_get_signature_info'],
   ]
 
   foreach c : check_funcs
@@ -2288,23 +2291,6 @@ endif
 # files, but that was only added for AIX when building with XLC, which we
 # don't support yet.
 cdata.set('pg_restrict', '__restrict')
-
-
-if cc.links('''
-#include <machine/vmparam.h>
-#include <sys/exec.h>
-
-int main(void)
-{
-    PS_STRINGS->ps_nargvstr = 1;
-    PS_STRINGS->ps_argvstr = "foo";
-}
-''',
-  name: 'PS_STRINGS', args: test_c_args)
-  cdata.set('HAVE_PS_STRINGS', 1)
-else
-  cdata.set('HAVE_PS_STRINGS', false)
-endif
 
 
 # Most libraries are included only if they demonstrably provide a function we
