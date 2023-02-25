@@ -41,6 +41,11 @@ tests += {
   'regress': {
     'sql': [
       'pg_stat_statements',
+      'cursors',
+      'utility',
+      'level_tracking',
+      'planning',
+      'cleanup',
       'oldextversions',
     ],
     'regress_args': ['--temp-config', files('pg_stat_statements.conf')],

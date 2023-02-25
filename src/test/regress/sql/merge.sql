@@ -999,6 +999,10 @@ ROLLBACK;
 
 -- try updating the partition key column
 BEGIN;
+CREATE FUNCTION merge_func() RETURNS integer LANGUAGE plpgsql AS $$
+DECLARE
+  result integer;
+BEGIN
 MERGE INTO pa_target t
   USING pa_source s
   ON t.tid = s.sid
@@ -1006,6 +1010,13 @@ MERGE INTO pa_target t
     UPDATE SET tid = tid + 1, balance = balance + delta, val = val || ' updated by merge'
   WHEN NOT MATCHED THEN
     INSERT VALUES (sid, delta, 'inserted by merge');
+IF FOUND THEN
+  GET DIAGNOSTICS result := ROW_COUNT;
+END IF;
+RETURN result;
+END;
+$$;
+SELECT merge_func();
 SELECT * FROM pa_target ORDER BY tid;
 ROLLBACK;
 
@@ -1071,6 +1082,18 @@ MERGE INTO pa_target t
 SELECT * FROM pa_target ORDER BY tid;
 ROLLBACK;
 
+-- test RLS enforcement
+BEGIN;
+ALTER TABLE pa_target ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pa_target FORCE ROW LEVEL SECURITY;
+CREATE POLICY pa_target_pol ON pa_target USING (tid != 0);
+MERGE INTO pa_target t
+  USING pa_source s
+  ON t.tid = s.sid AND t.tid IN (1,2,3,4)
+  WHEN MATCHED THEN
+    UPDATE SET tid = tid - 1;
+ROLLBACK;
+
 DROP TABLE pa_source;
 DROP TABLE pa_target CASCADE;
 
@@ -1112,6 +1135,26 @@ MERGE INTO pa_target t
     INSERT VALUES (slogts::timestamp, sid, delta, 'inserted by merge');
 SELECT * FROM pa_target ORDER BY tid;
 ROLLBACK;
+
+DROP TABLE pa_source;
+DROP TABLE pa_target CASCADE;
+
+-- Partitioned table with primary key
+
+CREATE TABLE pa_target (tid integer PRIMARY KEY) PARTITION BY LIST (tid);
+CREATE TABLE pa_targetp PARTITION OF pa_target DEFAULT;
+CREATE TABLE pa_source (sid integer);
+
+INSERT INTO pa_source VALUES (1), (2);
+
+EXPLAIN (VERBOSE, COSTS OFF)
+MERGE INTO pa_target t USING pa_source s ON t.tid = s.sid
+  WHEN NOT MATCHED THEN INSERT VALUES (s.sid);
+
+MERGE INTO pa_target t USING pa_source s ON t.tid = s.sid
+  WHEN NOT MATCHED THEN INSERT VALUES (s.sid);
+
+TABLE pa_target;
 
 DROP TABLE pa_source;
 DROP TABLE pa_target CASCADE;

@@ -47,7 +47,8 @@ static void build_joinrel_tlist(PlannerInfo *root, RelOptInfo *joinrel,
 static List *build_joinrel_restrictlist(PlannerInfo *root,
 										RelOptInfo *joinrel,
 										RelOptInfo *outer_rel,
-										RelOptInfo *inner_rel);
+										RelOptInfo *inner_rel,
+										SpecialJoinInfo *sjinfo);
 static void build_joinrel_joinlist(RelOptInfo *joinrel,
 								   RelOptInfo *outer_rel,
 								   RelOptInfo *inner_rel);
@@ -233,12 +234,22 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptInfo *parent)
 	rel->serverid = InvalidOid;
 	if (rte->rtekind == RTE_RELATION)
 	{
+		Assert(parent == NULL ||
+			   parent->rtekind == RTE_RELATION ||
+			   parent->rtekind == RTE_SUBQUERY);
+
 		/*
-		 * Get the userid from the relation's RTEPermissionInfo, though only
-		 * the tables mentioned in query are assigned RTEPermissionInfos.
-		 * Child relations (otherrels) simply use the parent's value.
+		 * For any RELATION rte, we need a userid with which to check
+		 * permission access. Baserels simply use their own
+		 * RTEPermissionInfo's checkAsUser.
+		 *
+		 * For otherrels normally there's no RTEPermissionInfo, so we use the
+		 * parent's, which normally has one. The exceptional case is that the
+		 * parent is a subquery, in which case the otherrel will have its own.
 		 */
-		if (parent == NULL)
+		if (rel->reloptkind == RELOPT_BASEREL ||
+			(rel->reloptkind == RELOPT_OTHER_MEMBER_REL &&
+			 parent->rtekind == RTE_SUBQUERY))
 		{
 			RTEPermissionInfo *perminfo;
 
@@ -657,7 +668,8 @@ build_join_rel(PlannerInfo *root,
 			*restrictlist_ptr = build_joinrel_restrictlist(root,
 														   joinrel,
 														   outer_rel,
-														   inner_rel);
+														   inner_rel,
+														   sjinfo);
 		return joinrel;
 	}
 
@@ -769,7 +781,8 @@ build_join_rel(PlannerInfo *root,
 	 * for set_joinrel_size_estimates().)
 	 */
 	restrictlist = build_joinrel_restrictlist(root, joinrel,
-											  outer_rel, inner_rel);
+											  outer_rel, inner_rel,
+											  sjinfo);
 	if (restrictlist_ptr)
 		*restrictlist_ptr = restrictlist;
 	build_joinrel_joinlist(joinrel, outer_rel, inner_rel);
@@ -1210,6 +1223,7 @@ build_joinrel_tlist(PlannerInfo *root, RelOptInfo *joinrel,
  * 'joinrel' is a join relation node
  * 'outer_rel' and 'inner_rel' are a pair of relations that can be joined
  *		to form joinrel.
+ * 'sjinfo': join context info
  *
  * build_joinrel_restrictlist() returns a list of relevant restrictinfos,
  * whereas build_joinrel_joinlist() stores its results in the joinrel's
@@ -1224,7 +1238,8 @@ static List *
 build_joinrel_restrictlist(PlannerInfo *root,
 						   RelOptInfo *joinrel,
 						   RelOptInfo *outer_rel,
-						   RelOptInfo *inner_rel)
+						   RelOptInfo *inner_rel,
+						   SpecialJoinInfo *sjinfo)
 {
 	List	   *result;
 	Relids		both_input_relids;
@@ -1250,7 +1265,8 @@ build_joinrel_restrictlist(PlannerInfo *root,
 						 generate_join_implied_equalities(root,
 														  joinrel->relids,
 														  outer_rel->relids,
-														  inner_rel));
+														  inner_rel,
+														  sjinfo->ojrelid));
 
 	return result;
 }
@@ -1533,7 +1549,8 @@ get_baserel_parampathinfo(PlannerInfo *root, RelOptInfo *baserel,
 						   generate_join_implied_equalities(root,
 															joinrelids,
 															required_outer,
-															baserel));
+															baserel,
+															0));
 
 	/* Compute set of serial numbers of the enforced clauses */
 	pserials = NULL;
@@ -1655,7 +1672,8 @@ get_joinrel_parampathinfo(PlannerInfo *root, RelOptInfo *joinrel,
 	eclauses = generate_join_implied_equalities(root,
 												join_and_req,
 												required_outer,
-												joinrel);
+												joinrel,
+												0);
 	/* We only want ones that aren't movable to lower levels */
 	dropped_ecs = NIL;
 	foreach(lc, eclauses)

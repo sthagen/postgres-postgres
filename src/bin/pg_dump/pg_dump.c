@@ -715,12 +715,11 @@ main(int argc, char **argv)
 		case PG_COMPRESSION_NONE:
 			/* fallthrough */
 		case PG_COMPRESSION_GZIP:
+			/* fallthrough */
+		case PG_COMPRESSION_LZ4:
 			break;
 		case PG_COMPRESSION_ZSTD:
 			pg_fatal("compression with %s is not yet supported", "ZSTD");
-			break;
-		case PG_COMPRESSION_LZ4:
-			pg_fatal("compression with %s is not yet supported", "LZ4");
 			break;
 	}
 
@@ -8182,7 +8181,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	int			i_attnum;
 	int			i_attname;
 	int			i_atttypname;
-	int			i_atttypmod;
 	int			i_attstattarget;
 	int			i_attstorage;
 	int			i_typstorage;
@@ -8252,7 +8250,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 						 "a.attrelid,\n"
 						 "a.attnum,\n"
 						 "a.attname,\n"
-						 "a.atttypmod,\n"
 						 "a.attstattarget,\n"
 						 "a.attstorage,\n"
 						 "t.typstorage,\n"
@@ -8320,7 +8317,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	i_attnum = PQfnumber(res, "attnum");
 	i_attname = PQfnumber(res, "attname");
 	i_atttypname = PQfnumber(res, "atttypname");
-	i_atttypmod = PQfnumber(res, "atttypmod");
 	i_attstattarget = PQfnumber(res, "attstattarget");
 	i_attstorage = PQfnumber(res, "attstorage");
 	i_typstorage = PQfnumber(res, "typstorage");
@@ -8381,7 +8377,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 		tbinfo->numatts = numatts;
 		tbinfo->attnames = (char **) pg_malloc(numatts * sizeof(char *));
 		tbinfo->atttypnames = (char **) pg_malloc(numatts * sizeof(char *));
-		tbinfo->atttypmod = (int *) pg_malloc(numatts * sizeof(int));
 		tbinfo->attstattarget = (int *) pg_malloc(numatts * sizeof(int));
 		tbinfo->attstorage = (char *) pg_malloc(numatts * sizeof(char));
 		tbinfo->typstorage = (char *) pg_malloc(numatts * sizeof(char));
@@ -8408,7 +8403,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 						 tbinfo->dobj.name);
 			tbinfo->attnames[j] = pg_strdup(PQgetvalue(res, r, i_attname));
 			tbinfo->atttypnames[j] = pg_strdup(PQgetvalue(res, r, i_atttypname));
-			tbinfo->atttypmod[j] = atoi(PQgetvalue(res, r, i_atttypmod));
 			tbinfo->attstattarget[j] = atoi(PQgetvalue(res, r, i_attstattarget));
 			tbinfo->attstorage[j] = *(PQgetvalue(res, r, i_attstorage));
 			tbinfo->typstorage[j] = *(PQgetvalue(res, r, i_typstorage));
@@ -16437,7 +16431,12 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 		{
 			appendPQExpBufferStr(q,
 								 coninfo->contype == 'p' ? "PRIMARY KEY" : "UNIQUE");
-			if (indxinfo->indnullsnotdistinct)
+			/*
+			 * PRIMARY KEY constraints should not be using NULLS NOT DISTINCT
+			 * indexes. Being able to create this was fixed, but we need to
+			 * make the index distinct in order to be able to restore the dump.
+			 */
+			if (indxinfo->indnullsnotdistinct && coninfo->contype != 'p')
 				appendPQExpBufferStr(q, " NULLS NOT DISTINCT");
 			appendPQExpBufferStr(q, " (");
 			for (k = 0; k < indxinfo->indnkeyattrs; k++)
