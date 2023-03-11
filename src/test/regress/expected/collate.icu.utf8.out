@@ -3,7 +3,7 @@
  */
 /* skip test if not UTF8 server encoding or no ICU collations installed */
 SELECT getdatabaseencoding() <> 'UTF8' OR
-       (SELECT count(*) FROM pg_collation WHERE collprovider = 'i') = 0
+       (SELECT count(*) FROM pg_collation WHERE collprovider = 'i' AND collname <> 'unicode') = 0
        AS skip_test \gset
 \if :skip_test
 \quit
@@ -1141,6 +1141,25 @@ select textrange_en_us('A','Z') @> 'b'::text;
 
 drop type textrange_c;
 drop type textrange_en_us;
+-- standard collations
+SELECT * FROM collate_test2 ORDER BY b COLLATE UCS_BASIC;
+ a |  b  
+---+-----
+ 4 | ABC
+ 1 | abc
+ 3 | bbc
+ 2 | äbc
+(4 rows)
+
+SELECT * FROM collate_test2 ORDER BY b COLLATE UNICODE;
+ a |  b  
+---+-----
+ 1 | abc
+ 4 | ABC
+ 2 | äbc
+ 3 | bbc
+(4 rows)
+
 -- test ICU collation customization
 -- test the attributes handled by icu_set_collation_attributes()
 CREATE COLLATION testcoll_ignore_accents (provider = icu, locale = '@colStrength=primary;colCaseLevel=yes');
@@ -1190,6 +1209,36 @@ SELECT 'Goldmann' < 'Götz' COLLATE "de-x-icu", 'Goldmann' > 'Götz' COLLATE tes
  t        | t
 (1 row)
 
+-- rules
+CREATE COLLATION testcoll_rules1 (provider = icu, locale = '', rules = '&a < g');
+CREATE TABLE test7 (a text);
+-- example from https://unicode-org.github.io/icu/userguide/collation/customization/#syntax
+INSERT INTO test7 VALUES ('Abernathy'), ('apple'), ('bird'), ('Boston'), ('Graham'), ('green');
+SELECT * FROM test7 ORDER BY a COLLATE "en-x-icu";
+     a     
+-----------
+ Abernathy
+ apple
+ bird
+ Boston
+ Graham
+ green
+(6 rows)
+
+SELECT * FROM test7 ORDER BY a COLLATE testcoll_rules1;
+     a     
+-----------
+ Abernathy
+ apple
+ green
+ bird
+ Boston
+ Graham
+(6 rows)
+
+DROP TABLE test7;
+CREATE COLLATION testcoll_rulesx (provider = icu, locale = '', rules = '!!wrong!!');
+ERROR:  could not open collator for locale "" with rules "!!wrong!!": U_INVALID_FORMAT_ERROR
 -- nondeterministic collations
 CREATE COLLATION ctest_det (provider = icu, locale = '', deterministic = true);
 CREATE COLLATION ctest_nondet (provider = icu, locale = '', deterministic = false);

@@ -115,6 +115,7 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 	bool		freeze = false;
 	bool		full = false;
 	bool		disable_page_skipping = false;
+	bool		process_main = true;
 	bool		process_toast = true;
 	bool		skip_database_stats = false;
 	bool		only_database_stats = false;
@@ -168,6 +169,8 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 					params.index_cleanup = get_vacoptval_from_boolean(opt);
 			}
 		}
+		else if (strcmp(opt->defname, "process_main") == 0)
+			process_main = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "process_toast") == 0)
 			process_toast = defGetBoolean(opt);
 		else if (strcmp(opt->defname, "truncate") == 0)
@@ -224,6 +227,7 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 		(freeze ? VACOPT_FREEZE : 0) |
 		(full ? VACOPT_FULL : 0) |
 		(disable_page_skipping ? VACOPT_DISABLE_PAGE_SKIPPING : 0) |
+		(process_main ? VACOPT_PROCESS_MAIN : 0) |
 		(process_toast ? VACOPT_PROCESS_TOAST : 0) |
 		(skip_database_stats ? VACOPT_SKIP_DATABASE_STATS : 0) |
 		(only_database_stats ? VACOPT_ONLY_DATABASE_STATS : 0);
@@ -367,9 +371,10 @@ vacuum(List *relations, VacuumParams *params,
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("ONLY_DATABASE_STATS cannot be specified with a list of tables")));
-		/* don't require people to turn off PROCESS_TOAST explicitly */
+		/* don't require people to turn off PROCESS_TOAST/MAIN explicitly */
 		if (params->options & ~(VACOPT_VACUUM |
 								VACOPT_VERBOSE |
+								VACOPT_PROCESS_MAIN |
 								VACOPT_PROCESS_TOAST |
 								VACOPT_ONLY_DATABASE_STATS))
 			ereport(ERROR,
@@ -2031,10 +2036,12 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params, bool skip_privs)
 	/*
 	 * Remember the relation's TOAST relation for later, if the caller asked
 	 * us to process it.  In VACUUM FULL, though, the toast table is
-	 * automatically rebuilt by cluster_rel so we shouldn't recurse to it.
+	 * automatically rebuilt by cluster_rel so we shouldn't recurse to it,
+	 * unless PROCESS_MAIN is disabled.
 	 */
 	if ((params->options & VACOPT_PROCESS_TOAST) != 0 &&
-		(params->options & VACOPT_FULL) == 0)
+		((params->options & VACOPT_FULL) == 0 ||
+		 (params->options & VACOPT_PROCESS_MAIN) == 0))
 		toast_relid = rel->rd_rel->reltoastrelid;
 	else
 		toast_relid = InvalidOid;
@@ -2051,24 +2058,33 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params, bool skip_privs)
 	save_nestlevel = NewGUCNestLevel();
 
 	/*
-	 * Do the actual work --- either FULL or "lazy" vacuum
+	 * If PROCESS_MAIN is set (the default), it's time to vacuum the main
+	 * relation.  Otherwise, we can skip this part.  If processing the TOAST
+	 * table is required (e.g., PROCESS_TOAST is set), we force PROCESS_MAIN
+	 * to be set when we recurse to the TOAST table.
 	 */
-	if (params->options & VACOPT_FULL)
+	if (params->options & VACOPT_PROCESS_MAIN)
 	{
-		ClusterParams cluster_params = {0};
+		/*
+		 * Do the actual work --- either FULL or "lazy" vacuum
+		 */
+		if (params->options & VACOPT_FULL)
+		{
+			ClusterParams cluster_params = {0};
 
-		/* close relation before vacuuming, but hold lock until commit */
-		relation_close(rel, NoLock);
-		rel = NULL;
+			/* close relation before vacuuming, but hold lock until commit */
+			relation_close(rel, NoLock);
+			rel = NULL;
 
-		if ((params->options & VACOPT_VERBOSE) != 0)
-			cluster_params.options |= CLUOPT_VERBOSE;
+			if ((params->options & VACOPT_VERBOSE) != 0)
+				cluster_params.options |= CLUOPT_VERBOSE;
 
-		/* VACUUM FULL is now a variant of CLUSTER; see cluster.c */
-		cluster_rel(relid, InvalidOid, &cluster_params);
+			/* VACUUM FULL is now a variant of CLUSTER; see cluster.c */
+			cluster_rel(relid, InvalidOid, &cluster_params);
+		}
+		else
+			table_relation_vacuum(rel, params, vac_strategy);
 	}
-	else
-		table_relation_vacuum(rel, params, vac_strategy);
 
 	/* Roll back any GUC changes executed by index functions */
 	AtEOXact_GUC(false, save_nestlevel);
@@ -2094,7 +2110,15 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params, bool skip_privs)
 	 * totally unimportant for toast relations.
 	 */
 	if (toast_relid != InvalidOid)
-		vacuum_rel(toast_relid, NULL, params, true);
+	{
+		VacuumParams toast_vacuum_params;
+
+		/* force VACOPT_PROCESS_MAIN so vacuum_rel() processes it */
+		memcpy(&toast_vacuum_params, params, sizeof(VacuumParams));
+		toast_vacuum_params.options |= VACOPT_PROCESS_MAIN;
+
+		vacuum_rel(toast_relid, NULL, &toast_vacuum_params, true);
+	}
 
 	/*
 	 * Now release the session-level lock on the main table.

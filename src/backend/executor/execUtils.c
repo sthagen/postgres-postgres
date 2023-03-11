@@ -121,6 +121,7 @@ CreateExecutorState(void)
 	estate->es_range_table_size = 0;
 	estate->es_relations = NULL;
 	estate->es_rowmarks = NULL;
+	estate->es_rteperminfos = NIL;
 	estate->es_plannedstmt = NULL;
 	estate->es_part_prune_infos = NIL;
 
@@ -755,10 +756,13 @@ ExecOpenScanRelation(EState *estate, Index scanrelid, int eflags)
  * indexed by rangetable index.
  */
 void
-ExecInitRangeTable(EState *estate, List *rangeTable)
+ExecInitRangeTable(EState *estate, List *rangeTable, List *permInfos)
 {
 	/* Remember the range table List as-is */
 	estate->es_range_table = rangeTable;
+
+	/* ... and the RTEPermissionInfo List too */
+	estate->es_rteperminfos = permInfos;
 
 	/* Set size of associated arrays */
 	estate->es_range_table_size = list_length(rangeTable);
@@ -1335,8 +1339,8 @@ ExecGetUpdatedCols(ResultRelInfo *relinfo, EState *estate)
 Bitmapset *
 ExecGetExtraUpdatedCols(ResultRelInfo *relinfo, EState *estate)
 {
-	/* In some code paths we can reach here before initializing the info */
-	if (relinfo->ri_GeneratedExprs == NULL)
+	/* Compute the info if we didn't already */
+	if (relinfo->ri_GeneratedExprsU == NULL)
 		ExecInitStoredGenerated(relinfo, estate, CMD_UPDATE);
 	return relinfo->ri_extraUpdatedCols;
 }

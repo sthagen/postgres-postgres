@@ -88,8 +88,7 @@ typedef uint64 AclMode;			/* a bitmask of privilege bits */
 #define ACL_REFERENCES	(1<<5)
 #define ACL_TRIGGER		(1<<6)
 #define ACL_EXECUTE		(1<<7)	/* for functions */
-#define ACL_USAGE		(1<<8)	/* for languages, namespaces, FDWs, and
-								 * servers */
+#define ACL_USAGE		(1<<8)	/* for various object types */
 #define ACL_CREATE		(1<<9)	/* for namespaces and databases */
 #define ACL_CREATE_TEMP (1<<10) /* for databases */
 #define ACL_CONNECT		(1<<11) /* for databases */
@@ -3221,14 +3220,18 @@ typedef struct InlineCodeBlock
  * list contains copies of the expressions for all output arguments, in the
  * order of the procedure's declared arguments.  (outargs is never evaluated,
  * but is useful to the caller as a reference for what to assign to.)
+ * The transformed call state is not relevant in the query jumbling, only the
+ * function call is.
  * ----------------------
  */
 typedef struct CallStmt
 {
 	NodeTag		type;
 	FuncCall   *funccall;		/* from the parser */
-	FuncExpr   *funcexpr;		/* transformed call, with only input args */
-	List	   *outargs;		/* transformed output-argument expressions */
+	/* transformed call, with only input args */
+	FuncExpr   *funcexpr pg_node_attr(query_jumble_ignore);
+	/* transformed output-argument expressions */
+	List	   *outargs pg_node_attr(query_jumble_ignore);
 } CallStmt;
 
 typedef struct CallContext

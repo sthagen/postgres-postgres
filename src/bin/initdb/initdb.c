@@ -53,6 +53,9 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#ifdef USE_ICU
+#include <unicode/ucol.h>
+#endif
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
@@ -133,8 +136,13 @@ static char *lc_monetary = NULL;
 static char *lc_numeric = NULL;
 static char *lc_time = NULL;
 static char *lc_messages = NULL;
+#ifdef USE_ICU
+static char locale_provider = COLLPROVIDER_ICU;
+#else
 static char locale_provider = COLLPROVIDER_LIBC;
+#endif
 static char *icu_locale = NULL;
+static char *icu_rules = NULL;
 static const char *default_text_search_config = NULL;
 static char *username = NULL;
 static bool pwprompt = false;
@@ -1312,7 +1320,10 @@ bootstrap_template1(void)
 							  escape_quotes_bki(lc_ctype));
 
 	bki_lines = replace_token(bki_lines, "ICU_LOCALE",
-							  locale_provider == COLLPROVIDER_ICU ? escape_quotes_bki(icu_locale) : "_null_");
+							  icu_locale ? escape_quotes_bki(icu_locale) : "_null_");
+
+	bki_lines = replace_token(bki_lines, "ICU_RULES",
+							  icu_rules ? escape_quotes_bki(icu_rules) : "_null_");
 
 	sprintf(buf, "%c", locale_provider);
 	bki_lines = replace_token(bki_lines, "LOCALE_PROVIDER", buf);
@@ -1482,10 +1493,14 @@ static void
 setup_collation(FILE *cmdfd)
 {
 	/*
-	 * Add an SQL-standard name.  We don't want to pin this, so it doesn't go
-	 * in pg_collation.h.  But add it before reading system collations, so
-	 * that it wins if libc defines a locale named ucs_basic.
+	 * Add SQL-standard names.  We don't want to pin these, so they don't go
+	 * in pg_collation.dat.  But add them before reading system collations, so
+	 * that they win if libc defines a locale with the same name.
 	 */
+	PG_CMD_PRINTF("INSERT INTO pg_collation (oid, collname, collnamespace, collowner, collprovider, collisdeterministic, collencoding, colliculocale)"
+				  "VALUES (pg_nextoid('pg_catalog.pg_collation', 'oid', 'pg_catalog.pg_collation_oid_index'), 'unicode', 'pg_catalog'::regnamespace, %u, '%c', true, -1, 'und');\n\n",
+				  BOOTSTRAP_SUPERUSERID, COLLPROVIDER_ICU);
+
 	PG_CMD_PRINTF("INSERT INTO pg_collation (oid, collname, collnamespace, collowner, collprovider, collisdeterministic, collencoding, collcollate, collctype)"
 				  "VALUES (pg_nextoid('pg_catalog.pg_collation', 'oid', 'pg_catalog.pg_collation_oid_index'), 'ucs_basic', 'pg_catalog'::regnamespace, %u, '%c', true, %d, 'C', 'C');\n\n",
 				  BOOTSTRAP_SUPERUSERID, COLLPROVIDER_LIBC, PG_UTF8);
@@ -2025,6 +2040,50 @@ check_icu_locale_encoding(int user_enc)
 }
 
 /*
+ * Check that ICU accepts the locale name; or if not specified, retrieve the
+ * default ICU locale.
+ */
+static void
+check_icu_locale(void)
+{
+#ifdef USE_ICU
+	UCollator	*collator;
+	UErrorCode   status;
+
+	status = U_ZERO_ERROR;
+	collator = ucol_open(icu_locale, &status);
+	if (U_FAILURE(status))
+	{
+		if (icu_locale)
+			pg_fatal("could not open collator for locale \"%s\": %s",
+					 icu_locale, u_errorName(status));
+		else
+			pg_fatal("could not open collator for default locale: %s",
+					 u_errorName(status));
+	}
+
+	/* if not specified, get locale from default collator */
+	if (icu_locale == NULL)
+	{
+		const char	*default_locale;
+
+		status = U_ZERO_ERROR;
+		default_locale = ucol_getLocaleByType(collator, ULOC_VALID_LOCALE,
+											  &status);
+		if (U_FAILURE(status))
+		{
+			ucol_close(collator);
+			pg_fatal("could not determine default ICU locale");
+		}
+
+		icu_locale = pg_strdup(default_locale);
+	}
+
+	ucol_close(collator);
+#endif
+}
+
+/*
  * set up the locale variables
  *
  * assumes we have called setlocale(LC_ALL, "") -- see set_pglocale_pgservice
@@ -2077,8 +2136,7 @@ setlocales(void)
 
 	if (locale_provider == COLLPROVIDER_ICU)
 	{
-		if (!icu_locale)
-			pg_fatal("ICU locale must be specified");
+		check_icu_locale();
 
 		/*
 		 * In supported builds, the ICU locale ID will be checked by the
@@ -2107,6 +2165,7 @@ usage(const char *progname)
 	printf(_("  -E, --encoding=ENCODING   set default encoding for new databases\n"));
 	printf(_("  -g, --allow-group-access  allow group read/execute on data directory\n"));
 	printf(_("      --icu-locale=LOCALE   set ICU locale ID for new databases\n"));
+	printf(_("      --icu-rules=RULES     set additional ICU collation rules for new databases\n"));
 	printf(_("  -k, --data-checksums      use data page checksums\n"));
 	printf(_("      --locale=LOCALE       set default locale for new databases\n"));
 	printf(_("      --lc-collate=, --lc-ctype=, --lc-messages=LOCALE\n"
@@ -2291,17 +2350,18 @@ setup_locale_encoding(void)
 			   lc_time);
 	}
 
-	if (!encoding && locale_provider == COLLPROVIDER_ICU)
-	{
-		encodingid = PG_UTF8;
-		printf(_("The default database encoding has been set to \"%s\".\n"),
-			   pg_encoding_to_char(encodingid));
-	}
-	else if (!encoding)
+	if (!encoding)
 	{
 		int			ctype_enc;
 
 		ctype_enc = pg_get_encoding_from_locale(lc_ctype, true);
+
+		/*
+		 * If ctype_enc=SQL_ASCII, it's compatible with any encoding. ICU does
+		 * not support SQL_ASCII, so select UTF-8 instead.
+		 */
+		if (locale_provider == COLLPROVIDER_ICU && ctype_enc == PG_SQL_ASCII)
+			ctype_enc = PG_UTF8;
 
 		if (ctype_enc == -1)
 		{
@@ -2767,6 +2827,7 @@ main(int argc, char *argv[])
 		{"discard-caches", no_argument, NULL, 14},
 		{"locale-provider", required_argument, NULL, 15},
 		{"icu-locale", required_argument, NULL, 16},
+		{"icu-rules", required_argument, NULL, 17},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -2924,6 +2985,9 @@ main(int argc, char *argv[])
 			case 16:
 				icu_locale = pg_strdup(optarg);
 				break;
+			case 17:
+				icu_rules = pg_strdup(optarg);
+				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -2953,6 +3017,10 @@ main(int argc, char *argv[])
 	if (icu_locale && locale_provider != COLLPROVIDER_ICU)
 		pg_fatal("%s cannot be specified unless locale provider \"%s\" is chosen",
 				 "--icu-locale", "icu");
+
+	if (icu_rules && locale_provider != COLLPROVIDER_ICU)
+		pg_fatal("%s cannot be specified unless locale provider \"%s\" is chosen",
+				 "--icu-rules", "icu");
 
 	atexit(cleanup_directories_atexit);
 

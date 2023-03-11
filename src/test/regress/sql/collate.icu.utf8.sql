@@ -4,7 +4,7 @@
 
 /* skip test if not UTF8 server encoding or no ICU collations installed */
 SELECT getdatabaseencoding() <> 'UTF8' OR
-       (SELECT count(*) FROM pg_collation WHERE collprovider = 'i') = 0
+       (SELECT count(*) FROM pg_collation WHERE collprovider = 'i' AND collname <> 'unicode') = 0
        AS skip_test \gset
 \if :skip_test
 \quit
@@ -444,6 +444,12 @@ drop type textrange_c;
 drop type textrange_en_us;
 
 
+-- standard collations
+
+SELECT * FROM collate_test2 ORDER BY b COLLATE UCS_BASIC;
+SELECT * FROM collate_test2 ORDER BY b COLLATE UNICODE;
+
+
 -- test ICU collation customization
 
 -- test the attributes handled by icu_set_collation_attributes()
@@ -470,6 +476,19 @@ CREATE COLLATION testcoll_error1 (provider = icu, locale = '@colNumeric=lower');
 -- (handled by ucol_open() directly) also work
 CREATE COLLATION testcoll_de_phonebook (provider = icu, locale = 'de@collation=phonebook');
 SELECT 'Goldmann' < 'Götz' COLLATE "de-x-icu", 'Goldmann' > 'Götz' COLLATE testcoll_de_phonebook;
+
+
+-- rules
+
+CREATE COLLATION testcoll_rules1 (provider = icu, locale = '', rules = '&a < g');
+CREATE TABLE test7 (a text);
+-- example from https://unicode-org.github.io/icu/userguide/collation/customization/#syntax
+INSERT INTO test7 VALUES ('Abernathy'), ('apple'), ('bird'), ('Boston'), ('Graham'), ('green');
+SELECT * FROM test7 ORDER BY a COLLATE "en-x-icu";
+SELECT * FROM test7 ORDER BY a COLLATE testcoll_rules1;
+DROP TABLE test7;
+
+CREATE COLLATION testcoll_rulesx (provider = icu, locale = '', rules = '!!wrong!!');
 
 
 -- nondeterministic collations
