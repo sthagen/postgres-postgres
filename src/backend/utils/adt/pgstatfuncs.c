@@ -152,29 +152,26 @@ pg_stat_get_function_calls(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(funcentry->numcalls);
 }
 
-Datum
-pg_stat_get_function_total_time(PG_FUNCTION_ARGS)
-{
-	Oid			funcid = PG_GETARG_OID(0);
-	PgStat_StatFuncEntry *funcentry;
-
-	if ((funcentry = pgstat_fetch_stat_funcentry(funcid)) == NULL)
-		PG_RETURN_NULL();
-	/* convert counter from microsec to millisec for display */
-	PG_RETURN_FLOAT8(((double) funcentry->total_time) / 1000.0);
+/* convert counter from microsec to millisec for display */
+#define PG_STAT_GET_FUNCENTRY_FLOAT8_MS(stat)						\
+Datum																\
+CppConcat(pg_stat_get_function_,stat)(PG_FUNCTION_ARGS)				\
+{																	\
+	Oid			funcid = PG_GETARG_OID(0);							\
+	double		result;												\
+	PgStat_StatFuncEntry *funcentry;								\
+																	\
+	if ((funcentry = pgstat_fetch_stat_funcentry(funcid)) == NULL)	\
+		PG_RETURN_NULL();											\
+	result = ((double) funcentry->stat) / 1000.0;					\
+	PG_RETURN_FLOAT8(result);										\
 }
 
-Datum
-pg_stat_get_function_self_time(PG_FUNCTION_ARGS)
-{
-	Oid			funcid = PG_GETARG_OID(0);
-	PgStat_StatFuncEntry *funcentry;
+/* pg_stat_get_function_total_time */
+PG_STAT_GET_FUNCENTRY_FLOAT8_MS(total_time)
 
-	if ((funcentry = pgstat_fetch_stat_funcentry(funcid)) == NULL)
-		PG_RETURN_NULL();
-	/* convert counter from microsec to millisec for display */
-	PG_RETURN_FLOAT8(((double) funcentry->self_time) / 1000.0);
-}
+/* pg_stat_get_function_self_time */
+PG_STAT_GET_FUNCENTRY_FLOAT8_MS(self_time)
 
 Datum
 pg_stat_get_backend_idset(PG_FUNCTION_ARGS)
@@ -1147,7 +1144,8 @@ pg_stat_get_db_checksum_last_failure(PG_FUNCTION_ARGS)
 		PG_RETURN_TIMESTAMPTZ(result);
 }
 
-#define PG_STAT_GET_DBENTRY_FLOAT8(stat)						\
+/* convert counter from microsec to millisec for display */
+#define PG_STAT_GET_DBENTRY_FLOAT8_MS(stat)						\
 Datum															\
 CppConcat(pg_stat_get_db_,stat)(PG_FUNCTION_ARGS)				\
 {																\
@@ -1164,19 +1162,19 @@ CppConcat(pg_stat_get_db_,stat)(PG_FUNCTION_ARGS)				\
 }
 
 /* pg_stat_get_db_active_time */
-PG_STAT_GET_DBENTRY_FLOAT8(active_time)
+PG_STAT_GET_DBENTRY_FLOAT8_MS(active_time)
 
 /* pg_stat_get_db_blk_read_time */
-PG_STAT_GET_DBENTRY_FLOAT8(blk_read_time)
+PG_STAT_GET_DBENTRY_FLOAT8_MS(blk_read_time)
 
 /* pg_stat_get_db_blk_write_time */
-PG_STAT_GET_DBENTRY_FLOAT8(blk_write_time)
+PG_STAT_GET_DBENTRY_FLOAT8_MS(blk_write_time)
 
 /* pg_stat_get_db_idle_in_transaction_time */
-PG_STAT_GET_DBENTRY_FLOAT8(idle_in_transaction_time)
+PG_STAT_GET_DBENTRY_FLOAT8_MS(idle_in_transaction_time)
 
 /* pg_stat_get_db_session_time */
-PG_STAT_GET_DBENTRY_FLOAT8(session_time)
+PG_STAT_GET_DBENTRY_FLOAT8_MS(session_time)
 
 Datum
 pg_stat_get_bgwriter_timed_checkpoints(PG_FUNCTION_ARGS)
@@ -1261,6 +1259,7 @@ typedef enum io_stat_col
 	IO_COL_WRITES,
 	IO_COL_EXTENDS,
 	IO_COL_CONVERSION,
+	IO_COL_HITS,
 	IO_COL_EVICTIONS,
 	IO_COL_REUSES,
 	IO_COL_FSYNCS,
@@ -1279,16 +1278,18 @@ pgstat_get_io_op_index(IOOp io_op)
 	{
 		case IOOP_EVICT:
 			return IO_COL_EVICTIONS;
+		case IOOP_EXTEND:
+			return IO_COL_EXTENDS;
+		case IOOP_FSYNC:
+			return IO_COL_FSYNCS;
+		case IOOP_HIT:
+			return IO_COL_HITS;
 		case IOOP_READ:
 			return IO_COL_READS;
 		case IOOP_REUSE:
 			return IO_COL_REUSES;
 		case IOOP_WRITE:
 			return IO_COL_WRITES;
-		case IOOP_EXTEND:
-			return IO_COL_EXTENDS;
-		case IOOP_FSYNC:
-			return IO_COL_FSYNCS;
 	}
 
 	elog(ERROR, "unrecognized IOOp value: %d", io_op);
@@ -1498,50 +1499,42 @@ pg_stat_get_slru(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-Datum
-pg_stat_get_xact_numscans(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
-
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-		result = (int64) (tabentry->counts.numscans);
-
-	PG_RETURN_INT64(result);
+#define PG_STAT_GET_XACT_RELENTRY_INT64(stat)			\
+Datum													\
+CppConcat(pg_stat_get_xact_,stat)(PG_FUNCTION_ARGS)		\
+{														\
+	Oid         relid = PG_GETARG_OID(0);				\
+	int64       result;									\
+	PgStat_TableStatus *tabentry;						\
+														\
+	if ((tabentry = find_tabstat_entry(relid)) == NULL)	\
+		result = 0;										\
+	else												\
+		result = (int64) (tabentry->counts.stat);		\
+														\
+	PG_RETURN_INT64(result);							\
 }
 
-Datum
-pg_stat_get_xact_tuples_returned(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
+/* pg_stat_get_xact_numscans */
+PG_STAT_GET_XACT_RELENTRY_INT64(numscans)
 
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-		result = (int64) (tabentry->counts.tuples_returned);
+/* pg_stat_get_xact_tuples_returned */
+PG_STAT_GET_XACT_RELENTRY_INT64(tuples_returned)
 
-	PG_RETURN_INT64(result);
-}
+/* pg_stat_get_xact_tuples_fetched */
+PG_STAT_GET_XACT_RELENTRY_INT64(tuples_fetched)
 
-Datum
-pg_stat_get_xact_tuples_fetched(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
+/* pg_stat_get_xact_tuples_hot_updated */
+PG_STAT_GET_XACT_RELENTRY_INT64(tuples_hot_updated)
 
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-		result = (int64) (tabentry->counts.tuples_fetched);
+/* pg_stat_get_xact_tuples_newpage_updated */
+PG_STAT_GET_XACT_RELENTRY_INT64(tuples_newpage_updated)
 
-	PG_RETURN_INT64(result);
-}
+/* pg_stat_get_xact_blocks_fetched */
+PG_STAT_GET_XACT_RELENTRY_INT64(blocks_fetched)
+
+/* pg_stat_get_xact_blocks_hit */
+PG_STAT_GET_XACT_RELENTRY_INT64(blocks_hit)
 
 Datum
 pg_stat_get_xact_tuples_inserted(PG_FUNCTION_ARGS)
@@ -1607,66 +1600,6 @@ pg_stat_get_xact_tuples_deleted(PG_FUNCTION_ARGS)
 }
 
 Datum
-pg_stat_get_xact_tuples_hot_updated(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
-
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-		result = (int64) (tabentry->counts.tuples_hot_updated);
-
-	PG_RETURN_INT64(result);
-}
-
-Datum
-pg_stat_get_xact_tuples_newpage_updated(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
-
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-		result = (int64) (tabentry->counts.tuples_newpage_updated);
-
-	PG_RETURN_INT64(result);
-}
-
-Datum
-pg_stat_get_xact_blocks_fetched(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
-
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-		result = (int64) (tabentry->counts.blocks_fetched);
-
-	PG_RETURN_INT64(result);
-}
-
-Datum
-pg_stat_get_xact_blocks_hit(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
-
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-		result = (int64) (tabentry->counts.blocks_hit);
-
-	PG_RETURN_INT64(result);
-}
-
-Datum
 pg_stat_get_xact_function_calls(PG_FUNCTION_ARGS)
 {
 	Oid			funcid = PG_GETARG_OID(0);
@@ -1677,28 +1610,23 @@ pg_stat_get_xact_function_calls(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(funcentry->numcalls);
 }
 
-Datum
-pg_stat_get_xact_function_total_time(PG_FUNCTION_ARGS)
-{
-	Oid			funcid = PG_GETARG_OID(0);
-	PgStat_FunctionCounts *funcentry;
-
-	if ((funcentry = find_funcstat_entry(funcid)) == NULL)
-		PG_RETURN_NULL();
-	PG_RETURN_FLOAT8(INSTR_TIME_GET_MILLISEC(funcentry->total_time));
+#define PG_STAT_GET_XACT_FUNCENTRY_FLOAT8_MS(stat)				\
+Datum															\
+CppConcat(pg_stat_get_xact_function_,stat)(PG_FUNCTION_ARGS)	\
+{																\
+	Oid			funcid = PG_GETARG_OID(0);						\
+	PgStat_FunctionCounts *funcentry;							\
+																\
+	if ((funcentry = find_funcstat_entry(funcid)) == NULL)		\
+		PG_RETURN_NULL();										\
+	PG_RETURN_FLOAT8(INSTR_TIME_GET_MILLISEC(funcentry->stat));	\
 }
 
-Datum
-pg_stat_get_xact_function_self_time(PG_FUNCTION_ARGS)
-{
-	Oid			funcid = PG_GETARG_OID(0);
-	PgStat_FunctionCounts *funcentry;
+/* pg_stat_get_xact_function_total_time */
+PG_STAT_GET_XACT_FUNCENTRY_FLOAT8_MS(total_time)
 
-	if ((funcentry = find_funcstat_entry(funcid)) == NULL)
-		PG_RETURN_NULL();
-	PG_RETURN_FLOAT8(INSTR_TIME_GET_MILLISEC(funcentry->self_time));
-}
-
+/* pg_stat_get_xact_function_self_time */
+PG_STAT_GET_XACT_FUNCENTRY_FLOAT8_MS(self_time)
 
 /* Get the timestamp of the current statistics snapshot */
 Datum

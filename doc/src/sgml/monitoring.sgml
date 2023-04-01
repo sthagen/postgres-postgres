@@ -3858,6 +3858,17 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
      <row>
       <entry role="catalog_table_entry">
        <para role="column_definition">
+        <structfield>hits</structfield> <type>bigint</type>
+       </para>
+       <para>
+        The number of times a desired block was found in a shared buffer.
+       </para>
+      </entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry">
+       <para role="column_definition">
         <structfield>evictions</structfield> <type>bigint</type>
        </para>
        <para>
@@ -6817,7 +6828,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>pid</structfield> <type>integer</type>
       </para>
       <para>
-       Process ID of backend.
+       Process ID of the backend creating indexes.
       </para></entry>
      </row>
 
@@ -6863,7 +6874,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>command</structfield> <type>text</type>
       </para>
       <para>
-       The command that is running: <literal>CREATE INDEX</literal>,
+       Specific command type: <literal>CREATE INDEX</literal>,
        <literal>CREATE INDEX CONCURRENTLY</literal>,
        <literal>REINDEX</literal>, or <literal>REINDEX CONCURRENTLY</literal>.
       </para></entry>
@@ -6946,9 +6957,10 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>partitions_total</structfield> <type>bigint</type>
       </para>
       <para>
-       When creating an index on a partitioned table, this column is set to
-       the total number of partitions on which the index is to be created.
-       This field is <literal>0</literal> during a <literal>REINDEX</literal>.
+       Total number of partitions on which the index is to be created
+       or attached, including both direct and indirect partitions.
+       <literal>0</literal> during a <literal>REINDEX</literal>, or when
+       the index is not partitioned.
       </para></entry>
      </row>
 
@@ -6957,9 +6969,10 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>partitions_done</structfield> <type>bigint</type>
       </para>
       <para>
-       When creating an index on a partitioned table, this column is set to
-       the number of partitions on which the index has been created.
-       This field is <literal>0</literal> during a <literal>REINDEX</literal>.
+       Number of partitions on which the index has already been created
+       or attached, including both direct and indirect partitions.
+       <literal>0</literal> during a <literal>REINDEX</literal>, or when
+       the index is not partitioned.
       </para></entry>
      </row>
     </tbody>
