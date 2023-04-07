@@ -661,7 +661,10 @@ typedef struct EState
 
 	List	   *es_tupleTable;	/* List of TupleTableSlots */
 
-	uint64		es_processed;	/* # of tuples processed */
+	uint64		es_processed;	/* # of tuples processed during one
+								 * ExecutorRun() call. */
+	uint64		es_total_processed; /* total # of tuples aggregated across all
+									 * ExecutorRun() calls. */
 
 	int			es_top_eflags;	/* eflags passed to ExecutorStart */
 	int			es_instrument;	/* OR of InstrumentOption flags */
@@ -2073,7 +2076,8 @@ typedef struct MergeJoinState
  *								OuterTupleSlot is empty!)
  *		hj_OuterTupleSlot		tuple slot for outer tuples
  *		hj_HashTupleSlot		tuple slot for inner (hashed) tuples
- *		hj_NullOuterTupleSlot	prepared null tuple for right/full outer joins
+ *		hj_NullOuterTupleSlot	prepared null tuple for right/right-anti/full
+ *								outer joins
  *		hj_NullInnerTupleSlot	prepared null tuple for left/full outer joins
  *		hj_FirstOuterTupleSlot	first tuple retrieved from outer plan
  *		hj_JoinState			current state of ExecHashJoin state machine

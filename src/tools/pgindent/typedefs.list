@@ -708,6 +708,8 @@ ExprEvalRowtypeCache
 ExprEvalStep
 ExprState
 ExprStateEvalFunc
+ExtendBufferedFlags
+ExtendBufferedWhat
 ExtensibleNode
 ExtensibleNodeEntry
 ExtensibleNodeMethods
@@ -3937,3 +3939,4 @@ yyscan_t
 z_stream
 z_streamp
 zic_t
+ZSTD_CStream
