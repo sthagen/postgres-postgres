@@ -541,8 +541,11 @@ PrefetchSharedBuffer(SMgrRelation smgr_reln,
 		 * Try to initiate an asynchronous read.  This returns false in
 		 * recovery if the relation file doesn't exist.
 		 */
-		if (smgrprefetch(smgr_reln, forkNum, blockNum))
+		if ((io_direct_flags & IO_DIRECT_DATA) == 0 &&
+			smgrprefetch(smgr_reln, forkNum, blockNum))
+		{
 			result.initiated_io = true;
+		}
 #endif							/* USE_PREFETCH */
 	}
 	else
@@ -588,11 +591,11 @@ PrefetchSharedBuffer(SMgrRelation smgr_reln,
  * the kernel and therefore didn't really initiate I/O, and no way to know when
  * the I/O completes other than using synchronous ReadBuffer().
  *
- * 3.  Otherwise, the buffer wasn't already cached by PostgreSQL, and either
+ * 3.  Otherwise, the buffer wasn't already cached by PostgreSQL, and
  * USE_PREFETCH is not defined (this build doesn't support prefetching due to
- * lack of a kernel facility), or the underlying relation file wasn't found and
- * we are in recovery.  (If the relation file wasn't found and we are not in
- * recovery, an error is raised).
+ * lack of a kernel facility), direct I/O is enabled, or the underlying
+ * relation file wasn't found and we are in recovery.  (If the relation file
+ * wasn't found and we are not in recovery, an error is raised).
  */
 PrefetchBufferResult
 PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
@@ -885,8 +888,6 @@ ExtendBufferedRelTo(ExtendBufferedWhat eb,
 	Assert((eb.rel != NULL) != (eb.smgr != NULL));
 	Assert(eb.smgr == NULL || eb.relpersistence != 0);
 	Assert(extend_to != InvalidBlockNumber && extend_to > 0);
-	Assert(mode == RBM_NORMAL || mode == RBM_ZERO_ON_ERROR ||
-		   mode == RBM_ZERO_AND_LOCK);
 
 	if (eb.smgr == NULL)
 	{
@@ -930,7 +931,13 @@ ExtendBufferedRelTo(ExtendBufferedWhat eb,
 	 */
 	current_size = smgrnblocks(eb.smgr, fork);
 
-	if (mode == RBM_ZERO_AND_LOCK)
+	/*
+	 * Since no-one else can be looking at the page contents yet, there is no
+	 * difference between an exclusive lock and a cleanup-strength lock. Note
+	 * that we pass the original mode to ReadBuffer_common() below, when
+	 * falling back to reading the buffer to a concurrent relation extension.
+	 */
+	if (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK)
 		flags |= EB_LOCK_TARGET;
 
 	while (current_size < extend_to)
@@ -1005,11 +1012,12 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	{
 		uint32		flags = EB_SKIP_EXTENSION_LOCK;
 
-		Assert(mode == RBM_NORMAL ||
-			   mode == RBM_ZERO_AND_LOCK ||
-			   mode == RBM_ZERO_ON_ERROR);
-
-		if (mode == RBM_ZERO_AND_LOCK)
+		/*
+		 * Since no-one else can be looking at the page contents yet, there is
+		 * no difference between an exclusive lock and a cleanup-strength
+		 * lock.
+		 */
+		if (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK)
 			flags |= EB_LOCK_FIRST;
 
 		return ExtendBufferedRel(EB_SMGR(smgr, relpersistence),
@@ -1112,23 +1120,12 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		MemSet((char *) bufBlock, 0, BLCKSZ);
 	else
 	{
-		instr_time	io_start,
-					io_time;
-
-		if (track_io_timing)
-			INSTR_TIME_SET_CURRENT(io_start);
+		instr_time	io_start = pgstat_prepare_io_time();
 
 		smgrread(smgr, forkNum, blockNum, bufBlock);
 
-		if (track_io_timing)
-		{
-			INSTR_TIME_SET_CURRENT(io_time);
-			INSTR_TIME_SUBTRACT(io_time, io_start);
-			pgstat_count_buffer_read_time(INSTR_TIME_GET_MICROSEC(io_time));
-			INSTR_TIME_ADD(pgBufferUsage.blk_read_time, io_time);
-		}
-
-		pgstat_count_io_op(io_object, io_context, IOOP_READ);
+		pgstat_count_io_op_time(io_object, io_context,
+								IOOP_READ, io_start, 1);
 
 		/* check for garbage data */
 		if (!PageIsVerifiedExtended((Page) bufBlock, blockNum,
@@ -1153,9 +1150,10 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	}
 
 	/*
-	 * In RBM_ZERO_AND_LOCK mode, grab the buffer content lock before marking
-	 * the page as valid, to make sure that no other backend sees the zeroed
-	 * page before the caller has had a chance to initialize it.
+	 * In RBM_ZERO_AND_LOCK / RBM_ZERO_AND_CLEANUP_LOCK mode, grab the buffer
+	 * content lock before marking the page as valid, to make sure that no
+	 * other backend sees the zeroed page before the caller has had a chance
+	 * to initialize it.
 	 *
 	 * Since no-one else can be looking at the page contents yet, there is no
 	 * difference between an exclusive lock and a cleanup-strength lock. (Note
@@ -1837,6 +1835,7 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 {
 	BlockNumber first_block;
 	IOContext	io_context = IOContextForStrategy(strategy);
+	instr_time	io_start;
 
 	LimitAdditionalPins(&extend_by);
 
@@ -2044,6 +2043,8 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 		}
 	}
 
+	io_start = pgstat_prepare_io_time();
+
 	/*
 	 * Note: if smgzerorextend fails, we will end up with buffers that are
 	 * allocated but not marked BM_VALID.  The next relation extension will
@@ -2065,6 +2066,9 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 	 */
 	if (!(flags & EB_SKIP_EXTENSION_LOCK))
 		UnlockRelationForExtension(eb.rel, ExclusiveLock);
+
+	pgstat_count_io_op_time(IOOBJECT_RELATION, io_context, IOOP_EXTEND,
+							io_start, extend_by);
 
 	/* Set BM_VALID, terminate IO, and wake up any waiters */
 	for (int i = 0; i < extend_by; i++)
@@ -2089,8 +2093,6 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 	}
 
 	pgBufferUsage.shared_blks_written += extend_by;
-	pgstat_count_io_op_n(IOOBJECT_RELATION, io_context, IOOP_EXTEND,
-						 extend_by);
 
 	*extended_by = extend_by;
 
@@ -3344,8 +3346,7 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 {
 	XLogRecPtr	recptr;
 	ErrorContextCallback errcallback;
-	instr_time	io_start,
-				io_time;
+	instr_time	io_start;
 	Block		bufBlock;
 	char	   *bufToWrite;
 	uint32		buf_state;
@@ -3420,10 +3421,7 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 	 */
 	bufToWrite = PageSetChecksumCopy((Page) bufBlock, buf->tag.blockNum);
 
-	if (track_io_timing)
-		INSTR_TIME_SET_CURRENT(io_start);
-	else
-		INSTR_TIME_SET_ZERO(io_start);
+	io_start = pgstat_prepare_io_time();
 
 	/*
 	 * bufToWrite is either the shared buffer or a copy, as appropriate.
@@ -3452,15 +3450,8 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 	 * When a strategy is not in use, the write can only be a "regular" write
 	 * of a dirty shared buffer (IOCONTEXT_NORMAL IOOP_WRITE).
 	 */
-	pgstat_count_io_op(IOOBJECT_RELATION, io_context, IOOP_WRITE);
-
-	if (track_io_timing)
-	{
-		INSTR_TIME_SET_CURRENT(io_time);
-		INSTR_TIME_SUBTRACT(io_time, io_start);
-		pgstat_count_buffer_write_time(INSTR_TIME_GET_MICROSEC(io_time));
-		INSTR_TIME_ADD(pgBufferUsage.blk_write_time, io_time);
-	}
+	pgstat_count_io_op_time(IOOBJECT_RELATION, io_context,
+							IOOP_WRITE, io_start, 1);
 
 	pgBufferUsage.shared_blks_written++;
 
@@ -4068,6 +4059,7 @@ FlushRelationBuffers(Relation rel)
 		for (i = 0; i < NLocBuffer; i++)
 		{
 			uint32		buf_state;
+			instr_time	io_start;
 
 			bufHdr = GetLocalBufferDescriptor(i);
 			if (BufTagMatchesRelFileLocator(&bufHdr->tag, &rel->rd_locator) &&
@@ -4087,16 +4079,22 @@ FlushRelationBuffers(Relation rel)
 
 				PageSetChecksumInplace(localpage, bufHdr->tag.blockNum);
 
+				io_start = pgstat_prepare_io_time();
+
 				smgrwrite(RelationGetSmgr(rel),
 						  BufTagGetForkNum(&bufHdr->tag),
 						  bufHdr->tag.blockNum,
 						  localpage,
 						  false);
 
+				pgstat_count_io_op_time(IOOBJECT_TEMP_RELATION,
+										IOCONTEXT_NORMAL, IOOP_WRITE,
+										io_start, 1);
+
 				buf_state &= ~(BM_DIRTY | BM_JUST_DIRTIED);
 				pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
 
-				pgstat_count_io_op(IOOBJECT_TEMP_RELATION, IOCONTEXT_NORMAL, IOOP_WRITE);
+				pgBufferUsage.local_blks_written++;
 
 				/* Pop the error context stack */
 				error_context_stack = errcallback.previous;
@@ -4261,7 +4259,7 @@ RelationCopyStorageUsingBuffer(RelFileLocator srclocator,
 	bool		use_wal;
 	BlockNumber nblocks;
 	BlockNumber blkno;
-	PGAlignedBlock buf;
+	PGIOAlignedBlock buf;
 	BufferAccessStrategy bstrategy_src;
 	BufferAccessStrategy bstrategy_dst;
 
@@ -5184,9 +5182,9 @@ TerminateBufferIO(BufferDesc *buf, bool clear_dirty, uint32 set_flag_bits)
  *	possible the error condition wasn't related to the I/O.
  */
 void
-AbortBufferIO(Buffer buf)
+AbortBufferIO(Buffer buffer)
 {
-	BufferDesc *buf_hdr = GetBufferDescriptor(buf - 1);
+	BufferDesc *buf_hdr = GetBufferDescriptor(buffer - 1);
 	uint32		buf_state;
 
 	buf_state = LockBufHdr(buf_hdr);
@@ -5450,6 +5448,9 @@ void
 ScheduleBufferTagForWriteback(WritebackContext *context, BufferTag *tag)
 {
 	PendingWriteback *pending;
+
+	if (io_direct_flags & IO_DIRECT_DATA)
+		return;
 
 	/*
 	 * Add buffer to the pending writeback array, unless writeback control is

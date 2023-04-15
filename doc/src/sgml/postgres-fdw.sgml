@@ -169,9 +169,10 @@
     <literal>sslcert</literal> or <literal>sslkey</literal> settings.
    </para>
    <para>
-    Only superusers may connect to foreign servers without password
-    authentication, so always specify the <literal>password</literal> option
-    for user mappings belonging to non-superusers.
+    Non-superusers may connect to foreign servers using password
+    authentication or with GSSAPI delegated credentials, so specify the
+    <literal>password</literal> option for user mappings belonging to
+    non-superusers where password authentication is required.
    </para>
    <para>
     A superuser may override this check on a per-user-mapping basis by setting
@@ -515,7 +516,7 @@ OPTIONS (ADD password_required 'false');
     When multiple remote subtransactions are involved in the current local
     subtransaction, by default <filename>postgres_fdw</filename> commits or
     aborts those remote subtransactions serially when the local subtransaction
-    is committed or abortd.
+    is committed or aborted.
     Performance can be improved with the following options:
    </para>
 
@@ -525,8 +526,8 @@ OPTIONS (ADD password_required 'false');
      <term><literal>parallel_commit</literal> (<type>boolean</type>)</term>
      <listitem>
       <para>
-       This option controls whether <filename>postgres_fdw</filename> commits
-       in parallel remote transactions opened on a foreign server in a local
+       This option controls whether <filename>postgres_fdw</filename> commits,
+       in parallel, remote transactions opened on a foreign server in a local
        transaction when the local transaction is committed. This setting also
        applies to remote and local subtransactions. This option can only be
        specified for foreign servers, not per-table. The default is
