@@ -740,7 +740,7 @@ ExecGetUpdateNewTuple(ResultRelInfo *relinfo,
  *
  *		Returns RETURNING result if any, otherwise NULL.
  *		*inserted_tuple is the tuple that's effectively inserted;
- *		*inserted_destrel is the relation where it was inserted.
+ *		*insert_destrel is the relation where it was inserted.
  *		These are only set on success.
  *
  *		This may change the currently active tuple conversion map in
@@ -904,7 +904,7 @@ ExecInsert(ModifyTableContext *context,
 			 * If these are the first tuples stored in the buffers, add the
 			 * target rel and the mtstate to the
 			 * es_insert_pending_result_relations and
-			 * es_insert_pending_modifytables lists respectively, execpt in
+			 * es_insert_pending_modifytables lists respectively, except in
 			 * the case where flushing was done above, in which case they
 			 * would already have been added to the lists, so no need to do
 			 * this.
