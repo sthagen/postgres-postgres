@@ -584,6 +584,28 @@ ExecCheckPermissions(List *rangeTable, List *rteperminfos,
 	ListCell   *l;
 	bool		result = true;
 
+#ifdef USE_ASSERT_CHECKING
+	Bitmapset  *indexset = NULL;
+
+	/* Check that rteperminfos is consistent with rangeTable */
+	foreach(l, rangeTable)
+	{
+		RangeTblEntry *rte = lfirst_node(RangeTblEntry, l);
+
+		if (rte->perminfoindex != 0)
+		{
+			/* Sanity checks */
+			(void) getRTEPermissionInfo(rteperminfos, rte);
+			/* Many-to-one mapping not allowed */
+			Assert(!bms_is_member(rte->perminfoindex, indexset));
+			indexset = bms_add_member(indexset, rte->perminfoindex);
+		}
+	}
+
+	/* All rteperminfos are referenced */
+	Assert(bms_num_members(indexset) == list_length(rteperminfos));
+#endif
+
 	foreach(l, rteperminfos)
 	{
 		RTEPermissionInfo *perminfo = lfirst_node(RTEPermissionInfo, l);
@@ -824,7 +846,6 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	ExecInitRangeTable(estate, rangeTable, plannedstmt->permInfos);
 
 	estate->es_plannedstmt = plannedstmt;
-	estate->es_part_prune_infos = plannedstmt->partPruneInfos;
 
 	/*
 	 * Next, build the ExecRowMark array from the PlanRowMark(s), if any.
