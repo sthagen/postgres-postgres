@@ -399,7 +399,8 @@ remove_rel_from_query(PlannerInfo *root, int relid, int ojrelid,
 		/* relid cannot appear in these fields, but ojrelid can: */
 		sjinfo->commute_above_l = bms_del_member(sjinfo->commute_above_l, ojrelid);
 		sjinfo->commute_above_r = bms_del_member(sjinfo->commute_above_r, ojrelid);
-		sjinfo->commute_below = bms_del_member(sjinfo->commute_below, ojrelid);
+		sjinfo->commute_below_l = bms_del_member(sjinfo->commute_below_l, ojrelid);
+		sjinfo->commute_below_r = bms_del_member(sjinfo->commute_below_r, ojrelid);
 	}
 
 	/*
@@ -665,7 +666,7 @@ reduce_unique_semijoins(PlannerInfo *root)
 														 joinrelids,
 														 sjinfo->min_lefthand,
 														 innerrel,
-														 0),
+														 NULL),
 						innerrel->joininfo);
 
 		/* Test whether the innerrel is unique for those clauses. */

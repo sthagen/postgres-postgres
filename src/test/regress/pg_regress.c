@@ -85,14 +85,14 @@ typedef enum TAPtype
 	TEST_STATUS,
 	PLAN,
 	NONE
-}			TAPtype;
+} TAPtype;
 
 /* options settable from command line */
 _stringlist *dblist = NULL;
 bool		debug = false;
 char	   *inputdir = ".";
 char	   *outputdir = ".";
-char       *expecteddir = ".";
+char	   *expecteddir = ".";
 char	   *bindir = PGBINDIR;
 char	   *launcher = NULL;
 static _stringlist *loadextension = NULL;
@@ -1891,14 +1891,14 @@ run_single_test(const char *test, test_start_function startfunc,
 
 	if (exit_status != 0)
 	{
-		test_status_failed(test, false, INSTR_TIME_GET_MILLISEC(stoptime));
+		test_status_failed(test, INSTR_TIME_GET_MILLISEC(stoptime), false);
 		log_child_failure(exit_status);
 	}
 	else
 	{
 		if (differ)
 		{
-			test_status_failed(test, false, INSTR_TIME_GET_MILLISEC(stoptime));
+			test_status_failed(test, INSTR_TIME_GET_MILLISEC(stoptime), false);
 		}
 		else
 		{

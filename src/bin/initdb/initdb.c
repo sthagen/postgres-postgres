@@ -1565,8 +1565,8 @@ static void
 setup_auth(FILE *cmdfd)
 {
 	/*
-	 * The authid table shouldn't be readable except through views, to
-	 * ensure passwords are not publicly visible.
+	 * The authid table shouldn't be readable except through views, to ensure
+	 * passwords are not publicly visible.
 	 */
 	PG_CMD_PUTS("REVOKE ALL ON pg_authid FROM public;\n\n");
 
@@ -1957,9 +1957,9 @@ make_template0(FILE *cmdfd)
 				" STRATEGY = file_copy;\n\n");
 
 	/*
-	 * template0 shouldn't have any collation-dependent objects, so unset
-	 * the collation version.  This disables collation version checks when
-	 * making a new database from it.
+	 * template0 shouldn't have any collation-dependent objects, so unset the
+	 * collation version.  This disables collation version checks when making
+	 * a new database from it.
 	 */
 	PG_CMD_PUTS("UPDATE pg_database SET datcollversion = NULL WHERE datname = 'template0';\n\n");
 
@@ -1969,9 +1969,8 @@ make_template0(FILE *cmdfd)
 	PG_CMD_PUTS("UPDATE pg_database SET datcollversion = pg_database_collation_actual_version(oid) WHERE datname = 'template1';\n\n");
 
 	/*
-	 * Explicitly revoke public create-schema and create-temp-table
-	 * privileges in template1 and template0; else the latter would be on
-	 * by default
+	 * Explicitly revoke public create-schema and create-temp-table privileges
+	 * in template1 and template0; else the latter would be on by default
 	 */
 	PG_CMD_PUTS("REVOKE CREATE,TEMPORARY ON DATABASE template1 FROM public;\n\n");
 	PG_CMD_PUTS("REVOKE CREATE,TEMPORARY ON DATABASE template0 FROM public;\n\n");
@@ -2244,15 +2243,15 @@ static char *
 icu_language_tag(const char *loc_str)
 {
 #ifdef USE_ICU
-	UErrorCode	 status;
-	char		 lang[ULOC_LANG_CAPACITY];
-	char		*langtag;
-	size_t		 buflen = 32;	/* arbitrary starting buffer size */
-	const bool	 strict = true;
+	UErrorCode	status;
+	char		lang[ULOC_LANG_CAPACITY];
+	char	   *langtag;
+	size_t		buflen = 32;	/* arbitrary starting buffer size */
+	const bool	strict = true;
 
 	status = U_ZERO_ERROR;
 	uloc_getLanguage(loc_str, lang, ULOC_LANG_CAPACITY, &status);
-	if (U_FAILURE(status))
+	if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING)
 	{
 		pg_fatal("could not get language from locale \"%s\": %s",
 				 loc_str, u_errorName(status));
@@ -2264,27 +2263,20 @@ icu_language_tag(const char *loc_str)
 		return pstrdup("en-US-u-va-posix");
 
 	/*
-	 * A BCP47 language tag doesn't have a clearly-defined upper limit
-	 * (cf. RFC5646 section 4.4). Additionally, in older ICU versions,
+	 * A BCP47 language tag doesn't have a clearly-defined upper limit (cf.
+	 * RFC5646 section 4.4). Additionally, in older ICU versions,
 	 * uloc_toLanguageTag() doesn't always return the ultimate length on the
 	 * first call, necessitating a loop.
 	 */
 	langtag = pg_malloc(buflen);
 	while (true)
 	{
-		int32_t		len;
-
 		status = U_ZERO_ERROR;
-		len = uloc_toLanguageTag(loc_str, langtag, buflen, strict, &status);
+		uloc_toLanguageTag(loc_str, langtag, buflen, strict, &status);
 
-		/*
-		 * If the result fits in the buffer exactly (len == buflen),
-		 * uloc_toLanguageTag() will return success without nul-terminating
-		 * the result. Check for either U_BUFFER_OVERFLOW_ERROR or len >=
-		 * buflen and try again.
-		 */
+		/* try again if the buffer is not large enough */
 		if (status == U_BUFFER_OVERFLOW_ERROR ||
-			(U_SUCCESS(status) && len >= buflen))
+			status == U_STRING_NOT_TERMINATED_WARNING)
 		{
 			buflen = buflen * 2;
 			langtag = pg_realloc(langtag, buflen);
@@ -2305,7 +2297,7 @@ icu_language_tag(const char *loc_str)
 	return langtag;
 #else
 	pg_fatal("ICU is not supported in this build");
-	return NULL;		/* keep compiler quiet */
+	return NULL;				/* keep compiler quiet */
 #endif
 }
 
@@ -2318,9 +2310,9 @@ static void
 icu_validate_locale(const char *loc_str)
 {
 #ifdef USE_ICU
-	UErrorCode	 status;
-	char		 lang[ULOC_LANG_CAPACITY];
-	bool		 found	 = false;
+	UErrorCode	status;
+	char		lang[ULOC_LANG_CAPACITY];
+	bool		found = false;
 
 	/* validate that we can extract the language */
 	status = U_ZERO_ERROR;
@@ -2341,8 +2333,8 @@ icu_validate_locale(const char *loc_str)
 	/* search for matching language within ICU */
 	for (int32_t i = 0; !found && i < uloc_countAvailable(); i++)
 	{
-		const char	*otherloc = uloc_getAvailable(i);
-		char		 otherlang[ULOC_LANG_CAPACITY];
+		const char *otherloc = uloc_getAvailable(i);
+		char		otherlang[ULOC_LANG_CAPACITY];
 
 		status = U_ZERO_ERROR;
 		uloc_getLanguage(otherloc, otherlang, ULOC_LANG_CAPACITY, &status);
@@ -2373,10 +2365,10 @@ static char *
 default_icu_locale(void)
 {
 #ifdef USE_ICU
-	UCollator	*collator;
-	UErrorCode   status;
-	const char	*valid_locale;
-	char		*default_locale;
+	UCollator  *collator;
+	UErrorCode	status;
+	const char *valid_locale;
+	char	   *default_locale;
 
 	status = U_ZERO_ERROR;
 	collator = ucol_open(NULL, &status);
@@ -2456,7 +2448,7 @@ setlocales(void)
 
 	if (locale_provider == COLLPROVIDER_ICU)
 	{
-		char *langtag;
+		char	   *langtag;
 
 		/* acquire default locale from the environment, if not specified */
 		if (icu_locale == NULL)

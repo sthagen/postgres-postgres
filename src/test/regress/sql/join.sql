@@ -442,6 +442,53 @@ select a.f1, b.f1, t.thousand, t.tenthous from
 where b.f1 = t.thousand and a.f1 = b.f1 and (a.f1+b.f1+999) = t.tenthous;
 
 --
+-- checks for correct handling of quals in multiway outer joins
+--
+explain (costs off)
+select t1.f1
+from int4_tbl t1, int4_tbl t2
+  left join int4_tbl t3 on t3.f1 > 0
+  left join int4_tbl t4 on t3.f1 > 1
+where t4.f1 is null;
+
+select t1.f1
+from int4_tbl t1, int4_tbl t2
+  left join int4_tbl t3 on t3.f1 > 0
+  left join int4_tbl t4 on t3.f1 > 1
+where t4.f1 is null;
+
+explain (costs off)
+select *
+from int4_tbl t1 left join int4_tbl t2 on true
+  left join int4_tbl t3 on t2.f1 > 0
+  left join int4_tbl t4 on t3.f1 > 0;
+
+explain (costs off)
+select * from onek t1
+  left join onek t2 on t1.unique1 = t2.unique1
+  left join onek t3 on t2.unique1 != t3.unique1
+  left join onek t4 on t3.unique1 = t4.unique1;
+
+explain (costs off)
+select * from int4_tbl t1
+  left join (select now() from int4_tbl t2
+             left join int4_tbl t3 on t2.f1 = t3.f1
+             left join int4_tbl t4 on t3.f1 = t4.f1) s on true
+  inner join int4_tbl t5 on true;
+
+explain (costs off)
+select * from int4_tbl t1
+  left join int4_tbl t2 on true
+  left join int4_tbl t3 on true
+  left join int4_tbl t4 on t2.f1 = t3.f1;
+
+explain (costs off)
+select * from int4_tbl t1
+  left join int4_tbl t2 on true
+  left join int4_tbl t3 on t2.f1 = t3.f1
+  left join int4_tbl t4 on t3.f1 != t4.f1;
+
+--
 -- check a case where we formerly got confused by conflicting sort orders
 -- in redundant merge join path keys
 --
@@ -1910,6 +1957,11 @@ select d.* from d left join (select * from b group by b.id, b.c_id) s
 explain (costs off)
 select d.* from d left join (select distinct * from b) s
   on d.a = s.id;
+
+-- join removal is not possible here
+explain (costs off)
+select 1 from a t1
+  left join (a t2 left join a t3 on t2.id = 1) on t2.id = 1;
 
 -- check join removal works when uniqueness of the join condition is enforced
 -- by a UNION
