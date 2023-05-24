@@ -18,7 +18,49 @@
    </para>
 
    <itemizedlist>
-    <listitem><para>ADD HERE</para></listitem>
+
+    <listitem>
+     <para>
+      Allow parallel execution of queries with OUTER and FULL joins
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Allow logical replication from standbys servers
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Allow logical replication subscribers to apply large transactions in parallel
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Allow monitoring of I/O statistics using the new pg_stat_io view
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Add SQL/JSON constructors and identity functions
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Improve performance of vacuum freezing
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Add support for regular expression matching of user and database names in pg_hba.conf, and user names in pg_ident.conf
+     </para>
+    </listitem>
+
    </itemizedlist>
 
    <para>
@@ -60,6 +102,7 @@ Change assignment rules for PL/pgSQL bound cursor variables (Tom Lane)
 
 <para>
 Previously, the string value of such variables was set to match the variable name during cursor assignment;  now it will be assigned during OPEN, and will not match the variable name.
+To restore the previous behavior, assign the desired portal name to the cursor variable before OPEN.
 </para>
 </listitem>
 
@@ -233,6 +276,8 @@ Allow incremental sorts in more cases, including DISTINCT (David Rowley)
 
 <!--
 Author: David Rowley <drowley@postgresql.org>
+2022-08-02 [1349d2790] Improve performance of ORDER BY / DISTINCT aggregates
+Author: David Rowley <drowley@postgresql.org>
 2022-12-20 [3226f4728] Add enable_presorted_aggregate GUC
 Author: David Rowley <drowley@postgresql.org>
 2023-01-17 [da5800d5f] Don't presort ORDER BY/DISTINCT Aggrefs with volatile fu
@@ -255,7 +300,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Allow memoize atop of UNION ALL and partitions (Richard Guo)
+Allow memoize atop a UNION ALL (Richard Guo)
 </para>
 </listitem>
 
@@ -266,7 +311,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Allow anti-joins to be constructed on the right/outer side (Richard Guo)
+Allow anti-joins to be performed with the non-nullable input as the inner relation (Richard Guo)
 </para>
 </listitem>
 
@@ -277,7 +322,7 @@ Author: Thomas Munro <tmunro@postgresql.org>
 
 <listitem>
 <para>
-Allow full and outer joins to be performed in parallel (Melanie Plageman, Thomas Munro)
+Allow outer and full joins to be performed in parallel (Melanie Plageman, Thomas Munro)
 </para>
 </listitem>
 
@@ -310,7 +355,7 @@ Author: Andres Freund <andres@anarazel.de>
 
 <listitem>
 <para>
-Allow more efficient addition of multiple heap and index pages (Andres Freund)
+Allow more efficient addition of heap and index pages (Andres Freund)
 </para>
 </listitem>
 
@@ -909,6 +954,10 @@ Author: Robert Haas <rhaas@postgresql.org>
 <para>
 Prevent removal of superuser privileges for the bootstrap user (Robert Haas)
 </para>
+
+<para>
+Restoring such users could lead to errors.
+</para>
 </listitem>
 
 <!--
@@ -922,7 +971,7 @@ Allow makeaclitem() to accept multiple privilege names (Robins Tharakan)
 </para>
 
 <para>
-Previously only a single privilege names, like SELECT, were supported.
+Previously only a single privilege name, like SELECT, was accepted.
 </para>
 </listitem>
 
@@ -946,7 +995,8 @@ Add support for Kerberos credential delegation (Stephen Frost)
 </para>
 
 <para>
-This is enabled with server variable gss_accept_delegation.
+This is enabled with server variable gss_accept_delegation
+and libpq connection parameter gssdelegation.
 </para>
 </listitem>
 
@@ -970,11 +1020,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Store server variables in a hash table (Tom Lane)
-</para>
-
-<para>
-This allows the faster addition of server variables.
+Improve performance of server variable management (Tom Lane)
 </para>
 </listitem>
 
@@ -1079,7 +1125,9 @@ Allow the postmaster to terminate children with an abort signal (Tom Lane)
 </para>
 
 <para>
-Abort normally creates a core dump.  This is controlled by send_abort_for_crash and send_abort_for_kill.  postmaster -T is now the same as setting send_abort_for_crash.
+This allows collection of a core dump for a stuck child process.
+This is controlled by send_abort_for_crash and send_abort_for_kill.
+The postmaster's -T switch is now the same as setting send_abort_for_crash.
 </para>
 </listitem>
 
@@ -1090,7 +1138,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Remove the unnecessary postmaster -n option (Tom Lane)
+Remove the non-functional postmaster -n option (Tom Lane)
 </para>
 </listitem>
 
@@ -1284,26 +1332,24 @@ ADD THIS?
 <!--
 Author: Andres Freund <andres@anarazel.de>
 2023-04-08 [0fdab27ad] Allow logical decoding on standbys
--->
-
-<listitem>
-<para>
-Allow logical decoding on standbys (Bertrand Drouvot, Andres Freund, Amit Khandekar)
-</para>
-</listitem>
-
-<!--
+Author: Andres Freund <andres@anarazel.de>
+2023-04-07 [be87200ef] Support invalidating replication slots due to horizon an
+Author: Andres Freund <andres@anarazel.de>
+2023-04-08 [26669757b] Handle logical slot conflicts on standby
 Author: Andres Freund <andres@anarazel.de>
 2023-04-08 [0fdab27ad] Allow logical decoding on standbys
 -->
 
 <listitem>
 <para>
-Add function pg_log_standby_snapshot() to force creation of a WAL snapshot (Bertrand Drouvot)
+Allow logical decoding on standbys (Bertrand Drouvot, Andres Freund, Amit Khandekar, Bertrand Drouvot)
 </para>
+</listitem>
 
+<listitem>
 <para>
-WAL snapshots are required for logical slot creation so this function speeds their creation on standbys.
+Snapshot WAL records are required for logical slot creation but cannot be created on standbys.
+To avoid delays, the new function pg_log_standby_snapshot() allows creation of such records.
 </para>
 </listitem>
 
@@ -1427,23 +1473,6 @@ Previously the retry time was applied globally.  This also adds wait events Logi
 </para>
 </listitem>
 
-<!--
-Author: Andres Freund <andres@anarazel.de>
-2023-04-07 [be87200ef] Support invalidating replication slots due to horizon an
-Author: Andres Freund <andres@anarazel.de>
-2023-04-08 [26669757b] Handle logical slot conflicts on standby
--->
-
-<listitem>
-<para>
-Allow invalidation of replication slots due to row removal, wal_level, and conflicts (Bertrand Drouvot, Andres Freund, Amit Khandekar)
-</para>
-
-<para>
-Invalidated slots are indicated in the pg_replication_slots.conflicting column.
-</para>
-</listitem>
-
     </itemizedlist>
 
    </sect3>
@@ -1460,7 +1489,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Add EXPLAIN option GENERIC_PLAN to display the query's generic plan (Laurenz Albe)
+Add EXPLAIN option GENERIC_PLAN to display the generic plan for a parameterized query (Laurenz Albe)
 </para>
 </listitem>
 
@@ -1540,7 +1569,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Add VACUUM option to skip or update all frozen statistics (Tom Lane, Nathan Bossart)
+Add VACUUM options to skip or update all frozen statistics (Tom Lane, Nathan Bossart)
 </para>
 
 <para>
@@ -1632,12 +1661,23 @@ This can improve readability for long strings of digits.
 
 <!--
 Author: Tom Lane <tgl@sss.pgh.pa.us>
+2023-01-01 [2ceea5adb] Accept "+infinity" in date and timestamp[tz] input.
+-->
+
+<listitem>
+<para>
+Accept the spelling "+infinity" in datetime input (Vik Fearing)
+</para>
+</listitem>
+
+<!--
+Author: Tom Lane <tgl@sss.pgh.pa.us>
 2023-03-09 [bcc704b52] Reject combining "epoch" and "infinity" with other datet
 -->
 
 <listitem>
 <para>
-Prevent the specification of "epoch" and "infinity" with other units in datetime strings (Joseph Koshakow)
+Prevent the specification of "epoch" and "infinity" together with other fields in datetime strings (Joseph Koshakow)
 </para>
 </listitem>
 
@@ -1648,7 +1688,9 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Remove support for datetime input that prefixes year-month-day by Y/M/D (Joseph Koshakow)
+Remove undocumented support for date input in the form
+"<literal>Y<replaceable>year</replaceable>M<replaceable>month</replaceable>D<replaceable>day</replaceable></literal>"
+(Joseph Koshakow)
 </para>
 </listitem>
 
@@ -1772,7 +1814,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Change date_trunc(unit, timestamptz, time_zone) to be an immutable function (Przemysław Sztoch)
+Change date_trunc(unit, timestamptz, time_zone) to be an immutable function (Przemyslaw Sztoch)
 </para>
 
 <para>
@@ -1905,7 +1947,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Allow to_reg* functions to accept OIDs parameters (Tom Lane)
+Allow to_reg* functions to accept numeric OIDs as input (Tom Lane)
 </para>
 </listitem>
 
@@ -2020,7 +2062,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Allow ECPG variable declarations to use type names which match SQL keywords (Tom Lane)
+Allow ECPG variable declarations to use typedef names that match unreserved SQL keywords (Tom Lane)
 </para>
 
 <para>
@@ -2126,7 +2168,8 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Allow psql to detect the exit status of shell commands and queries (Corey Huinker, Tom Lane)
+Allow psql scripts to obtain the exit status of shell commands and queries
+(Corey Huinker, Tom Lane)
 </para>
 
 <para>
@@ -2487,7 +2530,7 @@ Author: John Naylor <john.naylor@postgresql.org>
 
 <listitem>
 <para>
-Allow ASCII string detection to use vector operations on x86-64 architectures (John Naylor)
+Allow ASCII string detection to use vector operations (John Naylor)
 </para>
 </listitem>
 
@@ -2498,7 +2541,7 @@ Author: John Naylor <john.naylor@postgresql.org>
 
 <listitem>
 <para>
-Allow JSON string processing to use vector operations on x86-64 architectures (John Naylor)
+Allow JSON string parsing to use vector operations (John Naylor)
 </para>
 
 <para>
@@ -2515,7 +2558,7 @@ Author: John Naylor <john.naylor@postgresql.org>
 
 <listitem>
 <para>
-Allow arrays searches to use vector operations on x86-64 architectures (John Naylor)
+Allow array searches to use vector operations (John Naylor)
 </para>
 </listitem>
 
@@ -2526,7 +2569,7 @@ Author: John Naylor <john.naylor@postgresql.org>
 
 <listitem>
 <para>
-Allow xid/subxid searches to use vector operations on x86-64 architectures (Nathan Bossart)
+Allow xid/subxid searches to use vector operations (Nathan Bossart)
 </para>
 </listitem>
 
@@ -2554,7 +2597,11 @@ Author: Andres Freund <andres@anarazel.de>
 
 <listitem>
 <para>
-Prevent extension libraries from export their symbols by default (Andres Freund, Tom Lane)
+Prevent extension libraries from exporting their symbols by default (Andres Freund, Tom Lane)
+</para>
+
+<para>
+Functions that need to be called from the core backend or other extensions must now be explicitly marked PGDLLEXPORT.
 </para>
 </listitem>
 
@@ -2976,7 +3023,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Allow the schemas of dependent extensions to be referenced using the new syntax @extschema:dependent_extension_name@ (Regina Obe)
+Allow the schemas of required extensions to be referenced in extension scripts using the new syntax @extschema:referenced_extension_name@ (Regina Obe)
 </para>
 </listitem>
 
@@ -2987,11 +3034,11 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Allow dependent extensions to marked as non-relocatable using "no_relocate" (Regina Obe)
+Allow required extensions to marked as non-relocatable using "no_relocate" (Regina Obe)
 </para>
 
 <para>
-This allows @extschema:dependent_extension_name@ to be treated as a constant for the lifetime of the extension.
+This allows @extschema:referenced_extension_name@ to be treated as a constant for the lifetime of the extension.
 </para>
 </listitem>
 
