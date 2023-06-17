@@ -514,6 +514,20 @@ select * from int8_tbl t1 left join
     left join int8_tbl t5 on t2.q1 = t5.q1
 on t2.q2 = 123;
 
+explain (costs off)
+select * from int8_tbl t1
+    left join int8_tbl t2 on true
+    left join lateral
+      (select * from int8_tbl t3 where t3.q1 = t2.q1 offset 0) s
+      on t2.q1 = 1;
+
+explain (costs off)
+select * from onek t1
+    left join onek t2 on true
+    left join lateral
+      (select * from onek t3 where t3.two = t2.two offset 0) s
+      on t2.unique1 = 1;
+
 --
 -- check a case where we formerly got confused by conflicting sort orders
 -- in redundant merge join path keys
@@ -2150,6 +2164,29 @@ from
      left join uniquetbl u1 ON u1.f1 = t1.string4) ss
   on t0.f1 = ss.case1
 where ss.stringu2 !~* ss.case1;
+
+rollback;
+
+-- another join removal bug: we must clean up EquivalenceClasses too
+begin;
+
+create temp table t (a int unique);
+insert into t values (1);
+
+explain (costs off)
+select 1
+from t t1
+  left join (select 2 as c
+             from t t2 left join t t3 on t2.a = t3.a) s
+    on true
+where t1.a = s.c;
+
+select 1
+from t t1
+  left join (select 2 as c
+             from t t2 left join t t3 on t2.a = t3.a) s
+    on true
+where t1.a = s.c;
 
 rollback;
 
