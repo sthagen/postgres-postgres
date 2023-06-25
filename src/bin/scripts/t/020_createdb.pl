@@ -13,7 +13,7 @@ program_version_ok('createdb');
 program_options_handling_ok('createdb');
 
 my $node = PostgreSQL::Test::Cluster->new('main');
-$node->init(extra => ['--locale-provider=libc']);
+$node->init;
 $node->start;
 
 $node->issues_sql_like(
@@ -89,12 +89,14 @@ if ($ENV{with_icu} eq 'yes')
 
 	$node2->command_ok(
 		[
-			'createdb', '-T', 'template0', '--locale-provider', 'icu',
-			'--locale', 'en', '--lc-collate', 'C', '--lc-ctype', 'C',
-			'foobar57'
+			'createdb', '-T',
+			'template0', '--locale-provider',
+			'icu', '--locale',
+			'en', '--lc-collate',
+			'C', '--lc-ctype',
+			'C', 'foobar57'
 		],
-		'create database with locale as ICU locale'
-	);
+		'create database with locale as ICU locale');
 }
 else
 {
