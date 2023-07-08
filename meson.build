@@ -361,6 +361,10 @@ bison_kw = {
 }
 
 flex_flags = []
+if flex.found()
+  flex_version_c = run_command(flex, '--version', check: true)
+  flex_version = flex_version_c.stdout().split(' ')[1].split('\n')[0]
+endif
 flex_wrapper = files('src/tools/pgflex')
 flex_cmd = [python, flex_wrapper,
   '--builddir', '@BUILD_ROOT@',
@@ -1266,9 +1270,8 @@ if sslopt in ['auto', 'openssl']
       ['CRYPTO_new_ex_data', {'required': true}],
       ['SSL_new', {'required': true}],
 
-      # Functions introduced in OpenSSL 1.0.2.
-      ['X509_get_signature_nid'],
-      ['SSL_CTX_set_cert_cb'], # not in LibreSSL
+      # Function introduced in OpenSSL 1.0.2, not in LibreSSL.
+      ['SSL_CTX_set_cert_cb'],
 
       # Functions introduced in OpenSSL 1.1.0. We used to check for
       # OPENSSL_VERSION_NUMBER, but that didn't work with 1.1.0, because LibreSSL
@@ -1310,7 +1313,7 @@ if sslopt in ['auto', 'openssl']
     if are_openssl_funcs_complete
       cdata.set('USE_OPENSSL', 1,
                 description: 'Define to 1 to build with OpenSSL support. (-Dssl=openssl)')
-      cdata.set('OPENSSL_API_COMPAT', '0x10001000L',
+      cdata.set('OPENSSL_API_COMPAT', '0x10002000L',
                 description: 'Define to the OpenSSL API version in use. This avoids deprecation warnings from newer OpenSSL versions.')
       ssl_library = 'openssl'
     else
@@ -3371,6 +3374,7 @@ if meson.version().version_compare('>=0.57')
     {
       'bison': '@0@ @1@'.format(bison.full_path(), bison_version),
       'dtrace': dtrace,
+      'flex': '@0@ @1@'.format(flex.full_path(), flex_version),
     },
     section: 'Programs',
   )
