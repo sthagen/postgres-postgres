@@ -115,6 +115,33 @@ COMMIT;
 SELECT calls, rows, query FROM pg_stat_statements ORDER BY query COLLATE "C";
 SELECT pg_stat_statements_reset();
 
+-- Two-phase transactions
+BEGIN;
+PREPARE TRANSACTION 'stat_trans1';
+COMMIT PREPARED 'stat_trans1';
+BEGIN;
+PREPARE TRANSACTION 'stat_trans2';
+ROLLBACK PREPARED 'stat_trans2';
+SELECT calls, rows, query FROM pg_stat_statements ORDER BY query COLLATE "C";
+SELECT pg_stat_statements_reset();
+
+-- Savepoints
+BEGIN;
+SAVEPOINT sp1;
+SAVEPOINT sp2;
+SAVEPOINT sp3;
+SAVEPOINT sp4;
+ROLLBACK TO sp4;
+ROLLBACK TO SAVEPOINT sp4;
+ROLLBACK TRANSACTION TO SAVEPOINT sp3;
+RELEASE sp3;
+RELEASE SAVEPOINT sp2;
+ROLLBACK TO sp1;
+RELEASE SAVEPOINT sp1;
+COMMIT;
+SELECT calls, rows, query FROM pg_stat_statements ORDER BY query COLLATE "C";
+SELECT pg_stat_statements_reset();
+
 -- EXPLAIN statements
 -- A Query is used, normalized by the query jumbling.
 EXPLAIN (costs off) SELECT 1;
