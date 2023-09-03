@@ -435,7 +435,8 @@ pa_launch_parallel_worker(void)
 		return NULL;
 	}
 
-	launched = logicalrep_worker_launch(MyLogicalRepWorker->dbid,
+	launched = logicalrep_worker_launch(WORKERTYPE_PARALLEL_APPLY,
+										MyLogicalRepWorker->dbid,
 										MySubscription->oid,
 										MySubscription->name,
 										MyLogicalRepWorker->userid,
@@ -1159,7 +1160,7 @@ pa_send_data(ParallelApplyWorkerInfo *winfo, Size nbytes, const void *data)
 	 * We don't try to send data to parallel worker for 'immediate' mode. This
 	 * is primarily used for testing purposes.
 	 */
-	if (unlikely(logical_replication_mode == LOGICAL_REP_MODE_IMMEDIATE))
+	if (unlikely(debug_logical_replication_streaming == DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE))
 		return false;
 
 /*
