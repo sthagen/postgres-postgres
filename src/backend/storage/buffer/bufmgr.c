@@ -4923,8 +4923,8 @@ LockBufferForCleanup(Buffer buffer)
 }
 
 /*
- * Check called from RecoveryConflictInterrupt handler when Startup
- * process requests cancellation of all pin holders that are blocking it.
+ * Check called from ProcessRecoveryConflictInterrupts() when Startup process
+ * requests cancellation of all pin holders that are blocking it.
  */
 bool
 HoldingBufferPinThatDelaysRecovery(void)
@@ -5574,21 +5574,4 @@ IssuePendingWritebacks(WritebackContext *wb_context, IOContext io_context)
 							IOOP_WRITEBACK, io_start, wb_context->nr_pending);
 
 	wb_context->nr_pending = 0;
-}
-
-
-/*
- * Implement slower/larger portions of TestForOldSnapshot
- *
- * Smaller/faster portions are put inline, but the entire set of logic is too
- * big for that.
- */
-void
-TestForOldSnapshot_impl(Snapshot snapshot, Relation relation)
-{
-	if (RelationAllowsEarlyPruning(relation)
-		&& (snapshot)->whenTaken < GetOldSnapshotThresholdTimestamp())
-		ereport(ERROR,
-				(errcode(ERRCODE_SNAPSHOT_TOO_OLD),
-				 errmsg("snapshot too old")));
 }
