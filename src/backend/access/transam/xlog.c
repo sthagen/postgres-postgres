@@ -2226,10 +2226,10 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 				 */
 				if (track_wal_io_timing)
 				{
-					instr_time	duration;
+					instr_time	end;
 
-					INSTR_TIME_SET_CURRENT(duration);
-					INSTR_TIME_ACCUM_DIFF(PendingWalStats.wal_write_time, duration, start);
+					INSTR_TIME_SET_CURRENT(end);
+					INSTR_TIME_ACCUM_DIFF(PendingWalStats.wal_write_time, end, start);
 				}
 
 				PendingWalStats.wal_write++;
@@ -2248,8 +2248,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 					errno = save_errno;
 					ereport(PANIC,
 							(errcode_for_file_access(),
-							 errmsg("could not write to log file %s "
-									"at offset %u, length %zu: %m",
+							 errmsg("could not write to log file \"%s\" at offset %u, length %zu: %m",
 									xlogfname, startoffset, nleft)));
 				}
 				nleft -= written;
@@ -7039,7 +7038,7 @@ static void
 CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 {
 	CheckPointRelationMap();
-	CheckPointReplicationSlots();
+	CheckPointReplicationSlots(flags & CHECKPOINT_IS_SHUTDOWN);
 	CheckPointSnapBuild();
 	CheckPointLogicalRewriteHeap();
 	CheckPointReplicationOrigin();
@@ -8253,10 +8252,10 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 	 */
 	if (track_wal_io_timing)
 	{
-		instr_time	duration;
+		instr_time	end;
 
-		INSTR_TIME_SET_CURRENT(duration);
-		INSTR_TIME_ACCUM_DIFF(PendingWalStats.wal_sync_time, duration, start);
+		INSTR_TIME_SET_CURRENT(end);
+		INSTR_TIME_ACCUM_DIFF(PendingWalStats.wal_sync_time, end, start);
 	}
 
 	PendingWalStats.wal_sync++;
