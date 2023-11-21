@@ -235,6 +235,10 @@ static bool MatchNamedCall(HeapTuple proctup, int nargs, List *argnames,
  * when a function has search_path set in proconfig. Add a search path cache
  * that can be used by recomputeNamespacePath().
  *
+ * The cache is also used to remember already-validated strings in
+ * check_search_path() to avoid the need to call SplitIdentifierString()
+ * repeatedly.
+ *
  * The search path cache is based on a wrapper around a simplehash hash table
  * (nsphash, defined below). The spcache wrapper deals with OOM while trying
  * to initialize a key, and also offers a more convenient API.
@@ -279,40 +283,36 @@ spcachekey_equal(SearchPathCacheKey a, SearchPathCacheKey b)
 static nsphash_hash * SearchPathCache = NULL;
 
 /*
- * Create search path cache.
+ * Create or reset search_path cache as necessary.
  */
 static void
 spcache_init(void)
 {
 	Assert(SearchPathCacheContext);
 
-	if (SearchPathCache)
+	if (SearchPathCache && searchPathCacheValid &&
+		SearchPathCache->members < SPCACHE_RESET_THRESHOLD)
 		return;
 
+	MemoryContextReset(SearchPathCacheContext);
 	/* arbitrary initial starting size of 16 elements */
 	SearchPathCache = nsphash_create(SearchPathCacheContext, 16, NULL);
 	searchPathCacheValid = true;
 }
 
 /*
- * Reset and reinitialize search path cache.
+ * Look up entry in search path cache without inserting. Returns NULL if not
+ * present.
  */
-static void
-spcache_reset(void)
+static SearchPathCacheEntry *
+spcache_lookup(const char *searchPath, Oid roleid)
 {
-	Assert(SearchPathCacheContext);
-	Assert(SearchPathCache);
+	SearchPathCacheKey cachekey = {
+		.searchPath = searchPath,
+		.roleid = roleid
+	};
 
-	MemoryContextReset(SearchPathCacheContext);
-	SearchPathCache = NULL;
-
-	spcache_init();
-}
-
-static uint32
-spcache_members(void)
-{
-	return SearchPathCache->members;
+	return nsphash_lookup(SearchPathCache, cachekey);
 }
 
 /*
@@ -325,27 +325,25 @@ static SearchPathCacheEntry *
 spcache_insert(const char *searchPath, Oid roleid)
 {
 	SearchPathCacheEntry *entry;
-	bool		found;
 	SearchPathCacheKey cachekey = {
 		.searchPath = searchPath,
 		.roleid = roleid
 	};
 
 	/*
-	 * If a new entry is created, we must ensure that it's properly
-	 * initialized. Set the cache invalid temporarily, so that if the
-	 * MemoryContextStrdup() below raises an OOM, the cache will be reset on
-	 * the next use, clearing the uninitialized entry.
+	 * searchPath is not saved in SearchPathCacheContext. First perform a
+	 * lookup, and copy searchPath only if we need to create a new entry.
 	 */
-	searchPathCacheValid = false;
+	entry = nsphash_lookup(SearchPathCache, cachekey);
 
-	entry = nsphash_insert(SearchPathCache, cachekey, &found);
-
-	/* ensure that key is initialized and the rest is zeroed */
-	if (!found)
+	if (!entry)
 	{
-		entry->key.searchPath = MemoryContextStrdup(SearchPathCacheContext, searchPath);
-		entry->key.roleid = roleid;
+		bool		found;
+
+		cachekey.searchPath = MemoryContextStrdup(SearchPathCacheContext, searchPath);
+		entry = nsphash_insert(SearchPathCache, cachekey, &found);
+		Assert(!found);
+
 		entry->oidlist = NIL;
 		entry->finalPath = NIL;
 		entry->firstNS = InvalidOid;
@@ -354,7 +352,6 @@ spcache_insert(const char *searchPath, Oid roleid)
 		/* do not touch entry->status, used by simplehash */
 	}
 
-	searchPathCacheValid = true;
 	return entry;
 }
 
@@ -4183,30 +4180,14 @@ finalNamespacePath(List *oidlist, Oid *firstNS)
 /*
  * Retrieve search path information from the cache; or if not there, fill
  * it. The returned entry is valid only until the next call to this function.
- *
- * We also determine if the newly-computed finalPath is the same as the
- * prevPath passed by the caller (i.e. a no-op or a real change?). It's more
- * efficient to check for a change in this function than the caller, because
- * we can avoid unnecessary temporary copies of the previous path.
  */
 static const SearchPathCacheEntry *
-cachedNamespacePath(const char *searchPath, Oid roleid, List *prevPath,
-					bool *same)
+cachedNamespacePath(const char *searchPath, Oid roleid)
 {
 	MemoryContext oldcxt;
 	SearchPathCacheEntry *entry;
-	List	   *prevPathCopy = NIL;
 
 	spcache_init();
-
-	/* invalidate cache if necessary */
-	if (!searchPathCacheValid || spcache_members() >= SPCACHE_RESET_THRESHOLD)
-	{
-		/* prevPath will be destroyed; make temp copy for later comparison */
-		prevPathCopy = list_copy(prevPath);
-		prevPath = prevPathCopy;
-		spcache_reset();
-	}
 
 	entry = spcache_insert(searchPath, roleid);
 
@@ -4232,38 +4213,22 @@ cachedNamespacePath(const char *searchPath, Oid roleid, List *prevPath,
 	if (entry->finalPath == NIL || object_access_hook ||
 		entry->forceRecompute)
 	{
-		/*
-		 * Do not free the stale value of entry->finalPath until we've
-		 * performed the comparison, in case it's aliased by prevPath (which
-		 * can only happen when recomputing due to an object_access_hook).
-		 */
-		List	   *finalPath;
+		list_free(entry->finalPath);
+		entry->finalPath = NIL;
 
 		oldcxt = MemoryContextSwitchTo(SearchPathCacheContext);
-		finalPath = finalNamespacePath(entry->oidlist,
-									   &entry->firstNS);
+		entry->finalPath = finalNamespacePath(entry->oidlist,
+											  &entry->firstNS);
 		MemoryContextSwitchTo(oldcxt);
 
-		*same = equal(prevPath, finalPath);
-
-		list_free(entry->finalPath);
-		entry->finalPath = finalPath;
-
 		/*
-		 * If an object_access_hook set when finalPath is calculated, the
+		 * If an object_access_hook is set when finalPath is calculated, the
 		 * result may be affected by the hook. Force recomputation of
 		 * finalPath the next time this cache entry is used, even if the
 		 * object_access_hook is not set at that time.
 		 */
 		entry->forceRecompute = object_access_hook ? true : false;
 	}
-	else
-	{
-		/* use cached version of finalPath */
-		*same = equal(prevPath, entry->finalPath);
-	}
-
-	list_free(prevPathCopy);
 
 	return entry;
 }
@@ -4275,7 +4240,6 @@ static void
 recomputeNamespacePath(void)
 {
 	Oid			roleid = GetUserId();
-	bool		newPathEqual;
 	bool		pathChanged;
 	const		SearchPathCacheEntry *entry;
 
@@ -4283,24 +4247,32 @@ recomputeNamespacePath(void)
 	if (baseSearchPathValid && namespaceUser == roleid)
 		return;
 
-	entry = cachedNamespacePath(namespace_search_path, roleid, baseSearchPath,
-								&newPathEqual);
+	entry = cachedNamespacePath(namespace_search_path, roleid);
 
 	if (baseCreationNamespace == entry->firstNS &&
 		baseTempCreationPending == entry->temp_missing &&
-		newPathEqual)
+		equal(entry->finalPath, baseSearchPath))
 	{
 		pathChanged = false;
 	}
 	else
 	{
-		pathChanged = true;
-	}
+		MemoryContext oldcxt;
+		List	   *newpath;
 
-	/* Now safe to assign to state variables. */
-	baseSearchPath = entry->finalPath;
-	baseCreationNamespace = entry->firstNS;
-	baseTempCreationPending = entry->temp_missing;
+		pathChanged = true;
+
+		/* Must save OID list in permanent storage. */
+		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+		newpath = list_copy(entry->finalPath);
+		MemoryContextSwitchTo(oldcxt);
+
+		/* Now safe to assign to state variables. */
+		list_free(baseSearchPath);
+		baseSearchPath = newpath;
+		baseCreationNamespace = entry->firstNS;
+		baseTempCreationPending = entry->temp_missing;
+	}
 
 	/* Mark the path valid. */
 	baseSearchPathValid = true;
@@ -4625,11 +4597,40 @@ ResetTempTableNamespace(void)
 bool
 check_search_path(char **newval, void **extra, GucSource source)
 {
+	Oid			roleid = InvalidOid;
+	const char *searchPath = *newval;
 	char	   *rawname;
 	List	   *namelist;
+	bool		use_cache = (SearchPathCacheContext != NULL);
 
-	/* Need a modifiable copy of string */
-	rawname = pstrdup(*newval);
+	/*
+	 * We used to try to check that the named schemas exist, but there are
+	 * many valid use-cases for having search_path settings that include
+	 * schemas that don't exist; and often, we are not inside a transaction
+	 * here and so can't consult the system catalogs anyway.  So now, the only
+	 * requirement is syntactic validity of the identifier list.
+	 */
+
+	/*
+	 * Checking only the syntactic validity also allows us to use the search
+	 * path cache (if available) to avoid calling SplitIdentifierString() on
+	 * the same string repeatedly.
+	 */
+	if (use_cache)
+	{
+		spcache_init();
+
+		roleid = GetUserId();
+
+		if (spcache_lookup(searchPath, roleid) != NULL)
+			return true;
+	}
+
+	/*
+	 * Ensure validity check succeeds before creating cache entry.
+	 */
+
+	rawname = pstrdup(searchPath);	/* need a modifiable copy */
 
 	/* Parse string into list of identifiers */
 	if (!SplitIdentifierString(rawname, ',', &namelist))
@@ -4651,6 +4652,10 @@ check_search_path(char **newval, void **extra, GucSource source)
 
 	pfree(rawname);
 	list_free(namelist);
+
+	/* create empty cache entry */
+	if (use_cache)
+		(void) spcache_insert(searchPath, roleid);
 
 	return true;
 }
