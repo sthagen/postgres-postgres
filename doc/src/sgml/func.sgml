@@ -13142,24 +13142,6 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
 
       <row>
        <entry role="func_table_entry"><para role="func_signature">
-        <type>tsvector</type> <literal>@@@</literal> <type>tsquery</type>
-        <returnvalue>boolean</returnvalue>
-       </para>
-       <para role="func_signature">
-        <type>tsquery</type> <literal>@@@</literal> <type>tsvector</type>
-        <returnvalue>boolean</returnvalue>
-       </para>
-       <para>
-        This is a deprecated synonym for <literal>@@</literal>.
-       </para>
-       <para>
-        <literal>to_tsvector('fat cats ate rats') @@@ to_tsquery('cat &amp; rat')</literal>
-        <returnvalue>t</returnvalue>
-       </para></entry>
-      </row>
-
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
         <type>tsvector</type> <literal>||</literal> <type>tsvector</type>
         <returnvalue>tsvector</returnvalue>
        </para>
@@ -25863,6 +25845,34 @@ SELECT collation for ('foo' COLLATE "de_DE");
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>age</primary>
+        </indexterm>
+        <function>age</function>  ( <type>xid</type> )
+        <returnvalue>integer</returnvalue>
+       </para>
+       <para>
+        Returns the number of transactions between the supplied
+        transaction id and the current transaction counter.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>mxid_age</primary>
+        </indexterm>
+        <function>mxid_age</function>  ( <type>xid</type> )
+        <returnvalue>integer</returnvalue>
+       </para>
+       <para>
+        Returns the number of multixacts IDs between the supplied
+        multixact ID and the current multixacts counter.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>txid_current</primary>
         </indexterm>
         <function>txid_current</function> ()
@@ -25978,7 +25988,8 @@ SELECT collation for ('foo' COLLATE "de_DE");
     They only provide useful data when the
     <xref linkend="guc-track-commit-timestamp"/> configuration option is
     enabled, and only for transactions that were committed after it was
-    enabled.
+    enabled.  Commit timestamp information is routinely removed during
+    vacuum.
    </para>
 
    <table id="functions-commit-timestamp">
@@ -27064,11 +27075,6 @@ postgres=# SELECT * FROM pg_walfile_name_offset((pg_backup_stop()).lsn);
 (1 row)
 </programlisting>
     Similarly, <function>pg_walfile_name</function> extracts just the write-ahead log file name.
-    When the given write-ahead log location is exactly at a write-ahead log file boundary, both
-    these functions return the name of the preceding write-ahead log file.
-    This is usually the desired behavior for managing write-ahead log archiving
-    behavior, since the preceding file is the last one that currently
-    needs to be archived.
    </para>
 
    <para>
