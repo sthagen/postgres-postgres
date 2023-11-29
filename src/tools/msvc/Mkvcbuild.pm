@@ -104,7 +104,7 @@ sub mkvcbuild
 	  inet_net_ntop.c kill.c open.c
 	  snprintf.c strlcat.c strlcpy.c dirmod.c noblock.c path.c
 	  dirent.c getopt.c getopt_long.c
-	  preadv.c pwritev.c pg_bitutils.c
+	  pg_bitutils.c
 	  pg_strong_random.c pgcheckdir.c pgmkdirp.c pgsleep.c pgstrcasecmp.c
 	  pqsignal.c mkdtemp.c qsort.c qsort_arg.c bsearch_arg.c quotes.c system.c
 	  strerror.c tar.c
@@ -455,6 +455,7 @@ sub mkvcbuild
 	$pgdumpall->AddIncludeDir('src/backend');
 	$pgdumpall->AddFile('src/bin/pg_dump/pg_dumpall.c');
 	$pgdumpall->AddFile('src/bin/pg_dump/dumputils.c');
+	$pgdumpall->AddFile('src/bin/pg_dump/filter.c');
 	$pgdumpall->AddLibrary('ws2_32.lib');
 
 	my $pgrestore = AddSimpleFrontend('pg_dump', 1);
