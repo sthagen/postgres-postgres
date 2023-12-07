@@ -3347,6 +3347,8 @@ ReindexMultipleInternal(const ReindexStmt *stmt, const List *relids, const Reind
 
 			newparams.options |= REINDEXOPT_MISSING_OK;
 			(void) ReindexRelationConcurrently(stmt, relid, &newparams);
+			if (ActiveSnapshotSet())
+				PopActiveSnapshot();
 			/* ReindexRelationConcurrently() does the verbose output */
 		}
 		else if (relkind == RELKIND_INDEX)
@@ -3524,10 +3526,11 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 
 					if (!indexRelation->rd_index->indisvalid)
 						ereport(WARNING,
-								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("cannot reindex invalid index \"%s.%s\" concurrently, skipping",
+								(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+								 errmsg("skipping reindex of invalid index \"%s.%s\"",
 										get_namespace_name(get_rel_namespace(cellOid)),
-										get_rel_name(cellOid))));
+										get_rel_name(cellOid)),
+								 errhint("Use DROP INDEX or REINDEX INDEX.")));
 					else if (indexRelation->rd_index->indisexclusion)
 						ereport(WARNING,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -3576,10 +3579,11 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 
 						if (!indexRelation->rd_index->indisvalid)
 							ereport(WARNING,
-									(errcode(ERRCODE_INDEX_CORRUPTED),
-									 errmsg("cannot reindex invalid index \"%s.%s\" concurrently, skipping",
+									(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+									 errmsg("skipping reindex of invalid index \"%s.%s\"",
 											get_namespace_name(get_rel_namespace(cellOid)),
-											get_rel_name(cellOid))));
+											get_rel_name(cellOid)),
+									 errhint("Use DROP INDEX or REINDEX INDEX.")));
 						else
 						{
 							ReindexIndexInfo *idx;
@@ -3698,10 +3702,7 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 	 * session until this operation completes.
 	 */
 	if (indexIds == NIL)
-	{
-		PopActiveSnapshot();
 		return false;
-	}
 
 	/* It's not a shared catalog, so refuse to move it to shared tablespace */
 	if (params->tablespaceOid == GLOBALTABLESPACE_OID)
