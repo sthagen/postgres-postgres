@@ -297,13 +297,17 @@ BpChar
 BrinBuildState
 BrinDesc
 BrinInsertState
+BrinLeader
 BrinMemTuple
 BrinMetaPageData
 BrinOpaque
 BrinOpcInfo
 BrinOptions
 BrinRevmap
+BrinShared
+BrinSortTuple
 BrinSpecialSpace
+BrinSpool
 BrinStatsData
 BrinTuple
 BrinValues
@@ -2883,6 +2887,7 @@ TupleTableSlotOps
 TuplesortClusterArg
 TuplesortDatumArg
 TuplesortIndexArg
+TuplesortIndexBrinArg
 TuplesortIndexBTreeArg
 TuplesortIndexHashArg
 TuplesortInstrumentation
@@ -3242,6 +3247,7 @@ collation_cache_entry
 color
 colormaprange
 compare_context
+config_handle
 config_var_value
 contain_aggs_of_level_context
 contain_placeholder_references_context
