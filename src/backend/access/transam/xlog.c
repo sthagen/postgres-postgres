@@ -77,6 +77,7 @@
 #include "port/pg_iovec.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/startup.h"
+#include "postmaster/walsummarizer.h"
 #include "postmaster/walwriter.h"
 #include "replication/logical.h"
 #include "replication/origin.h"
@@ -501,7 +502,7 @@ typedef struct XLogCtlData
 	 * WALBufMappingLock.
 	 */
 	char	   *pages;			/* buffers for unwritten XLOG pages */
-	XLogRecPtr *xlblocks;		/* 1st byte ptr-s + XLOG_BLCKSZ */
+	pg_atomic_uint64 *xlblocks; /* 1st byte ptr-s + XLOG_BLCKSZ */
 	int			XLogCacheBlck;	/* highest allocated xlog buffer index */
 
 	/*
@@ -1636,20 +1637,16 @@ GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli)
 	 * out to disk and evicted, and the caller is responsible for making sure
 	 * that doesn't happen.
 	 *
-	 * However, we don't hold a lock while we read the value. If someone has
-	 * just initialized the page, it's possible that we get a "torn read" of
-	 * the XLogRecPtr if 64-bit fetches are not atomic on this platform. In
-	 * that case we will see a bogus value. That's ok, we'll grab the mapping
-	 * lock (in AdvanceXLInsertBuffer) and retry if we see anything else than
-	 * the page we're looking for. But it means that when we do this unlocked
-	 * read, we might see a value that appears to be ahead of the page we're
-	 * looking for. Don't PANIC on that, until we've verified the value while
-	 * holding the lock.
+	 * We don't hold a lock while we read the value. If someone is just about
+	 * to initialize or has just initialized the page, it's possible that we
+	 * get InvalidXLogRecPtr. That's ok, we'll grab the mapping lock (in
+	 * AdvanceXLInsertBuffer) and retry if we see anything other than the page
+	 * we're looking for.
 	 */
 	expectedEndPtr = ptr;
 	expectedEndPtr += XLOG_BLCKSZ - ptr % XLOG_BLCKSZ;
 
-	endptr = XLogCtl->xlblocks[idx];
+	endptr = pg_atomic_read_u64(&XLogCtl->xlblocks[idx]);
 	if (expectedEndPtr != endptr)
 	{
 		XLogRecPtr	initializedUpto;
@@ -1680,7 +1677,7 @@ GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli)
 		WALInsertLockUpdateInsertingAt(initializedUpto);
 
 		AdvanceXLInsertBuffer(ptr, tli, false);
-		endptr = XLogCtl->xlblocks[idx];
+		endptr = pg_atomic_read_u64(&XLogCtl->xlblocks[idx]);
 
 		if (expectedEndPtr != endptr)
 			elog(PANIC, "could not find WAL buffer for %X/%X",
@@ -1867,7 +1864,7 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 		 * be zero if the buffer hasn't been used yet).  Fall through if it's
 		 * already written out.
 		 */
-		OldPageRqstPtr = XLogCtl->xlblocks[nextidx];
+		OldPageRqstPtr = pg_atomic_read_u64(&XLogCtl->xlblocks[nextidx]);
 		if (LogwrtResult.Write < OldPageRqstPtr)
 		{
 			/*
@@ -1937,6 +1934,14 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 		NewPage = (XLogPageHeader) (XLogCtl->pages + nextidx * (Size) XLOG_BLCKSZ);
 
 		/*
+		 * Mark the xlblock with InvalidXLogRecPtr and issue a write barrier
+		 * before initializing. Otherwise, the old page may be partially
+		 * zeroed but look valid.
+		 */
+		pg_atomic_write_u64(&XLogCtl->xlblocks[nextidx], InvalidXLogRecPtr);
+		pg_write_barrier();
+
+		/*
 		 * Be sure to re-zero the buffer so that bytes beyond what we've
 		 * written will look like zeroes and not valid XLOG records...
 		 */
@@ -1989,8 +1994,7 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 		 */
 		pg_write_barrier();
 
-		*((volatile XLogRecPtr *) &XLogCtl->xlblocks[nextidx]) = NewPageEndPtr;
-
+		pg_atomic_write_u64(&XLogCtl->xlblocks[nextidx], NewPageEndPtr);
 		XLogCtl->InitializedUpTo = NewPageEndPtr;
 
 		npages++;
@@ -2208,7 +2212,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		 * if we're passed a bogus WriteRqst.Write that is past the end of the
 		 * last page that's been initialized by AdvanceXLInsertBuffer.
 		 */
-		XLogRecPtr	EndPtr = XLogCtl->xlblocks[curridx];
+		XLogRecPtr	EndPtr = pg_atomic_read_u64(&XLogCtl->xlblocks[curridx]);
 
 		if (LogwrtResult.Write >= EndPtr)
 			elog(PANIC, "xlog write request %X/%X is past end of log %X/%X",
@@ -3589,6 +3593,43 @@ XLogGetLastRemovedSegno(void)
 	return lastRemovedSegNo;
 }
 
+/*
+ * Return the oldest WAL segment on the given TLI that still exists in
+ * XLOGDIR, or 0 if none.
+ */
+XLogSegNo
+XLogGetOldestSegno(TimeLineID tli)
+{
+	DIR		   *xldir;
+	struct dirent *xlde;
+	XLogSegNo	oldest_segno = 0;
+
+	xldir = AllocateDir(XLOGDIR);
+	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	{
+		TimeLineID	file_tli;
+		XLogSegNo	file_segno;
+
+		/* Ignore files that are not XLOG segments. */
+		if (!IsXLogFileName(xlde->d_name))
+			continue;
+
+		/* Parse filename to get TLI and segno. */
+		XLogFromFileName(xlde->d_name, &file_tli, &file_segno,
+						 wal_segment_size);
+
+		/* Ignore anything that's not from the TLI of interest. */
+		if (tli != file_tli)
+			continue;
+
+		/* If it's the oldest so far, update oldest_segno. */
+		if (oldest_segno == 0 || file_segno < oldest_segno)
+			oldest_segno = file_segno;
+	}
+
+	FreeDir(xldir);
+	return oldest_segno;
+}
 
 /*
  * Update the last removed segno pointer in shared memory, to reflect that the
@@ -3869,8 +3910,8 @@ RemoveXlogFile(const struct dirent *segment_de,
 }
 
 /*
- * Verify whether pg_wal and pg_wal/archive_status exist.
- * If the latter does not exist, recreate it.
+ * Verify whether pg_wal, pg_wal/archive_status, and pg_wal/summaries exist.
+ * If the latter do not exist, recreate them.
  *
  * It is not the goal of this function to verify the contents of these
  * directories, but to help in cases where someone has performed a cluster
@@ -3896,6 +3937,26 @@ ValidateXLOGDirectoryStructure(void)
 
 	/* Check for archive_status */
 	snprintf(path, MAXPGPATH, XLOGDIR "/archive_status");
+	if (stat(path, &stat_buf) == 0)
+	{
+		/* Check for weird cases where it exists but isn't a directory */
+		if (!S_ISDIR(stat_buf.st_mode))
+			ereport(FATAL,
+					(errmsg("required WAL directory \"%s\" does not exist",
+							path)));
+	}
+	else
+	{
+		ereport(LOG,
+				(errmsg("creating missing WAL directory \"%s\"", path)));
+		if (MakePGDirectory(path) < 0)
+			ereport(FATAL,
+					(errmsg("could not create missing directory \"%s\": %m",
+							path)));
+	}
+
+	/* Check for summaries */
+	snprintf(path, MAXPGPATH, XLOGDIR "/summaries");
 	if (stat(path, &stat_buf) == 0)
 	{
 		/* Check for weird cases where it exists but isn't a directory */
@@ -4632,7 +4693,7 @@ XLOGShmemSize(void)
 	/* WAL insertion locks, plus alignment */
 	size = add_size(size, mul_size(sizeof(WALInsertLockPadded), NUM_XLOGINSERT_LOCKS + 1));
 	/* xlblocks array */
-	size = add_size(size, mul_size(sizeof(XLogRecPtr), XLOGbuffers));
+	size = add_size(size, mul_size(sizeof(pg_atomic_uint64), XLOGbuffers));
 	/* extra alignment padding for XLOG I/O buffers */
 	size = add_size(size, Max(XLOG_BLCKSZ, PG_IO_ALIGN_SIZE));
 	/* and the buffers themselves */
@@ -4710,10 +4771,13 @@ XLOGShmemInit(void)
 	 * needed here.
 	 */
 	allocptr = ((char *) XLogCtl) + sizeof(XLogCtlData);
-	XLogCtl->xlblocks = (XLogRecPtr *) allocptr;
-	memset(XLogCtl->xlblocks, 0, sizeof(XLogRecPtr) * XLOGbuffers);
-	allocptr += sizeof(XLogRecPtr) * XLOGbuffers;
+	XLogCtl->xlblocks = (pg_atomic_uint64 *) allocptr;
+	allocptr += sizeof(pg_atomic_uint64) * XLOGbuffers;
 
+	for (i = 0; i < XLOGbuffers; i++)
+	{
+		pg_atomic_init_u64(&XLogCtl->xlblocks[i], InvalidXLogRecPtr);
+	}
 
 	/* WAL insertion locks. Ensure they're aligned to the full padded size */
 	allocptr += sizeof(WALInsertLockPadded) -
@@ -5237,9 +5301,9 @@ StartupXLOG(void)
 #endif
 
 	/*
-	 * Verify that pg_wal and pg_wal/archive_status exist.  In cases where
-	 * someone has performed a copy for PITR, these directories may have been
-	 * excluded and need to be re-created.
+	 * Verify that pg_wal, pg_wal/archive_status, and pg_wal/summaries exist.
+	 * In cases where someone has performed a copy for PITR, these directories
+	 * may have been excluded and need to be re-created.
 	 */
 	ValidateXLOGDirectoryStructure();
 
@@ -5750,7 +5814,7 @@ StartupXLOG(void)
 		memcpy(page, endOfRecoveryInfo->lastPage, len);
 		memset(page + len, 0, XLOG_BLCKSZ - len);
 
-		XLogCtl->xlblocks[firstIdx] = endOfRecoveryInfo->lastPageBeginPtr + XLOG_BLCKSZ;
+		pg_atomic_write_u64(&XLogCtl->xlblocks[firstIdx], endOfRecoveryInfo->lastPageBeginPtr + XLOG_BLCKSZ);
 		XLogCtl->InitializedUpTo = endOfRecoveryInfo->lastPageBeginPtr + XLOG_BLCKSZ;
 	}
 	else
@@ -6957,6 +7021,25 @@ CreateCheckPoint(int flags)
 	END_CRIT_SECTION();
 
 	/*
+	 * WAL summaries end when the next XLOG_CHECKPOINT_REDO or
+	 * XLOG_CHECKPOINT_SHUTDOWN record is reached. This is the first point
+	 * where (a) we're not inside of a critical section and (b) we can be
+	 * certain that the relevant record has been flushed to disk, which must
+	 * happen before it can be summarized.
+	 *
+	 * If this is a shutdown checkpoint, then this happens reasonably
+	 * promptly: we've only just inserted and flushed the
+	 * XLOG_CHECKPOINT_SHUTDOWN record. If this is not a shutdown checkpoint,
+	 * then this might not be very prompt at all: the XLOG_CHECKPOINT_REDO
+	 * record was written before we began flushing data to disk, and that
+	 * could be many minutes ago at this point. However, we don't XLogFlush()
+	 * after inserting that record, so we're not guaranteed that it's on disk
+	 * until after the above call that flushes the XLOG_CHECKPOINT_ONLINE
+	 * record.
+	 */
+	SetWalSummarizerLatch();
+
+	/*
 	 * Let smgr do post-checkpoint cleanup (eg, deleting old files).
 	 */
 	SyncPostCheckpoint();
@@ -7628,6 +7711,20 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 			if (currSegNo - segno > slot_keep_segs)
 				segno = currSegNo - slot_keep_segs;
 		}
+	}
+
+	/*
+	 * If WAL summarization is in use, don't remove WAL that has yet to be
+	 * summarized.
+	 */
+	keep = GetOldestUnsummarizedLSN(NULL, NULL, false);
+	if (keep != InvalidXLogRecPtr)
+	{
+		XLogSegNo	unsummarized_segno;
+
+		XLByteToSeg(keep, unsummarized_segno, wal_segment_size);
+		if (unsummarized_segno < segno)
+			segno = unsummarized_segno;
 	}
 
 	/* but, keep at least wal_keep_size if that's set */
