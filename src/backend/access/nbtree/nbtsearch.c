@@ -30,7 +30,7 @@ static OffsetNumber _bt_binsrch(Relation rel, BTScanInsert key, Buffer buf);
 static int	_bt_binsrch_posting(BTScanInsert key, Page page,
 								OffsetNumber offnum);
 static bool _bt_readpage(IndexScanDesc scan, ScanDirection dir,
-						 OffsetNumber offnum);
+						 OffsetNumber offnum, bool firstPage);
 static void _bt_saveitem(BTScanOpaque so, int itemIndex,
 						 OffsetNumber offnum, IndexTuple itup);
 static int	_bt_setuppostingitems(BTScanOpaque so, int itemIndex,
@@ -1395,7 +1395,6 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 	offnum = _bt_binsrch(rel, &inskey, buf);
 	Assert(!BTScanPosIsValid(so->currPos));
 	so->currPos.buf = buf;
-	so->firstPage = true;
 
 	/*
 	 * Now load data from the first page of the scan.
@@ -1416,7 +1415,7 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 	 * for the page.  For example, when inskey is both < the leaf page's high
 	 * key and > all of its non-pivot tuples, offnum will be "maxoff + 1".
 	 */
-	if (!_bt_readpage(scan, dir, offnum))
+	if (!_bt_readpage(scan, dir, offnum, true))
 	{
 		/*
 		 * There's no actually-matching data on this page.  Try to advance to
@@ -1520,7 +1519,8 @@ _bt_next(IndexScanDesc scan, ScanDirection dir)
  * Returns true if any matching items found on the page, false if none.
  */
 static bool
-_bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
+_bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
+			 bool firstPage)
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	Page		page;
@@ -1530,7 +1530,8 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 	int			itemIndex;
 	bool		continuescan;
 	int			indnatts;
-	bool		requiredMatchedByPrecheck;
+	bool		continuescanPrechecked;
+	bool		haveFirstMatch = false;
 
 	/*
 	 * We must have the buffer pinned and locked, but the usual macro can't be
@@ -1585,12 +1586,11 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 	Assert(BTScanPosIsPinned(so->currPos));
 
 	/*
-	 * Prechecking the page with scan keys required for direction scan.  We
-	 * check these keys with the last item on the page (according to our scan
-	 * direction).  If these keys are matched, we can skip checking them with
-	 * every item on the page.  Scan keys for our scan direction would
-	 * necessarily match the previous items.  Scan keys required for opposite
-	 * direction scan are already matched by the _bt_first() call.
+	 * Prechecking the value of the continuescan flag for the last item on the
+	 * page (for backwards scan it will be the first item on a page).  If we
+	 * observe it to be true, then it should be true for all other items. This
+	 * allows us to do significant optimizations in the _bt_checkkeys()
+	 * function for all the items on the page.
 	 *
 	 * With the forward scan, we do this check for the last item on the page
 	 * instead of the high key.  It's relatively likely that the most
@@ -1601,7 +1601,7 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 	 * We skip this for the first page in the scan to evade the possible
 	 * slowdown of the point queries.
 	 */
-	if (!so->firstPage && minoff < maxoff)
+	if (!firstPage && minoff < maxoff)
 	{
 		ItemId		iid;
 		IndexTuple	itup;
@@ -1610,18 +1610,17 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		itup = (IndexTuple) PageGetItem(page, iid);
 
 		/*
-		 * Do the precheck.  Note that we pass the pointer to
-		 * 'requiredMatchedByPrecheck' to 'continuescan' argument.  That will
+		 * Do the precheck.  Note that we pass the pointer to the
+		 * 'continuescanPrechecked' to the 'continuescan' argument. That will
 		 * set flag to true if all required keys are satisfied and false
 		 * otherwise.
 		 */
 		(void) _bt_checkkeys(scan, itup, indnatts, dir,
-							 &requiredMatchedByPrecheck, false);
+							 &continuescanPrechecked, false, false);
 	}
 	else
 	{
-		so->firstPage = false;
-		requiredMatchedByPrecheck = false;
+		continuescanPrechecked = false;
 	}
 
 	if (ScanDirectionIsForward(dir))
@@ -1651,19 +1650,22 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 			Assert(!BTreeTupleIsPivot(itup));
 
 			passes_quals = _bt_checkkeys(scan, itup, indnatts, dir,
-										 &continuescan, requiredMatchedByPrecheck);
+										 &continuescan,
+										 continuescanPrechecked,
+										 haveFirstMatch);
 
 			/*
 			 * If the result of prechecking required keys was true, then in
 			 * assert-enabled builds we also recheck that the _bt_checkkeys()
 			 * result is the same.
 			 */
-			Assert(!requiredMatchedByPrecheck ||
+			Assert((!continuescanPrechecked && haveFirstMatch) ||
 				   passes_quals == _bt_checkkeys(scan, itup, indnatts, dir,
-												 &continuescan, false));
+												 &continuescan, false, false));
 			if (passes_quals)
 			{
 				/* tuple passes all scan key conditions */
+				haveFirstMatch = true;
 				if (!BTreeTupleIsPosting(itup))
 				{
 					/* Remember it */
@@ -1718,7 +1720,7 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 			int			truncatt;
 
 			truncatt = BTreeTupleGetNAtts(itup, scan->indexRelation);
-			_bt_checkkeys(scan, itup, truncatt, dir, &continuescan, false);
+			_bt_checkkeys(scan, itup, truncatt, dir, &continuescan, false, false);
 		}
 
 		if (!continuescan)
@@ -1771,19 +1773,22 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 			Assert(!BTreeTupleIsPivot(itup));
 
 			passes_quals = _bt_checkkeys(scan, itup, indnatts, dir,
-										 &continuescan, requiredMatchedByPrecheck);
+										 &continuescan,
+										 continuescanPrechecked,
+										 haveFirstMatch);
 
 			/*
 			 * If the result of prechecking required keys was true, then in
 			 * assert-enabled builds we also recheck that the _bt_checkkeys()
 			 * result is the same.
 			 */
-			Assert(!requiredMatchedByPrecheck ||
+			Assert((!continuescanPrechecked && !haveFirstMatch) ||
 				   passes_quals == _bt_checkkeys(scan, itup, indnatts, dir,
-												 &continuescan, false));
+												 &continuescan, false, false));
 			if (passes_quals && tuple_alive)
 			{
 				/* tuple passes all scan key conditions */
+				haveFirstMatch = true;
 				if (!BTreeTupleIsPosting(itup))
 				{
 					/* Remember it */
@@ -2079,7 +2084,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 				PredicateLockPage(rel, blkno, scan->xs_snapshot);
 				/* see if there are any matches on this page */
 				/* note that this will clear moreRight if we can stop */
-				if (_bt_readpage(scan, dir, P_FIRSTDATAKEY(opaque)))
+				if (_bt_readpage(scan, dir, P_FIRSTDATAKEY(opaque), false))
 					break;
 			}
 			else if (scan->parallel_scan != NULL)
@@ -2170,7 +2175,7 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir)
 				PredicateLockPage(rel, BufferGetBlockNumber(so->currPos.buf), scan->xs_snapshot);
 				/* see if there are any matches on this page */
 				/* note that this will clear moreLeft if we can stop */
-				if (_bt_readpage(scan, dir, PageGetMaxOffsetNumber(page)))
+				if (_bt_readpage(scan, dir, PageGetMaxOffsetNumber(page), false))
 					break;
 			}
 			else if (scan->parallel_scan != NULL)
@@ -2487,14 +2492,13 @@ _bt_endpoint(IndexScanDesc scan, ScanDirection dir)
 
 	/* remember which buffer we have pinned */
 	so->currPos.buf = buf;
-	so->firstPage = true;
 
 	_bt_initialize_more_data(so, dir);
 
 	/*
 	 * Now load data from the first page of the scan.
 	 */
-	if (!_bt_readpage(scan, dir, start))
+	if (!_bt_readpage(scan, dir, start, false))
 	{
 		/*
 		 * There's no actually-matching data on this page.  Try to advance to
