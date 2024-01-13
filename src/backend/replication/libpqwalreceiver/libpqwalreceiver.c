@@ -138,6 +138,15 @@ libpqrcv_connect(const char *conninfo, bool logical, bool must_use_password,
 	int			i = 0;
 
 	/*
+	 * Re-validate connection string. The validation already happened at DDL
+	 * time, but the subscription owner may have changed. If we don't recheck
+	 * with the correct must_use_password, it's possible that the connection
+	 * will obtain the password from a different source, such as PGPASSFILE or
+	 * PGPASSWORD.
+	 */
+	libpqrcv_check_conninfo(conninfo, must_use_password);
+
+	/*
 	 * We use the expand_dbname parameter to process the connection string (or
 	 * URI), and pass some extra options.
 	 */
@@ -275,10 +284,15 @@ libpqrcv_check_conninfo(const char *conninfo, bool must_use_password)
 		}
 
 		if (!uses_password)
+		{
+			/* malloc'd, so we must free it explicitly */
+			PQconninfoFree(opts);
+
 			ereport(ERROR,
 					(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
 					 errmsg("password is required"),
 					 errdetail("Non-superusers must provide a password in the connection string.")));
+		}
 	}
 
 	PQconninfoFree(opts);
