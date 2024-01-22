@@ -1205,6 +1205,8 @@ InheritableSocket
 InitSampleScan_function
 InitializeDSMForeignScan_function
 InitializeWorkerForeignScan_function
+InjectionPointCacheEntry
+InjectionPointEntry
 InlineCodeBlock
 InsertStmt
 Instrumentation
@@ -4045,3 +4047,4 @@ manifest_writer
 rfile
 ws_options
 ws_file_info
+PathKeyInfo
