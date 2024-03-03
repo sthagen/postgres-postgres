@@ -1154,7 +1154,8 @@ ExportSnapshot(Snapshot snapshot)
 	 * inside the transaction from 1.
 	 */
 	snprintf(path, sizeof(path), SNAPSHOT_EXPORT_DIR "/%08X-%08X-%d",
-			 MyProc->backendId, MyProc->lxid, list_length(exportedSnapshots) + 1);
+			 MyProc->vxid.procNumber, MyProc->vxid.lxid,
+			 list_length(exportedSnapshots) + 1);
 
 	/*
 	 * Copy the snapshot into TopTransactionContext, add it to the
@@ -1181,7 +1182,7 @@ ExportSnapshot(Snapshot snapshot)
 	 */
 	initStringInfo(&buf);
 
-	appendStringInfo(&buf, "vxid:%d/%u\n", MyProc->backendId, MyProc->lxid);
+	appendStringInfo(&buf, "vxid:%d/%u\n", MyProc->vxid.procNumber, MyProc->vxid.lxid);
 	appendStringInfo(&buf, "pid:%d\n", MyProcPid);
 	appendStringInfo(&buf, "dbid:%u\n", MyDatabaseId);
 	appendStringInfo(&buf, "iso:%d\n", XactIsoLevel);
@@ -1351,7 +1352,7 @@ parseVxidFromText(const char *prefix, char **s, const char *filename,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 				 errmsg("invalid snapshot data in file \"%s\"", filename)));
 	ptr += prefixlen;
-	if (sscanf(ptr, "%d/%u", &vxid->backendId, &vxid->localTransactionId) != 2)
+	if (sscanf(ptr, "%d/%u", &vxid->procNumber, &vxid->localTransactionId) != 2)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 				 errmsg("invalid snapshot data in file \"%s\"", filename)));

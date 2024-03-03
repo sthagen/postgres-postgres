@@ -2995,7 +2995,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 		 * on this lockable object.
 		 */
 		LWLockRelease(partitionLock);
-		vxids[count].backendId = InvalidBackendId;
+		vxids[count].procNumber = INVALID_PROC_NUMBER;
 		vxids[count].localTransactionId = InvalidLocalTransactionId;
 		if (countp)
 			*countp = count;
@@ -3041,7 +3041,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 	if (count > MaxBackends + max_prepared_xacts)	/* should never happen */
 		elog(PANIC, "too many conflicting locks found");
 
-	vxids[count].backendId = InvalidBackendId;
+	vxids[count].procNumber = INVALID_PROC_NUMBER;
 	vxids[count].localTransactionId = InvalidLocalTransactionId;
 	if (countp)
 		*countp = count;
@@ -3625,8 +3625,8 @@ GetLockStatusData(void)
 								 proc->fpRelId[f]);
 			instance->holdMask = lockbits << FAST_PATH_LOCKNUMBER_OFFSET;
 			instance->waitLockMode = NoLock;
-			instance->backend = proc->backendId;
-			instance->lxid = proc->lxid;
+			instance->vxid.procNumber = proc->vxid.procNumber;
+			instance->vxid.localTransactionId = proc->vxid.lxid;
 			instance->pid = proc->pid;
 			instance->leaderPid = proc->pid;
 			instance->fastpath = true;
@@ -3652,15 +3652,15 @@ GetLockStatusData(void)
 					repalloc(data->locks, sizeof(LockInstanceData) * els);
 			}
 
-			vxid.backendId = proc->backendId;
+			vxid.procNumber = proc->vxid.procNumber;
 			vxid.localTransactionId = proc->fpLocalTransactionId;
 
 			instance = &data->locks[el];
 			SET_LOCKTAG_VIRTUALTRANSACTION(instance->locktag, vxid);
 			instance->holdMask = LOCKBIT_ON(ExclusiveLock);
 			instance->waitLockMode = NoLock;
-			instance->backend = proc->backendId;
-			instance->lxid = proc->lxid;
+			instance->vxid.procNumber = proc->vxid.procNumber;
+			instance->vxid.localTransactionId = proc->vxid.lxid;
 			instance->pid = proc->pid;
 			instance->leaderPid = proc->pid;
 			instance->fastpath = true;
@@ -3712,8 +3712,8 @@ GetLockStatusData(void)
 			instance->waitLockMode = proc->waitLockMode;
 		else
 			instance->waitLockMode = NoLock;
-		instance->backend = proc->backendId;
-		instance->lxid = proc->lxid;
+		instance->vxid.procNumber = proc->vxid.procNumber;
+		instance->vxid.localTransactionId = proc->vxid.lxid;
 		instance->pid = proc->pid;
 		instance->leaderPid = proclock->groupLeader->pid;
 		instance->fastpath = false;
@@ -3888,8 +3888,8 @@ GetSingleProcBlockerStatusData(PGPROC *blocked_proc, BlockedProcsData *data)
 			instance->waitLockMode = proc->waitLockMode;
 		else
 			instance->waitLockMode = NoLock;
-		instance->backend = proc->backendId;
-		instance->lxid = proc->lxid;
+		instance->vxid.procNumber = proc->vxid.procNumber;
+		instance->vxid.localTransactionId = proc->vxid.lxid;
 		instance->pid = proc->pid;
 		instance->leaderPid = proclock->groupLeader->pid;
 		instance->fastpath = false;
@@ -4374,8 +4374,8 @@ lock_twophase_postabort(TransactionId xid, uint16 info,
  *		lockers, as we haven't advertised this vxid via the ProcArray yet.
  *
  *		Since MyProc->fpLocalTransactionId will normally contain the same data
- *		as MyProc->lxid, you might wonder if we really need both.  The
- *		difference is that MyProc->lxid is set and cleared unlocked, and
+ *		as MyProc->vxid.lxid, you might wonder if we really need both.  The
+ *		difference is that MyProc->vxid.lxid is set and cleared unlocked, and
  *		examined by procarray.c, while fpLocalTransactionId is protected by
  *		fpInfoLock and is used only by the locking subsystem.  Doing it this
  *		way makes it easier to verify that there are no funny race conditions.
@@ -4391,7 +4391,7 @@ VirtualXactLockTableInsert(VirtualTransactionId vxid)
 
 	LWLockAcquire(&MyProc->fpInfoLock, LW_EXCLUSIVE);
 
-	Assert(MyProc->backendId == vxid.backendId);
+	Assert(MyProc->vxid.procNumber == vxid.procNumber);
 	Assert(MyProc->fpLocalTransactionId == InvalidLocalTransactionId);
 	Assert(MyProc->fpVXIDLock == false);
 
@@ -4413,7 +4413,7 @@ VirtualXactLockTableCleanup(void)
 	bool		fastpath;
 	LocalTransactionId lxid;
 
-	Assert(MyProc->backendId != InvalidBackendId);
+	Assert(MyProc->vxid.procNumber != INVALID_PROC_NUMBER);
 
 	/*
 	 * Clean up shared memory state.
@@ -4436,7 +4436,7 @@ VirtualXactLockTableCleanup(void)
 		VirtualTransactionId vxid;
 		LOCKTAG		locktag;
 
-		vxid.backendId = MyBackendId;
+		vxid.procNumber = MyProcNumber;
 		vxid.localTransactionId = lxid;
 		SET_LOCKTAG_VIRTUALTRANSACTION(locktag, vxid);
 
@@ -4530,18 +4530,18 @@ VirtualXactLock(VirtualTransactionId vxid, bool wait)
 	 * relevant lxid is no longer running here, that's enough to prove that
 	 * it's no longer running anywhere.
 	 */
-	proc = BackendIdGetProc(vxid.backendId);
+	proc = ProcNumberGetProc(vxid.procNumber);
 	if (proc == NULL)
 		return XactLockForVirtualXact(vxid, InvalidTransactionId, wait);
 
 	/*
-	 * We must acquire this lock before checking the backendId and lxid
+	 * We must acquire this lock before checking the procNumber and lxid
 	 * against the ones we're waiting for.  The target backend will only set
 	 * or clear lxid while holding this lock.
 	 */
 	LWLockAcquire(&proc->fpInfoLock, LW_EXCLUSIVE);
 
-	if (proc->backendId != vxid.backendId
+	if (proc->vxid.procNumber != vxid.procNumber
 		|| proc->fpLocalTransactionId != vxid.localTransactionId)
 	{
 		/* VXID ended */

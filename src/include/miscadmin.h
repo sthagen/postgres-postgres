@@ -203,11 +203,6 @@ extern PGDLLIMPORT char pkglib_path[];
 extern PGDLLIMPORT char postgres_exec_path[];
 #endif
 
-/*
- * done in storage/backendid.h for now.
- *
- * extern BackendId    MyBackendId;
- */
 extern PGDLLIMPORT Oid MyDatabaseId;
 
 extern PGDLLIMPORT Oid MyDatabaseTableSpace;
@@ -454,8 +449,6 @@ typedef enum
 	WalWriterProcess,
 	WalReceiverProcess,
 	WalSummarizerProcess,
-
-	NUM_AUXPROCTYPES			/* Must be last! */
 } AuxProcType;
 
 extern PGDLLIMPORT AuxProcType MyAuxProcType;
