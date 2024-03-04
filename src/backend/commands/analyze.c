@@ -20,20 +20,15 @@
 #include "access/genam.h"
 #include "access/multixact.h"
 #include "access/relation.h"
-#include "access/sysattr.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/tupconvert.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
-#include "catalog/catalog.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
-#include "catalog/pg_collation.h"
 #include "catalog/pg_inherits.h"
-#include "catalog/pg_namespace.h"
-#include "catalog/pg_statistic_ext.h"
 #include "commands/dbcommands.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
@@ -50,14 +45,9 @@
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
 #include "storage/bufmgr.h"
-#include "storage/lmgr.h"
-#include "storage/proc.h"
 #include "storage/procarray.h"
-#include "utils/acl.h"
 #include "utils/attoptcache.h"
-#include "utils/builtins.h"
 #include "utils/datum.h"
-#include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -351,7 +341,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	save_nestlevel = NewGUCNestLevel();
 
 	/* measure elapsed time iff autovacuum logging requires it */
-	if (IsAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
+	if (AmAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
 	{
 		if (track_io_timing)
 		{
@@ -729,7 +719,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	vac_close_indexes(nindexes, Irel, NoLock);
 
 	/* Log the action if appropriate */
-	if (IsAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
+	if (AmAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
 	{
 		TimestampTz endtime = GetCurrentTimestamp();
 

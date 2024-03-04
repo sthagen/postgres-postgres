@@ -25,7 +25,6 @@
 #include "catalog/pg_enum.h"
 #include "catalog/storage.h"
 #include "commands/async.h"
-#include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "executor/execParallel.h"
 #include "libpq/libpq.h"
@@ -36,7 +35,6 @@
 #include "pgstat.h"
 #include "storage/ipc.h"
 #include "storage/predicate.h"
-#include "storage/sinval.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/combocid.h"
@@ -45,7 +43,6 @@
 #include "utils/memutils.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
-#include "utils/typcache.h"
 
 /*
  * We don't want to waste a lot of memory on an error queue which, most of
@@ -1131,16 +1128,6 @@ HandleParallelMessage(ParallelContext *pcxt, int i, StringInfo msg)
 
 	switch (msgtype)
 	{
-		case PqMsg_BackendKeyData:
-			{
-				int32		pid = pq_getmsgint(msg, 4);
-
-				(void) pq_getmsgint(msg, 4);	/* discard cancel key */
-				(void) pq_getmsgend(msg);
-				pcxt->worker[i].pid = pid;
-				break;
-			}
-
 		case PqMsg_ErrorResponse:
 		case PqMsg_NoticeResponse:
 			{
@@ -1304,7 +1291,6 @@ ParallelWorkerMain(Datum main_arg)
 	char	   *relmapperspace;
 	char	   *uncommittedenumsspace;
 	char	   *clientconninfospace;
-	StringInfoData msgbuf;
 	char	   *session_dsm_handle_space;
 	Snapshot	tsnapshot;
 	Snapshot	asnapshot;
@@ -1368,18 +1354,6 @@ ParallelWorkerMain(Datum main_arg)
 	pq_redirect_to_shm_mq(seg, mqh);
 	pq_set_parallel_leader(fps->parallel_leader_pid,
 						   fps->parallel_leader_proc_number);
-
-	/*
-	 * Send a BackendKeyData message to the process that initiated parallelism
-	 * so that it has access to our PID before it receives any other messages
-	 * from us.  Our cancel key is sent, too, since that's the way the
-	 * protocol message is defined, but it won't actually be used for anything
-	 * in this case.
-	 */
-	pq_beginmessage(&msgbuf, PqMsg_BackendKeyData);
-	pq_sendint32(&msgbuf, (int32) MyProcPid);
-	pq_sendint32(&msgbuf, (int32) MyCancelKey);
-	pq_endmessage(&msgbuf);
 
 	/*
 	 * Hooray! Primary initialization is complete.  Now, we need to set up our

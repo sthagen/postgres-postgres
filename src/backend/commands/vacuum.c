@@ -38,7 +38,6 @@
 #include "catalog/index.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_inherits.h"
-#include "catalog/pg_namespace.h"
 #include "commands/cluster.h"
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
@@ -58,7 +57,6 @@
 #include "utils/guc.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
-#include "utils/pg_rusage.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
@@ -564,7 +562,7 @@ vacuum(List *relations, VacuumParams *params, BufferAccessStrategy bstrategy,
 	else
 	{
 		Assert(params->options & VACOPT_ANALYZE);
-		if (IsAutoVacuumWorkerProcess())
+		if (AmAutoVacuumWorkerProcess())
 			use_own_xacts = true;
 		else if (in_outer_xact)
 			use_own_xacts = false;
@@ -809,7 +807,7 @@ vacuum_open_relation(Oid relid, RangeVar *relation, bits32 options,
 	 * statements in the permission checks; otherwise, only log if the caller
 	 * so requested.
 	 */
-	if (!IsAutoVacuumWorkerProcess())
+	if (!AmAutoVacuumWorkerProcess())
 		elevel = WARNING;
 	else if (verbose)
 		elevel = LOG;
@@ -896,7 +894,7 @@ expand_vacuum_rel(VacuumRelation *vrel, MemoryContext vac_context,
 		 * Since autovacuum workers supply OIDs when calling vacuum(), no
 		 * autovacuum worker should reach this code.
 		 */
-		Assert(!IsAutoVacuumWorkerProcess());
+		Assert(!AmAutoVacuumWorkerProcess());
 
 		/*
 		 * We transiently take AccessShareLock to protect the syscache lookup
@@ -2336,7 +2334,7 @@ vacuum_delay_point(void)
 	 * [autovacuum_]vacuum_cost_delay to take effect while a table is being
 	 * vacuumed or analyzed.
 	 */
-	if (ConfigReloadPending && IsAutoVacuumWorkerProcess())
+	if (ConfigReloadPending && AmAutoVacuumWorkerProcess())
 	{
 		ConfigReloadPending = false;
 		ProcessConfigFile(PGC_SIGHUP);

@@ -21,11 +21,9 @@
 #include "postmaster/postmaster.h"
 #include "replication/logicallauncher.h"
 #include "replication/logicalworker.h"
-#include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
-#include "storage/pg_shmem.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
@@ -730,8 +728,6 @@ BackgroundWorkerMain(void)
 
 	if (worker == NULL)
 		elog(FATAL, "unable to find bgworker entry");
-
-	IsBackgroundWorker = true;
 
 	MyBackendType = B_BG_WORKER;
 	init_ps_display(worker->bgw_name);

@@ -59,7 +59,6 @@
 #include "access/xlog_internal.h"
 #include "access/xlogarchive.h"
 #include "access/xloginsert.h"
-#include "access/xlogprefetcher.h"
 #include "access/xlogreader.h"
 #include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
@@ -79,7 +78,6 @@
 #include "postmaster/startup.h"
 #include "postmaster/walsummarizer.h"
 #include "postmaster/walwriter.h"
-#include "replication/logical.h"
 #include "replication/origin.h"
 #include "replication/slot.h"
 #include "replication/snapbuild.h"
@@ -90,20 +88,18 @@
 #include "storage/ipc.h"
 #include "storage/large_object.h"
 #include "storage/latch.h"
-#include "storage/pmsignal.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/reinit.h"
-#include "storage/smgr.h"
 #include "storage/spin.h"
 #include "storage/sync.h"
 #include "utils/guc_hooks.h"
 #include "utils/guc_tables.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/relmapper.h"
-#include "utils/pg_rusage.h"
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
@@ -7527,6 +7523,12 @@ CreateRestartPoint(int flags)
 	update_checkpoint_display(flags, true, false);
 
 	CheckPointGuts(lastCheckPoint.redo, flags);
+
+	/*
+	 * This location needs to be after CheckPointGuts() to ensure that some
+	 * work has already happened during this checkpoint.
+	 */
+	INJECTION_POINT("create-restart-point");
 
 	/*
 	 * Remember the prior checkpoint's redo ptr for

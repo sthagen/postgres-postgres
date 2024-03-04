@@ -34,7 +34,6 @@
 
 #include <math.h>
 
-#include "access/amapi.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
@@ -42,24 +41,19 @@
 #include "access/multixact.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
-#include "access/xact.h"
-#include "access/xlog.h"
 #include "access/xloginsert.h"
-#include "catalog/index.h"
 #include "catalog/storage.h"
 #include "commands/dbcommands.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
-#include "optimizer/paths.h"
 #include "pgstat.h"
 #include "portability/instr_time.h"
 #include "postmaster/autovacuum.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
 #include "storage/lmgr.h"
-#include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_rusage.h"
@@ -307,7 +301,7 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 	char	  **indnames = NULL;
 
 	verbose = (params->options & VACOPT_VERBOSE) != 0;
-	instrument = (verbose || (IsAutoVacuumWorkerProcess() &&
+	instrument = (verbose || (AmAutoVacuumWorkerProcess() &&
 							  params->log_min_duration >= 0));
 	if (instrument)
 	{
@@ -3087,7 +3081,7 @@ static int
 dead_items_max_items(LVRelState *vacrel)
 {
 	int64		max_items;
-	int			vac_work_mem = IsAutoVacuumWorkerProcess() &&
+	int			vac_work_mem = AmAutoVacuumWorkerProcess() &&
 		autovacuum_work_mem != -1 ?
 		autovacuum_work_mem : maintenance_work_mem;
 

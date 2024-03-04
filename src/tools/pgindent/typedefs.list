@@ -173,7 +173,6 @@ AutoVacOpts
 AutoVacuumShmemStruct
 AutoVacuumWorkItem
 AutoVacuumWorkItemType
-AuxProcType
 BF_ctx
 BF_key
 BF_word
@@ -1210,6 +1209,7 @@ InitializeDSMForeignScan_function
 InitializeWorkerForeignScan_function
 InjectionPointCacheEntry
 InjectionPointEntry
+InjectionPointSharedState
 InlineCodeBlock
 InsertStmt
 Instrumentation
