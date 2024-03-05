@@ -350,6 +350,7 @@ cluster_rel(Oid tableOid, Oid indexOid, ClusterParams *params)
 	SetUserIdAndSecContext(OldHeap->rd_rel->relowner,
 						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 	save_nestlevel = NewGUCNestLevel();
+	RestrictSearchPath();
 
 	/*
 	 * Since we may open a new transaction for each relation, we have to check
