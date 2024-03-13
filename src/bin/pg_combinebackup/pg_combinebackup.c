@@ -25,9 +25,9 @@
 #include "common/logging.h"
 #include "copy_file.h"
 #include "fe_utils/option_utils.h"
+#include "getopt_long.h"
 #include "lib/stringinfo.h"
 #include "load_manifest.h"
-#include "getopt_long.h"
 #include "reconstruct.h"
 #include "write_manifest.h"
 
@@ -534,7 +534,7 @@ check_control_files(int n_backups, char **backup_dirs)
 
 		controlpath = psprintf("%s/%s", backup_dirs[i], "global/pg_control");
 		pg_log_debug("reading \"%s\"", controlpath);
-		control_file = get_controlfile(backup_dirs[i], &crc_ok);
+		control_file = get_controlfile_by_exact_path(controlpath, &crc_ok);
 
 		/* Control file contents not meaningful if CRC is bad. */
 		if (!crc_ok)
@@ -1277,8 +1277,8 @@ slurp_file(int fd, char *filename, StringInfo buf, int maxlen)
 		if (rb < 0)
 			pg_fatal("could not read file \"%s\": %m", filename);
 		else
-			pg_fatal("could not read file \"%s\": read only %d of %d bytes",
-					 filename, (int) rb, (int) st.st_size);
+			pg_fatal("could not read file \"%s\": read only %zd of %lld bytes",
+					 filename, rb, (long long int) st.st_size);
 	}
 
 	/* Adjust buffer length for new data and restore trailing-\0 invariant */
