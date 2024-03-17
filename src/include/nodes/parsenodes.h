@@ -1939,6 +1939,7 @@ typedef struct MergeStmt
 	Node	   *sourceRelation; /* source relation */
 	Node	   *joinCondition;	/* join condition between source and target */
 	List	   *mergeWhenClauses;	/* list of MergeWhenClause(es) */
+	List	   *returningList;	/* list of expressions to return */
 	WithClause *withClause;		/* WITH clause */
 } MergeStmt;
 
@@ -3269,7 +3270,7 @@ typedef struct AlterStatsStmt
 {
 	NodeTag		type;
 	List	   *defnames;		/* qualified name (list of String) */
-	int			stxstattarget;	/* statistics target */
+	Node	   *stxstattarget;	/* statistics target */
 	bool		missing_ok;		/* skip error if statistics object is missing */
 } AlterStatsStmt;
 
