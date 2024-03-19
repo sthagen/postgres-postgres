@@ -1270,14 +1270,8 @@ lookup_collation_cache(Oid collation, bool set_flags)
 
 		if (collform->collprovider == COLLPROVIDER_BUILTIN)
 		{
-			Datum		datum;
-			const char *colllocale;
-
-			datum = SysCacheGetAttrNotNull(COLLOID, tp, Anum_pg_collation_colllocale);
-			colllocale = TextDatumGetCString(datum);
-
 			cache_entry->collate_is_c = true;
-			cache_entry->ctype_is_c = (strcmp(colllocale, "C") == 0);
+			cache_entry->ctype_is_c = true;
 		}
 		else if (collform->collprovider == COLLPROVIDER_LIBC)
 		{
@@ -2501,28 +2495,43 @@ pg_strnxfrm_prefix(char *dest, size_t destsize, const char *src,
 	return result;
 }
 
-const char *
-builtin_validate_locale(int encoding, const char *locale)
+/*
+ * Return required encoding ID for the given locale, or -1 if any encoding is
+ * valid for the locale.
+ *
+ * The only supported locale for the builtin provider is "C", and it's
+ * available for any encoding.
+ */
+int
+builtin_locale_encoding(const char *locale)
 {
-	const char *canonical_name = NULL;
-	int			required_encoding = -1;
-
-	if (strcmp(locale, "C") == 0)
-		canonical_name = "C";
-
-	if (!canonical_name)
+	if (strcmp(locale, "C") != 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("invalid locale name \"%s\" for builtin provider",
 						locale)));
 
-	if (required_encoding >= 0 && encoding != required_encoding)
+	return -1;
+}
+
+
+/*
+ * Validate the locale and encoding combination, and return the canonical form
+ * of the locale name.
+ *
+ * The only supported locale for the builtin provider is "C", and it's
+ * available for any encoding.
+ */
+const char *
+builtin_validate_locale(int encoding, const char *locale)
+{
+	if (strcmp(locale, "C") != 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("encoding \"%s\" does not match locale \"%s\"",
-						pg_encoding_to_char(encoding), locale)));
+				 errmsg("invalid locale name \"%s\" for builtin provider",
+						locale)));
 
-	return canonical_name;
+	return "C";
 }
 
 
