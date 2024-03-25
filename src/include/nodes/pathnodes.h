@@ -397,6 +397,8 @@ struct PlannerInfo
 	List	   *distinct_pathkeys;
 	/* sortClause pathkeys, if any */
 	List	   *sort_pathkeys;
+	/* set operator pathkeys, if any */
+	List	   *setop_pathkeys;
 
 	/* Canonicalised partition schemes used in the query. */
 	List	   *part_schemes pg_node_attr(read_write_ignore);
@@ -2854,6 +2856,9 @@ typedef struct PlaceHolderVar
  * cost estimation purposes it is sometimes useful to know the join size under
  * plain innerjoin semantics.  Note that lhs_strict and the semi_xxx fields
  * are not set meaningfully within such structs.
+ *
+ * We also create transient SpecialJoinInfos for child joins during
+ * partiotionwise join planning, which are also not present in join_info_list.
  */
 #ifndef HAVE_SPECIALJOININFO_TYPEDEF
 typedef struct SpecialJoinInfo SpecialJoinInfo;
