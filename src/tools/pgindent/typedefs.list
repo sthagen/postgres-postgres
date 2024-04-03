@@ -1215,6 +1215,7 @@ InjectionPointCacheEntry
 InjectionPointEntry
 InjectionPointSharedState
 InlineCodeBlock
+InProgressIO
 InsertStmt
 Instrumentation
 Int128AggState
@@ -2288,11 +2289,14 @@ ReInitializeDSMForeignScan_function
 ReScanForeignScan_function
 ReadBufPtrType
 ReadBufferMode
+ReadBuffersFlags
+ReadBuffersOperation
 ReadBytePtrType
 ReadExtraTocPtrType
 ReadFunc
 ReadLocalXLogPageNoWaitPrivate
 ReadReplicationSlotCmd
+ReadStream
 ReassignOwnedStmt
 RecheckForeignScan_function
 RecordCacheArrayEntry
@@ -3055,6 +3059,8 @@ WaitEventIO
 WaitEventIPC
 WaitEventSet
 WaitEventTimeout
+WaitLSNProcInfo
+WaitLSNState
 WaitPMResult
 WalCloseMethod
 WalCompression
@@ -4085,3 +4091,4 @@ TidStoreIter
 TidStoreIterResult
 BlocktableEntry
 ItemArray
+bh_nodeidx_entry
