@@ -213,8 +213,11 @@ fasthash_accum_cstring_unaligned(fasthash_state *hs, const char *str)
  *
  * With an aligned pointer, we consume the string a word at a time.
  * Loading the word containing the NUL terminator cannot segfault since
- * allocation boundaries are suitably aligned.
+ * allocation boundaries are suitably aligned. To keep from setting
+ * off alarms with address sanitizers, exclude this function from
+ * such testing.
  */
+pg_attribute_no_sanitize_address()
 static inline size_t
 fasthash_accum_cstring_aligned(fasthash_state *hs, const char *str)
 {
@@ -361,10 +364,30 @@ fasthash64(const char *k, size_t len, uint64 seed)
 }
 
 /* like fasthash64, but returns a 32-bit hashcode */
-static inline uint64
+static inline uint32
 fasthash32(const char *k, size_t len, uint64 seed)
 {
 	return fasthash_reduce32(fasthash64(k, len, seed));
+}
+
+/*
+ * Convenience function for hashing NUL-terminated strings
+ */
+static inline uint32
+hash_string(const char *s)
+{
+	fasthash_state hs;
+	size_t		s_len;
+
+	fasthash_init(&hs, 0);
+
+	/*
+	 * Combine string into the hash and save the length for tweaking the final
+	 * mix.
+	 */
+	s_len = fasthash_accum_cstring(&hs, s);
+
+	return fasthash_final32(&hs, s_len);
 }
 
 #endif							/* HASHFN_UNSTABLE_H */
