@@ -58,7 +58,6 @@ WaitLSNShmemInit(void)
 											   &found);
 	if (!found)
 	{
-		SpinLockInit(&waitLSN->waitersHeapMutex);
 		pg_atomic_init_u64(&waitLSN->minWaitedLSN, PG_UINT64_MAX);
 		pairingheap_initialize(&waitLSN->waitersHeap, lsn_cmp, NULL);
 		memset(&waitLSN->procInfos, 0, MaxBackends * sizeof(WaitLSNProcInfo));
@@ -110,18 +109,18 @@ addLSNWaiter(XLogRecPtr lsn)
 {
 	WaitLSNProcInfo *procInfo = &waitLSN->procInfos[MyProcNumber];
 
+	LWLockAcquire(WaitLSNLock, LW_EXCLUSIVE);
+
 	Assert(!procInfo->inHeap);
 
 	procInfo->procnum = MyProcNumber;
 	procInfo->waitLSN = lsn;
 
-	SpinLockAcquire(&waitLSN->waitersHeapMutex);
-
 	pairingheap_add(&waitLSN->waitersHeap, &procInfo->phNode);
 	procInfo->inHeap = true;
 	updateMinWaitedLSN();
 
-	SpinLockRelease(&waitLSN->waitersHeapMutex);
+	LWLockRelease(WaitLSNLock);
 }
 
 /*
@@ -132,11 +131,11 @@ deleteLSNWaiter(void)
 {
 	WaitLSNProcInfo *procInfo = &waitLSN->procInfos[MyProcNumber];
 
-	SpinLockAcquire(&waitLSN->waitersHeapMutex);
+	LWLockAcquire(WaitLSNLock, LW_EXCLUSIVE);
 
 	if (!procInfo->inHeap)
 	{
-		SpinLockRelease(&waitLSN->waitersHeapMutex);
+		LWLockRelease(WaitLSNLock);
 		return;
 	}
 
@@ -144,7 +143,7 @@ deleteLSNWaiter(void)
 	procInfo->inHeap = false;
 	updateMinWaitedLSN();
 
-	SpinLockRelease(&waitLSN->waitersHeapMutex);
+	LWLockRelease(WaitLSNLock);
 }
 
 /*
@@ -160,7 +159,7 @@ WaitLSNSetLatches(XLogRecPtr currentLSN)
 
 	wakeUpProcNums = palloc(sizeof(int) * MaxBackends);
 
-	SpinLockAcquire(&waitLSN->waitersHeapMutex);
+	LWLockAcquire(WaitLSNLock, LW_EXCLUSIVE);
 
 	/*
 	 * Iterate the pairing heap of waiting processes till we find LSN not yet
@@ -182,7 +181,7 @@ WaitLSNSetLatches(XLogRecPtr currentLSN)
 
 	updateMinWaitedLSN();
 
-	SpinLockRelease(&waitLSN->waitersHeapMutex);
+	LWLockRelease(WaitLSNLock);
 
 	/*
 	 * Set latches for processes, whose waited LSNs are already replayed. This
@@ -204,6 +203,12 @@ WaitLSNSetLatches(XLogRecPtr currentLSN)
 void
 WaitLSNCleanup(void)
 {
+	/*
+	 * We do a fast-path check of the 'inHeap' flag without the lock.  This
+	 * flag is set to true only by the process itself.  So, it's only possible
+	 * to get a false positive.  But that will be eliminated by a recheck
+	 * inside deleteLSNWaiter().
+	 */
 	if (waitLSN->procInfos[MyProcNumber].inHeap)
 		deleteLSNWaiter();
 }
