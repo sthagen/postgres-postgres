@@ -96,6 +96,7 @@
 
 /* XXX these should appear in other modules' header files */
 extern bool Log_disconnections;
+extern bool Trace_connection_negotiation;
 extern int	CommitDelay;
 extern int	CommitSiblings;
 extern char *default_tablespace;
@@ -1221,6 +1222,16 @@ struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&Log_connections,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"trace_connection_negotiation", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Logs details of pre-authentication connection handshake."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&Trace_connection_negotiation,
 		false,
 		NULL, NULL, NULL
 	},
@@ -3654,6 +3665,18 @@ struct config_int ConfigureNamesInt[] =
 		},
 		&scram_sha_256_iterations,
 		SCRAM_SHA_256_DEFAULT_ITERATIONS, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"or_to_any_transform_limit", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the minimum length of the list of OR clauses to attempt the OR-to-ANY transformation."),
+			gettext_noop("Once the limit is reached, the planner will try to replace expression like "
+						 "'x=c1 OR x=c2 ..' to the expression 'x = ANY(ARRAY[c1,c2,..])'"),
+			GUC_EXPLAIN
+		},
+		&or_to_any_transform_limit,
+		5, -1, INT_MAX,
 		NULL, NULL, NULL
 	},
 
