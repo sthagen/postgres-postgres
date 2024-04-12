@@ -720,7 +720,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	ObjectAddress address;
 	LOCKMODE	parentLockmode;
 	Oid			accessMethodId = InvalidOid;
-	const TableAmRoutine *tableam = NULL;
 
 	/*
 	 * Truncate relname to appropriate length (probably a waste of time, as
@@ -857,28 +856,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		ownerId = GetUserId();
 
 	/*
-	 * For relations with table AM and partitioned tables, select access
-	 * method to use: an explicitly indicated one, or (in the case of a
-	 * partitioned table) the parent's, if it has one.
-	 */
-	if (stmt->accessMethod != NULL)
-	{
-		Assert(RELKIND_HAS_TABLE_AM(relkind) || relkind == RELKIND_PARTITIONED_TABLE);
-		accessMethodId = get_table_am_oid(stmt->accessMethod, false);
-	}
-	else if (RELKIND_HAS_TABLE_AM(relkind) || relkind == RELKIND_PARTITIONED_TABLE)
-	{
-		if (stmt->partbound)
-		{
-			Assert(list_length(inheritOids) == 1);
-			accessMethodId = get_rel_relam(linitial_oid(inheritOids));
-		}
-
-		if (RELKIND_HAS_TABLE_AM(relkind) && !OidIsValid(accessMethodId))
-			accessMethodId = get_table_am_oid(default_table_access_method, false);
-	}
-
-	/*
 	 * Parse and validate reloptions, if any.
 	 */
 	reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
@@ -886,12 +863,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 
 	switch (relkind)
 	{
-		case RELKIND_RELATION:
-		case RELKIND_TOASTVALUE:
-		case RELKIND_MATVIEW:
-			tableam = GetTableAmRoutineByAmOid(accessMethodId);
-			(void) tableam_reloptions(tableam, relkind, reloptions, NULL, true);
-			break;
 		case RELKIND_VIEW:
 			(void) view_reloptions(reloptions, true);
 			break;
@@ -899,12 +870,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			(void) partitioned_table_reloptions(reloptions, true);
 			break;
 		default:
-			if (OidIsValid(accessMethodId))
-			{
-				tableam = GetTableAmRoutineByAmOid(accessMethodId);
-				(void) tableam_reloptions(tableam, relkind, reloptions, NULL, true);
-			}
-			break;
+			(void) heap_reloptions(relkind, reloptions, true);
 	}
 
 	if (stmt->ofTypename)
@@ -994,6 +960,28 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			cookedDefaults = lappend(cookedDefaults, cooked);
 			attr->atthasdef = true;
 		}
+	}
+
+	/*
+	 * For relations with table AM and partitioned tables, select access
+	 * method to use: an explicitly indicated one, or (in the case of a
+	 * partitioned table) the parent's, if it has one.
+	 */
+	if (stmt->accessMethod != NULL)
+	{
+		Assert(RELKIND_HAS_TABLE_AM(relkind) || relkind == RELKIND_PARTITIONED_TABLE);
+		accessMethodId = get_table_am_oid(stmt->accessMethod, false);
+	}
+	else if (RELKIND_HAS_TABLE_AM(relkind) || relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		if (stmt->partbound)
+		{
+			Assert(list_length(inheritOids) == 1);
+			accessMethodId = get_rel_relam(linitial_oid(inheritOids));
+		}
+
+		if (RELKIND_HAS_TABLE_AM(relkind) && !OidIsValid(accessMethodId))
+			accessMethodId = get_table_am_oid(default_table_access_method, false);
 	}
 
 	/*
@@ -6403,12 +6391,8 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 
 			/* Write the tuple out to the new relation */
 			if (newrel)
-			{
-				bool		insertIndexes;
-
 				table_tuple_insert(newrel, insertslot, mycid,
-								   ti_options, bistate, &insertIndexes);
-			}
+								   ti_options, bistate);
 
 			ResetExprContext(econtext);
 
@@ -15583,8 +15567,7 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 		case RELKIND_RELATION:
 		case RELKIND_TOASTVALUE:
 		case RELKIND_MATVIEW:
-			(void) table_reloptions(rel, rel->rd_rel->relkind,
-									newOptions, NULL, true);
+			(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
 			break;
 		case RELKIND_PARTITIONED_TABLE:
 			(void) partitioned_table_reloptions(newOptions, true);
@@ -15697,7 +15680,7 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 										 defList, "toast", validnsps, false,
 										 operation == AT_ResetRelOptions);
 
-		(void) table_reloptions(rel, RELKIND_TOASTVALUE, newOptions, NULL, true);
+		(void) heap_reloptions(RELKIND_TOASTVALUE, newOptions, true);
 
 		memset(repl_val, 0, sizeof(repl_val));
 		memset(repl_null, false, sizeof(repl_null));
@@ -21050,7 +21033,6 @@ moveSplitTableRows(Relation rel, Relation splitRel, List *partlist, List *newPar
 	while (table_scan_getnextslot(scan, ForwardScanDirection, srcslot))
 	{
 		bool		found = false;
-		bool		insert_indexes;
 		TupleTableSlot *insertslot;
 
 		/* Extract data from old tuple. */
@@ -21103,12 +21085,9 @@ moveSplitTableRows(Relation rel, Relation splitRel, List *partlist, List *newPar
 			ExecStoreVirtualTuple(insertslot);
 		}
 
-		/*
-		 * Write the tuple out to the new relation.  We ignore the
-		 * 'insert_indexes' flag since newPartRel has no indexes anyway.
-		 */
-		(void) table_tuple_insert(pc->partRel, insertslot, mycid,
-								  ti_options, pc->bistate, &insert_indexes);
+		/* Write the tuple out to the new relation. */
+		table_tuple_insert(pc->partRel, insertslot, mycid,
+						   ti_options, pc->bistate);
 
 		ResetExprContext(econtext);
 
@@ -21377,7 +21356,6 @@ moveMergedTablesRows(Relation rel, List *mergingPartitionsList,
 		while (table_scan_getnextslot(scan, ForwardScanDirection, srcslot))
 		{
 			TupleTableSlot *insertslot;
-			bool		insert_indexes;
 
 			/* Extract data from old tuple. */
 			slot_getallattrs(srcslot);
@@ -21402,12 +21380,9 @@ moveMergedTablesRows(Relation rel, List *mergingPartitionsList,
 				ExecStoreVirtualTuple(insertslot);
 			}
 
-			/*
-			 * Write the tuple out to the new relation.  We ignore the
-			 * 'insert_indexes' flag since newPartRel has no indexes anyway.
-			 */
-			(void) table_tuple_insert(newPartRel, insertslot, mycid,
-									  ti_options, bistate, &insert_indexes);
+			/* Write the tuple out to the new relation. */
+			table_tuple_insert(newPartRel, insertslot, mycid,
+							   ti_options, bistate);
 
 			CHECK_FOR_INTERRUPTS();
 		}
