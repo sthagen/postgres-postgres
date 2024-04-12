@@ -123,7 +123,6 @@ static bool parse_xlogrecptr(XLogRecPtr *result, char *input);
 
 /*
  * Set up for incremental parsing of the manifest.
- *
  */
 
 JsonManifestParseIncrementalState *
@@ -161,6 +160,18 @@ json_parse_manifest_incremental_init(JsonManifestParseContext *context)
 	incstate->manifest_ctx = manifest_ctx;
 
 	return incstate;
+}
+
+/*
+ * Free an incremental state object and its contents.
+ */
+void
+json_parse_manifest_incremental_shutdown(JsonManifestParseIncrementalState *incstate)
+{
+	pfree(incstate->sem.semstate);
+	freeJsonLexContext(&(incstate->lex));
+	/* incstate->manifest_ctx has already been freed */
+	pfree(incstate);
 }
 
 /*
@@ -795,7 +806,7 @@ json_manifest_finalize_wal_range(JsonManifestParseState *parse)
  * the rest of the file.
  *
  * For an incremental parse, this will just be called on the last chunk of the
- * manifest, and the cryptohash context paswed in. For a non-incremental
+ * manifest, and the cryptohash context passed in. For a non-incremental
  * parse incr_ctx will be NULL.
  */
 static void
