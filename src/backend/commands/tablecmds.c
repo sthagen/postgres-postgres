@@ -7757,6 +7757,10 @@ set_attnotnull(List **wqueue, Relation rel, AttrNumber attnum, bool recurse,
 		List	   *children;
 		ListCell   *lc;
 
+		/* Make above update visible, for multiple inheritance cases */
+		if (retval)
+			CommandCounterIncrement();
+
 		children = find_inheritance_children(RelationGetRelid(rel), lockmode);
 		foreach(lc, children)
 		{
@@ -19546,6 +19550,11 @@ AttachPartitionEnsureIndexes(List **wqueue, Relation rel, Relation attachrel)
 					/* no dice */
 					if (!OidIsValid(cldConstrOid))
 						continue;
+
+					/* Ensure they're both the same type of constraint */
+					if (get_constraint_type(constraintOid) !=
+						get_constraint_type(cldConstrOid))
+						continue;
 				}
 
 				/* bingo. */
@@ -20871,7 +20880,7 @@ GetAttributeStorage(Oid atttypid, const char *storagemode)
 }
 
 /*
- * Struct with context of new partition for insert rows from splited partition
+ * Struct with context of new partition for inserting rows from split partition
  */
 typedef struct SplitPartitionContext
 {
@@ -20928,7 +20937,7 @@ deleteSplitPartitionContext(SplitPartitionContext *pc, int ti_options)
  *
  * New partitions description:
  * partlist: list of pointers to SinglePartitionSpec structures.
- * newPartRels: list of Relation's.
+ * newPartRels: list of Relations.
  * defaultPartOid: oid of DEFAULT partition, for table rel.
  */
 static void
@@ -21013,7 +21022,7 @@ moveSplitTableRows(Relation rel, Relation splitRel, List *partlist, List *newPar
 
 	/*
 	 * Map computing for moving attributes of split partition to new partition
-	 * (for first new partition but other new partitions can use the same
+	 * (for first new partition, but other new partitions can use the same
 	 * map).
 	 */
 	pc = (SplitPartitionContext *) lfirst(list_head(partContexts));
@@ -21067,7 +21076,7 @@ moveSplitTableRows(Relation rel, Relation splitRel, List *partlist, List *newPar
 
 		if (tuple_map)
 		{
-			/* Need to use map for copy attributes. */
+			/* Need to use map to copy attributes. */
 			insertslot = execute_attr_map_slot(tuple_map->attrMap, srcslot, pc->dstslot);
 		}
 		else
@@ -21222,8 +21231,8 @@ ATExecSplitPartition(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			RangeVarGetAndCheckCreationNamespace(sps->name, NoLock, NULL);
 
 		/*
-		 * This would fail later on anyway, if the relation already exists.
-		 * But by catching it here we can emit a nicer error message.
+		 * This would fail later on anyway if the relation already exists. But
+		 * by catching it here we can emit a nicer error message.
 		 */
 		existing_relid = get_relname_relid(relname, namespaceId);
 		if (existing_relid == splitRelOid && !isSameName)
@@ -21289,7 +21298,10 @@ ATExecSplitPartition(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		SinglePartitionSpec *sps = (SinglePartitionSpec *) lfirst(listptr);
 		Relation	newPartRel = (Relation) lfirst(listptr2);
 
-		/* wqueue = NULL: verification for each cloned constraint is not need. */
+		/*
+		 * wqueue = NULL: verification for each cloned constraint is not
+		 * needed.
+		 */
 		attachPartitionTable(NULL, rel, newPartRel, sps->bound);
 		/* Keep the lock until commit. */
 		table_close(newPartRel, NoLock);
@@ -21362,7 +21374,7 @@ moveMergedTablesRows(Relation rel, List *mergingPartitionsList,
 
 			if (tuple_map)
 			{
-				/* Need to use map for copy attributes. */
+				/* Need to use map to copy attributes. */
 				insertslot = execute_attr_map_slot(tuple_map->attrMap, srcslot, dstslot);
 			}
 			else
@@ -21461,7 +21473,7 @@ ATExecMergePartitions(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	/* Create table for new partition, use partitioned table as model. */
 	if (isSameName)
 	{
-		/* Create partition table with generated temparary name. */
+		/* Create partition table with generated temporary name. */
 		sprintf(tmpRelName, "merge-%u-%X-tmp", RelationGetRelid(rel), MyProcPid);
 		mergePartName = makeRangeVar(get_namespace_name(RelationGetNamespace(rel)),
 									 tmpRelName, -1);
