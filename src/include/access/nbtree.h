@@ -267,7 +267,7 @@ BTPageGetDeleteXid(Page page)
 	opaque = BTPageGetOpaque(page);
 	Assert(P_ISDELETED(opaque));
 
-	/* pg_upgrade'd deleted page -- must be safe to delete now */
+	/* pg_upgrade'd deleted page -- must be safe to recycle now */
 	if (!P_HAS_FULLXID(opaque))
 		return FirstNormalFullTransactionId;
 
@@ -656,7 +656,7 @@ BTreeTupleGetHeapTID(IndexTuple itup)
 
 /*
  * Get maximum heap TID attribute, which could be the only TID in the case of
- * a non-pivot tuple that does not have a posting list tuple.
+ * a non-pivot tuple that does not have a posting list.
  *
  * Works with non-pivot tuples only.
  */
