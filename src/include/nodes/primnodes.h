@@ -1782,13 +1782,16 @@ typedef struct JsonExpr
 
 	JsonExprOp	op;
 
+	char	   *column_name;	/* JSON_TABLE() column name or NULL if this is
+								 * not for a JSON_TABLE() */
+
 	/* jsonb-valued expression to query */
 	Node	   *formatted_expr;
 
 	/* Format of the above expression needed by ruleutils.c */
 	JsonFormat *format;
 
-	/* jsopath-valued expression containing the query pattern */
+	/* jsonpath-valued expression containing the query pattern */
 	Node	   *path_spec;
 
 	/* Expected type/format of the output. */

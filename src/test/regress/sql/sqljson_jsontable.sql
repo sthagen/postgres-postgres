@@ -116,6 +116,22 @@ FROM json_table_test vals
 	) jt
 	ON true;
 
+-- Test using casts in DEFAULT .. ON ERROR expression
+SELECT * FROM JSON_TABLE(jsonb '{"d1": "H"}', '$'
+    COLUMNS (js1 jsonb_test_domain PATH '$.a2' DEFAULT '"foo1"'::jsonb::text ON ERROR));
+
+SELECT * FROM JSON_TABLE(jsonb '{"d1": "H"}', '$'
+    COLUMNS (js1 jsonb_test_domain PATH '$.a2' DEFAULT 'foo'::jsonb_test_domain ON ERROR));
+
+SELECT * FROM JSON_TABLE(jsonb '{"d1": "H"}', '$'
+    COLUMNS (js1 jsonb_test_domain PATH '$.a2' DEFAULT 'foo1'::jsonb_test_domain ON ERROR));
+
+SELECT * FROM JSON_TABLE(jsonb '{"d1": "foo"}', '$'
+    COLUMNS (js1 jsonb_test_domain PATH '$.d1' DEFAULT 'foo2'::jsonb_test_domain ON ERROR));
+
+SELECT * FROM JSON_TABLE(jsonb '{"d1": "foo"}', '$'
+    COLUMNS (js1 oid[] PATH '$.d2' DEFAULT '{1}'::int[]::oid[] ON ERROR));
+
 -- JSON_TABLE: Test backward parsing
 
 CREATE VIEW jsonb_table_view2 AS
@@ -289,6 +305,9 @@ FROM JSON_TABLE(
 
 -- Should fail (not supported)
 SELECT * FROM JSON_TABLE(jsonb '{"a": 123}', '$' || '.' || 'a' COLUMNS (foo int));
+
+-- JsonPathQuery() error message mentioning column name
+SELECT * FROM JSON_TABLE('{"a": [{"b": "1"}, {"b": "2"}]}', '$' COLUMNS (b json path '$.a[*].b' ERROR ON ERROR));
 
 -- JSON_TABLE: nested paths
 

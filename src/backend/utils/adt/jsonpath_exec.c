@@ -3899,7 +3899,8 @@ JsonPathExists(Datum jb, JsonPath *jp, bool *error, List *vars)
  */
 Datum
 JsonPathQuery(Datum jb, JsonPath *jp, JsonWrapper wrapper, bool *empty,
-			  bool *error, List *vars)
+			  bool *error, List *vars,
+			  const char *column_name)
 {
 	JsonbValue *singleton;
 	bool		wrap;
@@ -3934,7 +3935,7 @@ JsonPathQuery(Datum jb, JsonPath *jp, JsonWrapper wrapper, bool *empty,
 			 JsonContainerIsScalar(singleton->val.binary.data));
 	else
 	{
-		elog(ERROR, "unrecognized json wrapper %d", wrapper);
+		elog(ERROR, "unrecognized json wrapper %d", (int) wrapper);
 		wrap = false;
 	}
 
@@ -3950,10 +3951,17 @@ JsonPathQuery(Datum jb, JsonPath *jp, JsonWrapper wrapper, bool *empty,
 			return (Datum) 0;
 		}
 
-		ereport(ERROR,
-				(errcode(ERRCODE_MORE_THAN_ONE_SQL_JSON_ITEM),
-				 errmsg("JSON path expression in JSON_QUERY should return singleton item without wrapper"),
-				 errhint("Use WITH WRAPPER clause to wrap SQL/JSON item sequence into array.")));
+		if (column_name)
+			ereport(ERROR,
+					(errcode(ERRCODE_MORE_THAN_ONE_SQL_JSON_ITEM),
+					 errmsg("JSON path expression for column \"%s\" should return single item without wrapper",
+							column_name),
+					 errhint("Use WITH WRAPPER clause to wrap SQL/JSON items into array.")));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_MORE_THAN_ONE_SQL_JSON_ITEM),
+					 errmsg("JSON path expression in JSON_QUERY should return single item without wrapper"),
+					 errhint("Use WITH WRAPPER clause to wrap SQL/JSON items into array.")));
 	}
 
 	if (singleton)
@@ -3970,7 +3978,8 @@ JsonPathQuery(Datum jb, JsonPath *jp, JsonWrapper wrapper, bool *empty,
  * *error to true.  *empty is set to true if no match is found.
  */
 JsonbValue *
-JsonPathValue(Datum jb, JsonPath *jp, bool *empty, bool *error, List *vars)
+JsonPathValue(Datum jb, JsonPath *jp, bool *empty, bool *error, List *vars,
+			  const char *column_name)
 {
 	JsonbValue *res;
 	JsonValueList found = {0};
@@ -4006,9 +4015,15 @@ JsonPathValue(Datum jb, JsonPath *jp, bool *empty, bool *error, List *vars)
 			return NULL;
 		}
 
-		ereport(ERROR,
-				(errcode(ERRCODE_MORE_THAN_ONE_SQL_JSON_ITEM),
-				 errmsg("JSON path expression in JSON_VALUE should return singleton scalar item")));
+		if (column_name)
+			ereport(ERROR,
+					(errcode(ERRCODE_MORE_THAN_ONE_SQL_JSON_ITEM),
+					 errmsg("JSON path expression for column \"%s\" should return single scalar item",
+							column_name)));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_MORE_THAN_ONE_SQL_JSON_ITEM),
+					 errmsg("JSON path expression in JSON_VALUE should return single scalar item")));
 	}
 
 	res = JsonValueListHead(&found);
@@ -4024,9 +4039,15 @@ JsonPathValue(Datum jb, JsonPath *jp, bool *empty, bool *error, List *vars)
 			return NULL;
 		}
 
-		ereport(ERROR,
-				(errcode(ERRCODE_SQL_JSON_SCALAR_REQUIRED),
-				 errmsg("JSON path expression in JSON_VALUE should return singleton scalar item")));
+		if (column_name)
+			ereport(ERROR,
+					(errcode(ERRCODE_SQL_JSON_SCALAR_REQUIRED),
+					 errmsg("JSON path expression for column \"%s\" should return single scalar item",
+							column_name)));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SQL_JSON_SCALAR_REQUIRED),
+					 errmsg("JSON path expression in JSON_VALUE should return single scalar item")));
 	}
 
 	if (res->type == jbvNull)
@@ -4200,7 +4221,7 @@ JsonTableSetDocument(TableFuncScanState *state, Datum value)
 }
 
 /*
- * Evaluate a JsonTablePlan's jsonpath to get a new row pattren from
+ * Evaluate a JsonTablePlan's jsonpath to get a new row pattern from
  * the given context item
  */
 static void
@@ -4318,7 +4339,7 @@ JsonTablePlanScanNextRow(JsonTablePlanState *planstate)
 		/*
 		 * Now fetch the nested plan's current row to be joined against the
 		 * parent row.  Any further nested plans' paths will be re-evaluated
-		 * reursively, level at a time, after setting each nested plan's
+		 * recursively, level at a time, after setting each nested plan's
 		 * current row.
 		 */
 		(void) JsonTablePlanNextRow(planstate->nested);

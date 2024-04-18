@@ -1756,7 +1756,7 @@ _bt_start_prim_scan(IndexScanDesc scan, ScanDirection dir)
  *
  * (The rules are the same for backwards scans, except that the operators are
  * flipped: just replace the precondition's >= operator with a <=, and the
- * postcondition's <= operator with with a >=.  In other words, just swap the
+ * postcondition's <= operator with a >=.  In other words, just swap the
  * precondition with the postcondition.)
  *
  * We also deal with "advancing" non-required arrays here.  Callers whose
@@ -3394,6 +3394,13 @@ _bt_fix_scankey_strategy(ScanKey skey, int16 *indoption)
 		return true;
 	}
 
+	if (skey->sk_strategy == InvalidStrategy)
+	{
+		/* Already-eliminated array scan key; don't need to fix anything */
+		Assert(skey->sk_flags & SK_SEARCHARRAY);
+		return true;
+	}
+
 	/* Adjust strategy for DESC, if we didn't already */
 	if ((addflags & SK_BT_DESC) && !(skey->sk_flags & SK_BT_DESC))
 		skey->sk_strategy = BTCommuteStrategyNumber(skey->sk_strategy);
@@ -4126,7 +4133,7 @@ _bt_checkkeys_look_ahead(IndexScanDesc scan, BTReadPageState *pstate,
 	else
 	{
 		/*
-		 * Failure -- "ahead" tuple is too far ahead (we were too aggresive).
+		 * Failure -- "ahead" tuple is too far ahead (we were too aggressive).
 		 *
 		 * Reset the number of rechecks, and aggressively reduce the target
 		 * distance (we're much more aggressive here than we were when the

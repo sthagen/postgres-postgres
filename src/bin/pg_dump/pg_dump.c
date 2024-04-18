@@ -9096,6 +9096,9 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			}
 			else if (use_throwaway_notnull)
 			{
+				/*
+				 * Give this constraint a throwaway name.
+				 */
 				tbinfo->notnull_constrs[j] =
 					psprintf("pgdump_throwaway_notnull_%d", notnullcount++);
 				tbinfo->notnull_throwaway[j] = true;
@@ -17325,10 +17328,15 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 		 * similar code in dumpIndex!
 		 */
 
-		/* Drop any not-null constraints that were added to support the PK */
+		/*
+		 * Drop any not-null constraints that were added to support the PK,
+		 * but leave them alone if they have a definition coming from their
+		 * parent.
+		 */
 		if (coninfo->contype == 'p')
 			for (int i = 0; i < tbinfo->numatts; i++)
-				if (tbinfo->notnull_throwaway[i])
+				if (tbinfo->notnull_throwaway[i] &&
+					!tbinfo->notnull_inh[i])
 					appendPQExpBuffer(q, "\nALTER TABLE ONLY %s DROP CONSTRAINT %s;",
 									  fmtQualifiedDumpable(tbinfo),
 									  tbinfo->notnull_constrs[i]);
