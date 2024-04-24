@@ -267,14 +267,19 @@ be_tls_init(bool isServerStart)
 	/* disallow SSL compression */
 	SSL_CTX_set_options(context, SSL_OP_NO_COMPRESSION);
 
-#ifdef SSL_OP_NO_RENEGOTIATION
-
 	/*
-	 * Disallow SSL renegotiation, option available since 1.1.0h.  This
-	 * concerns only TLSv1.2 and older protocol versions, as TLSv1.3 has no
-	 * support for renegotiation.
+	 * Disallow SSL renegotiation.  This concerns only TLSv1.2 and older
+	 * protocol versions, as TLSv1.3 has no support for renegotiation.
+	 * SSL_OP_NO_RENEGOTIATION is available in OpenSSL since 1.1.0h (via a
+	 * backport from 1.1.1). SSL_OP_NO_CLIENT_RENEGOTIATION is available in
+	 * LibreSSL since 2.5.1 disallowing all client-initiated renegotiation
+	 * (this is usually on by default).
 	 */
+#ifdef SSL_OP_NO_RENEGOTIATION
 	SSL_CTX_set_options(context, SSL_OP_NO_RENEGOTIATION);
+#endif
+#ifdef SSL_OP_NO_CLIENT_RENEGOTIATION
+	SSL_CTX_set_options(context, SSL_OP_NO_CLIENT_RENEGOTIATION);
 #endif
 
 	/* set up ephemeral DH and ECDH keys */
@@ -542,6 +547,8 @@ aloop:
 					case SSL_R_TLSV1_ALERT_PROTOCOL_VERSION:
 #ifdef SSL_R_VERSION_TOO_HIGH
 					case SSL_R_VERSION_TOO_HIGH:
+#endif
+#ifdef SSL_R_VERSION_TOO_LOW
 					case SSL_R_VERSION_TOO_LOW:
 #endif
 						give_proto_hint = true;
