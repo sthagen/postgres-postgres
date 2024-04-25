@@ -23193,7 +23193,7 @@ SELECT count(*) FROM sometable;
    <productname>PostgreSQL</productname> includes one merge support function
    that may be used in the <literal>RETURNING</literal> list of a
    <xref linkend="sql-merge"/> command to identify the action taken for each
-   row.
+   row; see <xref linkend="functions-merge-support-table"/>.
   </para>
 
   <table id="functions-merge-support-table">
@@ -29349,6 +29349,10 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         standby server. Temporary synced slots, if any, cannot be used for
         logical decoding and must be dropped after promotion. See
         <xref linkend="logicaldecoding-replication-slots-synchronization"/> for details.
+        Note that this function cannot be executed if
+        <link linkend="guc-sync-replication-slots"><varname>
+        sync_replication_slots</varname></link> is enabled and the slotsync
+        worker is already running to perform the synchronization of slots.
        </para>
 
        <caution>
