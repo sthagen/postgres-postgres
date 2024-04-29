@@ -1585,6 +1585,34 @@ open_client_SSL(PGconn *conn)
 		}
 	}
 
+	/* ALPN is mandatory with direct SSL connections */
+	if (conn->current_enc_method == ENC_DIRECT_SSL)
+	{
+		const unsigned char *selected;
+		unsigned int len;
+
+		SSL_get0_alpn_selected(conn->ssl, &selected, &len);
+
+		if (selected == NULL)
+		{
+			libpq_append_conn_error(conn, "direct SSL connection was established without ALPN protocol negotiation extension");
+			pgtls_close(conn);
+			return PGRES_POLLING_FAILED;
+		}
+
+		/*
+		 * We only support one protocol so that's what the negotiation should
+		 * always choose, but doesn't hurt to check.
+		 */
+		if (len != strlen(PG_ALPN_PROTOCOL) ||
+			memcmp(selected, PG_ALPN_PROTOCOL, strlen(PG_ALPN_PROTOCOL)) != 0)
+		{
+			libpq_append_conn_error(conn, "SSL connection was established with unexpected ALPN protocol");
+			pgtls_close(conn);
+			return PGRES_POLLING_FAILED;
+		}
+	}
+
 	/*
 	 * We already checked the server certificate in initialize_SSL() using
 	 * SSL_CTX_set_verify(), if root.crt exists.
@@ -1713,6 +1741,18 @@ SSLerrmessage(unsigned long ecode)
 		return errbuf;
 	}
 
+	if (ERR_GET_LIB(ecode) == ERR_LIB_SSL &&
+		ERR_GET_REASON(ecode) == SSL_AD_REASON_OFFSET + SSL_AD_NO_APPLICATION_PROTOCOL)
+	{
+		/*
+		 * Server aborted the connection with TLS "no_application_protocol"
+		 * alert.  The ERR_reason_error_string() function doesn't give any
+		 * error string for that for some reason, so do it ourselves.
+		 */
+		snprintf(errbuf, SSL_ERR_LEN, libpq_gettext("no application protocol"));
+		return errbuf;
+	}
+
 	/*
 	 * In OpenSSL 3.0.0 and later, ERR_reason_error_string randomly refuses to
 	 * map system errno values.  We can cover that shortcoming with this bit
@@ -1837,7 +1877,7 @@ PQsslAttribute(PGconn *conn, const char *attribute_name)
 
 		SSL_get0_alpn_selected(conn->ssl, &data, &len);
 		if (data == NULL || len == 0 || len > sizeof(alpn_str) - 1)
-			return NULL;
+			return "";
 		memcpy(alpn_str, data, len);
 		alpn_str[len] = 0;
 		return alpn_str;
