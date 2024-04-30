@@ -21209,18 +21209,35 @@ moveSplitTableRows(Relation rel, Relation splitRel, List *partlist, List *newPar
 
 /*
  * createPartitionTable: create table for a new partition with given name
- * (newPartName) like table (modelRelName)
+ * (newPartName) like table (modelRel)
  *
- * Emulates command: CREATE TABLE <newPartName> (LIKE <modelRelName>
+ * Emulates command: CREATE [TEMP] TABLE <newPartName> (LIKE <modelRel's name>
  * INCLUDING ALL EXCLUDING INDEXES EXCLUDING IDENTITY)
+ *
+ * Also, this function sets the new partition access method same as parent
+ * table access methods (similarly to CREATE TABLE ... PARTITION OF).  It
+ * checks that parent and child tables have compatible persistence.
+ *
+ * Function returns the created relation (locked in AccessExclusiveLock mode).
  */
-static void
-createPartitionTable(RangeVar *newPartName, RangeVar *modelRelName,
+static Relation
+createPartitionTable(RangeVar *newPartName, Relation modelRel,
 					 AlterTableUtilityContext *context)
 {
 	CreateStmt *createStmt;
 	TableLikeClause *tlc;
 	PlannedStmt *wrapper;
+	Relation	newRel;
+
+	/* If existing rel is temp, it must belong to this session */
+	if (modelRel->rd_rel->relpersistence == RELPERSISTENCE_TEMP &&
+		!modelRel->rd_islocaltemp)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot create as partition of temporary relation of another session")));
+
+	/* New partition should have the same persistence as modelRel */
+	newPartName->relpersistence = modelRel->rd_rel->relpersistence;
 
 	createStmt = makeNode(CreateStmt);
 	createStmt->relation = newPartName;
@@ -21231,9 +21248,11 @@ createPartitionTable(RangeVar *newPartName, RangeVar *modelRelName,
 	createStmt->oncommit = ONCOMMIT_NOOP;
 	createStmt->tablespacename = NULL;
 	createStmt->if_not_exists = false;
+	createStmt->accessMethod = get_am_name(modelRel->rd_rel->relam);
 
 	tlc = makeNode(TableLikeClause);
-	tlc->relation = modelRelName;
+	tlc->relation = makeRangeVar(get_namespace_name(RelationGetNamespace(modelRel)),
+								 RelationGetRelationName(modelRel), -1);
 
 	/*
 	 * Indexes will be inherited on "attach new partitions" stage, after data
@@ -21259,6 +21278,35 @@ createPartitionTable(RangeVar *newPartName, RangeVar *modelRelName,
 				   NULL,
 				   None_Receiver,
 				   NULL);
+
+	/*
+	 * Open the new partition with no lock, because we already have
+	 * AccessExclusiveLock placed there after creation.
+	 */
+	newRel = table_openrv(newPartName, NoLock);
+
+	/*
+	 * We intended to create the partition with the same persistence as the
+	 * parent table, but we still need to recheck because that might be
+	 * affected by the search_path.  If the parent is permanent, so must be
+	 * all of its partitions.
+	 */
+	if (modelRel->rd_rel->relpersistence != RELPERSISTENCE_TEMP &&
+		newRel->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot create a temporary relation as partition of permanent relation \"%s\"",
+						RelationGetRelationName(modelRel))));
+
+	/* Permanent rels cannot be partitions belonging to temporary parent */
+	if (newRel->rd_rel->relpersistence != RELPERSISTENCE_TEMP &&
+		modelRel->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot create a permanent relation as partition of temporary relation \"%s\"",
+						RelationGetRelationName(modelRel))));
+
+	return newRel;
 }
 
 /*
@@ -21278,7 +21326,6 @@ ATExecSplitPartition(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	char		tmpRelName[NAMEDATALEN];
 	List	   *newPartRels = NIL;
 	ObjectAddress object;
-	RangeVar   *parentName;
 	Oid			defaultPartOid;
 
 	defaultPartOid = get_default_oid_from_partdesc(RelationGetPartitionDesc(rel, true));
@@ -21350,18 +21397,12 @@ ATExecSplitPartition(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	}
 
 	/* Create new partitions (like split partition), without indexes. */
-	parentName = makeRangeVar(get_namespace_name(RelationGetNamespace(rel)),
-							  RelationGetRelationName(rel), -1);
 	foreach(listptr, cmd->partlist)
 	{
 		SinglePartitionSpec *sps = (SinglePartitionSpec *) lfirst(listptr);
 		Relation	newPartRel;
 
-		createPartitionTable(sps->name, parentName, context);
-
-		/* Open the new partition and acquire exclusive lock on it. */
-		newPartRel = table_openrv(sps->name, AccessExclusiveLock);
-
+		newPartRel = createPartitionTable(sps->name, rel, context);
 		newPartRels = lappend(newPartRels, newPartRel);
 	}
 
@@ -21503,9 +21544,6 @@ ATExecMergePartitions(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	ListCell   *listptr;
 	List	   *mergingPartitionsList = NIL;
 	Oid			defaultPartOid;
-	char		tmpRelName[NAMEDATALEN];
-	RangeVar   *mergePartName = cmd->name;
-	bool		isSameName = false;
 
 	/*
 	 * Lock all merged partitions, check them and create list with partitions
@@ -21527,8 +21565,28 @@ ATExecMergePartitions(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		 * function transformPartitionCmdForMerge().
 		 */
 		if (equal(name, cmd->name))
+		{
 			/* One new partition can have the same name as merged partition. */
-			isSameName = true;
+			char		tmpRelName[NAMEDATALEN];
+
+			/* Generate temporary name. */
+			sprintf(tmpRelName, "merge-%u-%X-tmp", RelationGetRelid(rel), MyProcPid);
+
+			/*
+			 * Rename the existing partition with a temporary name, leaving it
+			 * free for the new partition.  We don't need to care about this
+			 * in the future because we're going to eventually drop the
+			 * existing partition anyway.
+			 */
+			RenameRelationInternal(RelationGetRelid(mergingPartition),
+								   tmpRelName, false, false);
+
+			/*
+			 * We must bump the command counter to make the new partition
+			 * tuple visible for rename.
+			 */
+			CommandCounterIncrement();
+		}
 
 		/* Store a next merging partition into the list. */
 		mergingPartitionsList = lappend(mergingPartitionsList,
@@ -21549,36 +21607,12 @@ ATExecMergePartitions(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	}
 
 	/* Create table for new partition, use partitioned table as model. */
-	if (isSameName)
-	{
-		/* Create partition table with generated temporary name. */
-		sprintf(tmpRelName, "merge-%u-%X-tmp", RelationGetRelid(rel), MyProcPid);
-		mergePartName = makeRangeVar(get_namespace_name(RelationGetNamespace(rel)),
-									 tmpRelName, -1);
-	}
-	createPartitionTable(mergePartName,
-						 makeRangeVar(get_namespace_name(RelationGetNamespace(rel)),
-									  RelationGetRelationName(rel), -1),
-						 context);
-
-	/*
-	 * Open the new partition and acquire exclusive lock on it.  This will
-	 * stop all the operations with partitioned table.  This might seem
-	 * excessive, but this is the way we make sure nobody is planning queries
-	 * involving merging partitions.
-	 */
-	newPartRel = table_openrv(mergePartName, AccessExclusiveLock);
+	newPartRel = createPartitionTable(cmd->name, rel, context);
 
 	/* Copy data from merged partitions to new partition. */
 	moveMergedTablesRows(rel, mergingPartitionsList, newPartRel);
 
-	/*
-	 * Attach a new partition to the partitioned table. wqueue = NULL:
-	 * verification for each cloned constraint is not need.
-	 */
-	attachPartitionTable(NULL, rel, newPartRel, cmd->bound);
-
-	/* Unlock and drop merged partitions. */
+	/* Drop the current partitions before attaching the new one. */
 	foreach(listptr, mergingPartitionsList)
 	{
 		ObjectAddress object;
@@ -21596,18 +21630,12 @@ ATExecMergePartitions(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	}
 	list_free(mergingPartitionsList);
 
-	/* Rename new partition if it is needed. */
-	if (isSameName)
-	{
-		/*
-		 * We must bump the command counter to make the new partition tuple
-		 * visible for rename.
-		 */
-		CommandCounterIncrement();
-		/* Rename partition. */
-		RenameRelationInternal(RelationGetRelid(newPartRel),
-							   cmd->name->relname, false, false);
-	}
+	/*
+	 * Attach a new partition to the partitioned table. wqueue = NULL:
+	 * verification for each cloned constraint is not needed.
+	 */
+	attachPartitionTable(NULL, rel, newPartRel, cmd->bound);
+
 	/* Keep the lock until commit. */
 	table_close(newPartRel, NoLock);
 }
