@@ -1902,6 +1902,17 @@ Add libpq function PQsetChunkedRowsMode to allow retrieval of results in chunks 
 </listitem>
 
 <!--
+Author: David Rowley <drowley@postgresql.org>
+2024-04-07 [c4ab7da60] Avoid needless large memcpys in libpq socket writing
+-->
+
+<listitem>
+<para>
+Allow libpq to more efficiently transfer large blocks of data (Melih Mutlu)
+</para>
+</listitem>
+
+<!--
 Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 2024-04-08 [d39a49c1e] Support TLS handshake directly without SSLRequest negoti
 Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
@@ -1977,6 +1988,17 @@ Allow psql's \watch to stop after a minimum number of rows returned (Greg Sabino
 
 <para>
 The parameter is "min_rows".
+</para>
+</listitem>
+
+<!--
+Author: Robert Haas <rhaas@postgresql.org>
+2024-04-02 [cafe10565] Allow SIGINT to cancel psql database reconnections.
+-->
+
+<listitem>
+<para>
+Allow psql connections to be canceled with control-C (Tristan Partin)
 </para>
 </listitem>
 
