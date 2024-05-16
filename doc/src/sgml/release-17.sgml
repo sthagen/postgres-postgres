@@ -208,7 +208,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 
 <listitem>
 <para>
-Rename I/O block read/write timing statistics columns of pg_stat_statement (Nazir Bilal Yavuz)
+Rename I/O block read/write timing statistics columns of pg_stat_statements (Nazir Bilal Yavuz)
 </para>
 
 <para>
@@ -516,6 +516,25 @@ Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 <listitem>
 <para>
 Allow vacuum to more efficiently remove and freeze tuples (Masahiko Sawada, John Naylor, Melanie Plageman)
+</para>
+</listitem>
+
+<!--
+Author: Masahiko Sawada <msawada@postgresql.org>
+2024-03-21 [30e144287] Add TIDStore, to store sets of TIDs (ItemPointerData) ef
+Author: Masahiko Sawada <msawada@postgresql.org>
+2024-04-02 [667e65aac] Use TidStore for dead tuple TIDs storage during lazy vac
+Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
+2024-04-03 [6dbb49026] Combine freezing and pruning steps in VACUUM
+-->
+
+<listitem>
+<para>
+Allow vacuum to more efficiently store tuple references and remove its memory limit (Masahiko Sawada, John Naylor)
+</para>
+
+<para>
+Specifically, maintenance_work_mem and autovacuum_work_mem can now be configured to use more than one gigabyte of memory.  WAL traffic caused by vacuum is also more compact.
 </para>
 </listitem>
 
@@ -2798,7 +2817,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 
 <listitem>
 <para>
-Add local I/O block read/write timing statistics columns of pg_stat_statement (Nazir Bilal Yavuz)
+Add local I/O block read/write timing statistics columns of pg_stat_statements (Nazir Bilal Yavuz)
 </para>
 
 <para>
@@ -2824,11 +2843,11 @@ Author: Alexander Korotkov <akorotkov@postgresql.org>
 
 <listitem>
 <para>
-Add optional fourth parameter to pg_stat_statements_reset() to allow for the resetting of only min/max statistics (Andrei Zubkov)
+Add optional fourth argument (minmax_only) to pg_stat_statements_reset() to allow for the resetting of only min/max statistics (Andrei Zubkov)
 </para>
 
 <para>
-This parameter defaults to "false".
+This argument defaults to "false".
 </para>
 </listitem>
 
