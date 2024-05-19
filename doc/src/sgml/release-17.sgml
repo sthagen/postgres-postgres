@@ -6,7 +6,7 @@
 
   <formalpara>
    <title>Release date:</title>
-   <para>2024-??-??, AS OF 2024-05-14</para>
+   <para>2024-??-??, AS OF 2024-05-18</para>
   </formalpara>
 
   <sect2 id="release-17-highlights">
@@ -482,17 +482,6 @@ Allow BRIN indexes to be created using parallel workers (Tomas Vondra, Matthias 
 </para>
 </listitem>
 
-<!--
-Author: Peter Eisentraut <peter@eisentraut.org>
-2024-01-19 [6db4598fc] Add stratnum GiST support function
--->
-
-<listitem>
-<para>
-Add stratnum GiST support function (Paul A. Jungwirth)
-</para>
-</listitem>
-
      </itemizedlist>
 
     </sect4>
@@ -530,11 +519,12 @@ Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 
 <listitem>
 <para>
-Allow vacuum to more efficiently store tuple references and remove its memory limit (Masahiko Sawada, John Naylor)
+Allow vacuum to more efficiently store tuple references (Masahiko Sawada, John Naylor)
 </para>
 
 <para>
-Specifically, maintenance_work_mem and autovacuum_work_mem can now be configured to use more than one gigabyte of memory.  WAL traffic caused by vacuum is also more compact.
+Additionally, vacuum is no longer silently limited to one gigabyte of memory when maintenance_work_mem and autovacuum_work_mem are higher. WAL traffic caused by
+vacuum is also more compact.
 </para>
 </listitem>
 
@@ -896,11 +886,11 @@ Author: Jeff Davis <jdavis@postgresql.org>
 
 <listitem>
 <para>
-Create a "builtin" collation provider similar to libc's C locale (Jeff Davis)
+Create "builtin" collation provider similar to libc's C locale (Jeff Davis)
 </para>
 
 <para>
-It uses a "C" locale which is identical but independent of libc, but it allows the use of non-"C" collations like "en_US" and "C.UTF-8" with the "C" locale, which libc does not.  MORE?
+While its C locale is similar but independent of libc, its C.UTF-8 locale sorts by Unicode code points and has Unicode-based case folding.
 </para>
 </listitem>
 
@@ -1467,34 +1457,6 @@ Add DEFAULT setting for ALTER TABLE .. SET ACCESS METHOD (Michael Paquier)
 </listitem>
 
 <!--
-Author: Peter Eisentraut <peter@eisentraut.org>
-2024-03-24 [34768ee36] Add temporal FOREIGN KEY contraints
--->
-
-<listitem>
-<para>
-Allow foreign keys to reference WITHOUT OVERLAPS primary keys (Paul A. Jungwirth)
-</para>
-
-<para>
-The keyword PERIOD is used for this purpose.
-</para>
-</listitem>
-
-<!--
-Author: Peter Eisentraut <peter@eisentraut.org>
-2024-01-24 [46a0cd4ce] Add temporal PRIMARY KEY and UNIQUE constraints
-Author: Peter Eisentraut <peter@eisentraut.org>
-2024-03-05 [030e10ff1] Rename pg_constraint.conwithoutoverlaps to conperiod
--->
-
-<listitem>
-<para>
-Allow PRIMARY KEY and UNIQUE constraints to use WITHOUT OVERLAPS for non-overlapping exclusion constraints (Paul A. Jungwirth)
-</para>
-</listitem>
-
-<!--
 Author: Alexander Korotkov <akorotkov@postgresql.org>
 2023-10-16 [e83d1b0c4] Add support event triggers on authenticated login
 -->
@@ -1677,7 +1639,7 @@ Author: Andrew Dunstan <andrew@dunslane.net>
 
 <listitem>
 <para>
-Add jsonpath methods to convert JSON values to different data types (Jeevan Chalke)
+Add jsonpath methods to convert JSON values to other JSON data types (Jeevan Chalke)
 </para>
 
 <para>
@@ -1956,6 +1918,8 @@ Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 2024-04-29 [17a834a04] Reject SSL connection if ALPN is used but there's no com
 Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 2024-05-11 [407e0b023] Change ALPN protocol ID to IANA-approved "postgresql"
+Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
+2024-05-16 [fb5718f35] Remove option to fall back from direct to postgres SSL n
 -->
 
 <listitem>
@@ -2447,6 +2411,17 @@ Author: David Rowley <drowley@postgresql.org>
 <listitem>
 <para>
 User-defined data type receive functions will no longer receive their data null-terminated (David Rowley)
+</para>
+</listitem>
+
+<!--
+Author: Andrew Dunstan <andrew@dunslane.net>
+2024-04-04 [3311ea86e] Introduce a non-recursive JSON parser
+-->
+
+<listitem>
+<para>
+Add incremental JSON parser for use with huge JSON documents (Andrew Dunstan)
 </para>
 </listitem>
 
