@@ -2119,6 +2119,8 @@ PgStatShared_Common
 PgStatShared_Database
 PgStatShared_Function
 PgStatShared_HashEntry
+PgStatShared_InjectionPoint
+PgStatShared_InjectionPointFixed
 PgStatShared_IO
 PgStatShared_Relation
 PgStatShared_ReplSlot
@@ -2150,6 +2152,8 @@ PgStat_Snapshot
 PgStat_SnapshotEntry
 PgStat_StatDBEntry
 PgStat_StatFuncEntry
+PgStat_StatInjEntry
+PgStat_StatInjFixedEntry
 PgStat_StatReplSlotEntry
 PgStat_StatSubEntry
 PgStat_StatTabEntry
