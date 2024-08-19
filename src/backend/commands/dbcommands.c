@@ -644,9 +644,10 @@ CreateDatabaseUsingFileCopy(Oid src_dboid, Oid dst_dboid, Oid src_tsid,
 	 * make the XLOG entry for the benefit of PITR operations). This avoids
 	 * two nasty scenarios:
 	 *
-	 * #1: When PITR is off, we don't XLOG the contents of newly created
-	 * indexes; therefore the drop-and-recreate-whole-directory behavior of
-	 * DBASE_CREATE replay would lose such indexes.
+	 * #1: At wal_level=minimal, we don't XLOG the contents of newly created
+	 * relfilenodes; therefore the drop-and-recreate-whole-directory behavior
+	 * of DBASE_CREATE replay would lose such files created in the new
+	 * database between our commit and the next checkpoint.
 	 *
 	 * #2: Since we have to recopy the source database during DBASE_CREATE
 	 * replay, we run the risk of copying changes in it that were committed
@@ -1649,6 +1650,8 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	bool		db_istemplate;
 	Relation	pgdbrel;
 	HeapTuple	tup;
+	ScanKeyData scankey;
+	SysScanDesc scan;
 	Form_pg_database datform;
 	int			notherbackends;
 	int			npreparedxacts;
@@ -1786,7 +1789,18 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	 */
 	pgstat_drop_database(db_id);
 
-	tup = SearchSysCacheCopy1(DATABASEOID, ObjectIdGetDatum(db_id));
+	/*
+	 * Update the database's pg_database tuple
+	 */
+	ScanKeyInit(&scankey,
+				Anum_pg_database_datname,
+				BTEqualStrategyNumber, F_NAMEEQ,
+				CStringGetDatum(dbname));
+
+	scan = systable_beginscan(pgdbrel, DatabaseNameIndexId, true,
+							  NULL, 1, &scankey);
+
+	tup = systable_getnext(scan);
 	if (!HeapTupleIsValid(tup))
 		elog(ERROR, "cache lookup failed for database %u", db_id);
 	datform = (Form_pg_database) GETSTRUCT(tup);
@@ -1811,6 +1825,8 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	 * the row will be gone, but if we fail, dropdb() can be invoked again.
 	 */
 	CatalogTupleDelete(pgdbrel, &tup->t_self);
+
+	systable_endscan(scan);
 
 	/*
 	 * Drop db-specific replication slots.
