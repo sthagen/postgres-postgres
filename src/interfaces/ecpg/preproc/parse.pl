@@ -33,7 +33,9 @@ GetOptions(
 
 
 # These hash tables define additional transformations to apply to
-# grammar rules.
+# grammar rules.  For bug-detection purposes, we count usages of
+# each hash table entry in a second hash table, and verify that
+# all the entries get used.
 
 # Substitutions to apply to tokens whenever they are seen in a rule.
 my %replace_token = (
@@ -43,6 +45,8 @@ my %replace_token = (
 	'XCONST' => 'ecpg_xconst',
 	'IDENT' => 'ecpg_ident',
 	'PARAM' => 'ecpg_param',);
+
+my %replace_token_used;
 
 # This hash can provide a result type to override "void" for nonterminals
 # that need that, or it can specify 'ignore' to cause us to skip the rule
@@ -68,48 +72,52 @@ my %replace_types = (
 	'plassign_target' => 'ignore',
 	'plassign_equals' => 'ignore',);
 
+my %replace_types_used;
+
 # This hash provides an "ignore" option or substitute expansion for any
-# rule or rule alternative.  The hash key is the same "concattokens" tag
+# rule or rule alternative.  The hash key is the same "tokenlist" tag
 # used for lookup in ecpg.addons.
 my %replace_line = (
 	# These entries excise certain keywords from the core keyword lists.
 	# Be sure to account for these in ColLabel and related productions.
-	'unreserved_keywordCONNECTION' => 'ignore',
-	'unreserved_keywordCURRENT_P' => 'ignore',
-	'unreserved_keywordDAY_P' => 'ignore',
-	'unreserved_keywordHOUR_P' => 'ignore',
-	'unreserved_keywordINPUT_P' => 'ignore',
-	'unreserved_keywordMINUTE_P' => 'ignore',
-	'unreserved_keywordMONTH_P' => 'ignore',
-	'unreserved_keywordSECOND_P' => 'ignore',
-	'unreserved_keywordYEAR_P' => 'ignore',
-	'col_name_keywordCHAR_P' => 'ignore',
-	'col_name_keywordINT_P' => 'ignore',
-	'col_name_keywordVALUES' => 'ignore',
-	'reserved_keywordTO' => 'ignore',
-	'reserved_keywordUNION' => 'ignore',
+	'unreserved_keyword CONNECTION' => 'ignore',
+	'unreserved_keyword CURRENT_P' => 'ignore',
+	'unreserved_keyword DAY_P' => 'ignore',
+	'unreserved_keyword HOUR_P' => 'ignore',
+	'unreserved_keyword INPUT_P' => 'ignore',
+	'unreserved_keyword MINUTE_P' => 'ignore',
+	'unreserved_keyword MONTH_P' => 'ignore',
+	'unreserved_keyword SECOND_P' => 'ignore',
+	'unreserved_keyword YEAR_P' => 'ignore',
+	'col_name_keyword CHAR_P' => 'ignore',
+	'col_name_keyword INT_P' => 'ignore',
+	'col_name_keyword VALUES' => 'ignore',
+	'reserved_keyword TO' => 'ignore',
+	'reserved_keyword UNION' => 'ignore',
 
 	# some other production rules have to be ignored or replaced
-	'fetch_argsFORWARDopt_from_incursor_name' => 'ignore',
-	'fetch_argsBACKWARDopt_from_incursor_name' => 'ignore',
-	"opt_array_boundsopt_array_bounds'['Iconst']'" => 'ignore',
-	'VariableShowStmtSHOWvar_name' => 'SHOW var_name ecpg_into',
-	'VariableShowStmtSHOWTIMEZONE' => 'SHOW TIME ZONE ecpg_into',
-	'VariableShowStmtSHOWTRANSACTIONISOLATIONLEVEL' =>
+	'fetch_args FORWARD opt_from_in cursor_name' => 'ignore',
+	'fetch_args BACKWARD opt_from_in cursor_name' => 'ignore',
+	"opt_array_bounds opt_array_bounds '[' Iconst ']'" => 'ignore',
+	'VariableShowStmt SHOW var_name' => 'SHOW var_name ecpg_into',
+	'VariableShowStmt SHOW TIME ZONE' => 'SHOW TIME ZONE ecpg_into',
+	'VariableShowStmt SHOW TRANSACTION ISOLATION LEVEL' =>
 	  'SHOW TRANSACTION ISOLATION LEVEL ecpg_into',
-	'VariableShowStmtSHOWSESSIONAUTHORIZATION' =>
+	'VariableShowStmt SHOW SESSION AUTHORIZATION' =>
 	  'SHOW SESSION AUTHORIZATION ecpg_into',
-	'returning_clauseRETURNINGtarget_list' =>
+	'returning_clause RETURNING target_list' =>
 	  'RETURNING target_list opt_ecpg_into',
-	'ExecuteStmtEXECUTEnameexecute_param_clause' =>
+	'ExecuteStmt EXECUTE name execute_param_clause' =>
 	  'EXECUTE prepared_name execute_param_clause execute_rest',
-	'ExecuteStmtCREATEOptTempTABLEcreate_as_targetASEXECUTEnameexecute_param_clauseopt_with_data'
+	'ExecuteStmt CREATE OptTemp TABLE create_as_target AS EXECUTE name execute_param_clause opt_with_data'
 	  => 'CREATE OptTemp TABLE create_as_target AS EXECUTE prepared_name execute_param_clause opt_with_data execute_rest',
-	'ExecuteStmtCREATEOptTempTABLEIF_PNOTEXISTScreate_as_targetASEXECUTEnameexecute_param_clauseopt_with_data'
+	'ExecuteStmt CREATE OptTemp TABLE IF_P NOT EXISTS create_as_target AS EXECUTE name execute_param_clause opt_with_data'
 	  => 'CREATE OptTemp TABLE IF_P NOT EXISTS create_as_target AS EXECUTE prepared_name execute_param_clause opt_with_data execute_rest',
-	'PrepareStmtPREPAREnameprep_type_clauseASPreparableStmt' =>
+	'PrepareStmt PREPARE name prep_type_clause AS PreparableStmt' =>
 	  'PREPARE prepared_name prep_type_clause AS PreparableStmt',
-	'var_nameColId' => 'ECPGColId');
+	'var_name ColId' => 'ECPGColId');
+
+my %replace_line_used;
 
 
 # Declare assorted state variables.
@@ -196,6 +204,30 @@ foreach (keys %addons)
 {
 	die "addon rule $_ was never used\n" if $addons{$_}{used} == 0;
 	die "addon rule $_ was matched multiple times\n" if $addons{$_}{used} > 1;
+}
+
+# Likewise cross-check that entries in our internal hash tables match something.
+foreach (keys %replace_token)
+{
+	die "replace_token entry $_ was never used\n"
+	  if !defined($replace_token_used{$_});
+	# multiple use of a replace_token entry is fine
+}
+
+foreach (keys %replace_types)
+{
+	die "replace_types entry $_ was never used\n"
+	  if !defined($replace_types_used{$_});
+	die "replace_types entry $_ was matched multiple times\n"
+	  if $replace_types_used{$_} > 1;
+}
+
+foreach (keys %replace_line)
+{
+	die "replace_line entry $_ was never used\n"
+	  if !defined($replace_line_used{$_});
+	die "replace_line entry $_ was matched multiple times\n"
+	  if $replace_line_used{$_} > 1;
 }
 
 
@@ -289,11 +321,10 @@ sub main
 				# Accumulate the line in $str.
 				$str = $str . ' ' . $a;
 
-				# HACK: insert our own %nonassoc line after IDENT.
-				# XXX: this seems pretty wrong, IDENT is not last on its line!
+				# Give our token CSTRING the same precedence as IDENT.
 				if ($a eq 'IDENT' && $arr[0] eq '%nonassoc')
 				{
-					$str = $str . "\n%nonassoc CSTRING";
+					$str = $str . " CSTRING";
 				}
 			}
 			# Save the lightly-processed line in orig_tokens.
@@ -400,6 +431,7 @@ sub main
 			# Apply replace_token substitution if we have one.
 			if (exists $replace_token{ $arr[$fieldIndexer] })
 			{
+				$replace_token_used{ $arr[$fieldIndexer] }++;
 				$arr[$fieldIndexer] = $replace_token{ $arr[$fieldIndexer] };
 			}
 
@@ -425,6 +457,7 @@ sub main
 					&& $replace_types{$non_term_id} eq 'ignore')
 				{
 					# We'll ignore this nonterminal and rule altogether.
+					$replace_types_used{$non_term_id}++;
 					$copymode = 0;
 					next line;
 				}
@@ -451,6 +484,7 @@ sub main
 					  . $replace_types{$non_term_id} . ' '
 					  . $non_term_id;
 					add_to_buffer('types', $tstr);
+					$replace_types_used{$non_term_id}++;
 				}
 
 				# Emit the target part of the rule.
@@ -611,13 +645,16 @@ sub emit_default_action
 sub emit_rule
 {
 	# compute tag to be used as lookup key in %replace_line and %addons
-	my $tag = $non_term_id . $line;
-	$tag =~ tr/ |//d;
+	my $tag = $non_term_id . ' ' . $line;
+	$tag =~ tr/|//d;
+	$tag = join(' ', split(/\s+/, $tag));
 
 	# apply replace_line substitution if any
 	my $rep = $replace_line{$tag};
-	if ($rep)
+	if (defined $rep)
 	{
+		$replace_line_used{$tag}++;
+
 		if ($rep eq 'ignore')
 		{
 			return 0;
@@ -635,8 +672,9 @@ sub emit_rule
 		}
 
 		# recompute tag for use in emit_rule_action
-		$tag = $non_term_id . $line;
-		$tag =~ tr/ |//d;
+		$tag = $non_term_id . ' ' . $line;
+		$tag =~ tr/|//d;
+		$tag = join(' ', split(/\s+/, $tag));
 	}
 
 	# Emit $line, then print the appropriate action.
@@ -648,8 +686,8 @@ sub emit_rule
 =top
 	load ecpg.addons into %addons hash.  The result is something like
 	%addons = {
-		stmtClosePortalStmt => { 'type' => 'block', 'lines' => [ "{", "if (INFORMIX_MODE)" ..., "}" ], 'used' => 0 },
-		stmtViewStmt => { 'type' => 'rule', 'lines' => [ "| ECPGAllocateDescr", ... ], 'used' => 0 }
+		'stmt ClosePortalStmt' => { 'type' => 'block', 'lines' => [ "{", "if (INFORMIX_MODE)" ..., "}" ], 'used' => 0 },
+		'stmt ViewStmt' => { 'type' => 'rule', 'lines' => [ "| ECPGAllocateDescr", ... ], 'used' => 0 }
 	}
 
 =cut
@@ -668,14 +706,21 @@ sub preload_addons
 	my $skip = 1;
 	while (<$fh>)
 	{
-		if (/^ECPG:\s+(\S+)\s+(\w+)\s*$/)
+		if (/^ECPG:\s+(\w+)\s+(.*)$/)
 		{
 			# Found an "ECPG:" line, so we're done skipping the header
 			$skip = 0;
+			my $type = $1;
+			my $target = $2;
+			# Normalize target so there's exactly one space between tokens
+			$target = join(' ', split(/\s+/, $target));
 			# Validate record type and target
-			die "invalid record type $2 in addon rule for $1\n"
-			  unless ($2 eq 'block' or $2 eq 'addon' or $2 eq 'rule');
-			die "duplicate addon rule for $1\n" if (exists $addons{$1});
+			die "invalid record type $type in addon rule for $target\n"
+			  unless ($type eq 'block'
+				or $type eq 'addon'
+				or $type eq 'rule');
+			die "duplicate addon rule for $target\n"
+			  if (exists $addons{$target});
 			# If we had some preceding code lines, attach them to all
 			# as-yet-unfinished records.
 			if (@code)
@@ -688,10 +733,10 @@ sub preload_addons
 				@needsRules = ();
 			}
 			my $record = {};
-			$record->{type} = $2;
+			$record->{type} = $type;
 			$record->{lines} = [];
 			$record->{used} = 0;
-			$addons{$1} = $record;
+			$addons{$target} = $record;
 			push(@needsRules, $record);
 		}
 		elsif (/^ECPG:/)
