@@ -22,8 +22,8 @@
 #include "access/xlog_internal.h"
 #include "access/xlogbackup.h"
 #include "access/xlogrecovery.h"
+#include "access/xlogwait.h"
 #include "catalog/pg_type.h"
-#include "commands/waitlsn.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -751,14 +751,18 @@ pg_promote(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(false);
 }
 
+static WaitLSNResult lastWaitLSNResult = WAIT_LSN_RESULT_SUCCESS;
+
 /*
- * Waits until recovery replays the target LSN with optional timeout.
+ * Waits until recovery replays the target LSN with optional timeout.  Unless
+ * 'no_error' provided throws an error on failure
  */
 Datum
 pg_wal_replay_wait(PG_FUNCTION_ARGS)
 {
 	XLogRecPtr	target_lsn = PG_GETARG_LSN(0);
 	int64		timeout = PG_GETARG_INT64(1);
+	bool		no_error = PG_GETARG_BOOL(2);
 
 	if (timeout < 0)
 		ereport(ERROR,
@@ -799,7 +803,62 @@ pg_wal_replay_wait(PG_FUNCTION_ARGS)
 	 */
 	Assert(MyProc->xmin == InvalidTransactionId);
 
-	(void) WaitForLSNReplay(target_lsn, timeout);
+	lastWaitLSNResult = WaitForLSNReplay(target_lsn, timeout);
+
+	if (no_error)
+		PG_RETURN_VOID();
+
+	/*
+	 * Process the result of WaitForLSNReplay().  Throw appropriate error if
+	 * needed.
+	 */
+	switch (lastWaitLSNResult)
+	{
+		case WAIT_LSN_RESULT_SUCCESS:
+			/* Nothing to do on success */
+			break;
+
+		case WAIT_LSN_RESULT_TIMEOUT:
+			ereport(ERROR,
+					(errcode(ERRCODE_QUERY_CANCELED),
+					 errmsg("timed out while waiting for target LSN %X/%X to be replayed; current replay LSN %X/%X",
+							LSN_FORMAT_ARGS(target_lsn),
+							LSN_FORMAT_ARGS(GetXLogReplayRecPtr(NULL)))));
+			break;
+
+		case WAIT_LSN_RESULT_NOT_IN_RECOVERY:
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("recovery is not in progress"),
+					 errdetail("Recovery ended before replaying target LSN %X/%X; last replay LSN %X/%X.",
+							   LSN_FORMAT_ARGS(target_lsn),
+							   LSN_FORMAT_ARGS(GetXLogReplayRecPtr(NULL)))));
+			break;
+	}
 
 	PG_RETURN_VOID();
+}
+
+Datum
+pg_wal_replay_wait_status(PG_FUNCTION_ARGS)
+{
+	const char *result_string = "";
+
+	/* Process the result of WaitForLSNReplay(). */
+	switch (lastWaitLSNResult)
+	{
+		case WAIT_LSN_RESULT_SUCCESS:
+			result_string = "success";
+			break;
+
+		case WAIT_LSN_RESULT_TIMEOUT:
+			result_string = "timeout";
+			break;
+
+		case WAIT_LSN_RESULT_NOT_IN_RECOVERY:
+			result_string = "not in recovery";
+			break;
+	}
+
+	PG_RETURN_TEXT_P(cstring_to_text(result_string));
 }
