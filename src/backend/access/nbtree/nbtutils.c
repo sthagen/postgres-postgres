@@ -1424,14 +1424,19 @@ _bt_advance_array_keys_increment(IndexScanDesc scan, ScanDirection dir)
 	}
 
 	/*
-	 * The array keys are now exhausted.  (There isn't actually a distinct
-	 * state that represents array exhaustion, since index scans don't always
-	 * end after btgettuple returns "false".)
+	 * The array keys are now exhausted.
 	 *
 	 * Restore the array keys to the state they were in immediately before we
 	 * were called.  This ensures that the arrays only ever ratchet in the
-	 * current scan direction.  Without this, scans would overlook matching
-	 * tuples if and when the scan's direction was subsequently reversed.
+	 * current scan direction.
+	 *
+	 * Without this, scans could overlook matching tuples when the scan
+	 * direction gets reversed just before btgettuple runs out of items to
+	 * return, but just after _bt_readpage prepares all the items from the
+	 * scan's final page in so->currPos.  When we're on the final page it is
+	 * typical for so->currPos to get invalidated once btgettuple finally
+	 * returns false, which'll effectively invalidate the scan's array keys.
+	 * That hasn't happened yet, though -- and in general it may never happen.
 	 */
 	_bt_start_array_keys(scan, -dir);
 
@@ -1800,7 +1805,7 @@ _bt_advance_array_keys(IndexScanDesc scan, BTReadPageState *pstate,
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	Relation	rel = scan->indexRelation;
-	ScanDirection dir = pstate ? pstate->dir : ForwardScanDirection;
+	ScanDirection dir = so->currPos.dir;
 	int			arrayidx = 0;
 	bool		beyond_end_advance = false,
 				has_required_opposite_direction_only = false,
@@ -2400,8 +2405,10 @@ new_prim_scan:
 	/*
 	 * End this primitive index scan, but schedule another.
 	 *
-	 * Note: If the scan direction happens to change, this scheduled primitive
-	 * index scan won't go ahead after all.
+	 * Note: We make a soft assumption that the current scan direction will
+	 * also be used within _bt_next, when it is asked to step off this page.
+	 * It is up to _bt_next to cancel this scheduled primitive index scan
+	 * whenever it steps to a page in the direction opposite currPos.dir.
 	 */
 	pstate->continuescan = false;	/* Tell _bt_readpage we're done... */
 	so->needPrimScan = true;	/* ...but call _bt_first again */
@@ -3458,7 +3465,7 @@ _bt_checkkeys(IndexScanDesc scan, BTReadPageState *pstate, bool arrayKeys,
 {
 	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
-	ScanDirection dir = pstate->dir;
+	ScanDirection dir = so->currPos.dir;
 	int			ikey = 0;
 	bool		res;
 
@@ -4062,7 +4069,8 @@ static void
 _bt_checkkeys_look_ahead(IndexScanDesc scan, BTReadPageState *pstate,
 						 int tupnatts, TupleDesc tupdesc)
 {
-	ScanDirection dir = pstate->dir;
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	ScanDirection dir = so->currPos.dir;
 	OffsetNumber aheadoffnum;
 	IndexTuple	ahead;
 
