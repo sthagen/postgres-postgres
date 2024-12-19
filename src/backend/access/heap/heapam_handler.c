@@ -2135,10 +2135,7 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 	{
 		CHECK_FOR_INTERRUPTS();
 
-		if (scan->st.bitmap.rs_shared_iterator)
-			tbmres = tbm_shared_iterate(scan->st.bitmap.rs_shared_iterator);
-		else
-			tbmres = tbm_iterate(scan->st.bitmap.rs_iterator);
+		tbmres = tbm_iterate(&scan->st.rs_tbmiterator);
 
 		if (tbmres == NULL)
 			return false;
@@ -2303,7 +2300,7 @@ heapam_scan_bitmap_next_tuple(TableScanDesc scan,
 	/*
 	 * Out of range?  If so, nothing more to look at on this page
 	 */
-	if (hscan->rs_cindex < 0 || hscan->rs_cindex >= hscan->rs_ntuples)
+	if (hscan->rs_cindex >= hscan->rs_ntuples)
 		return false;
 
 	targoffset = hscan->rs_vistuples[hscan->rs_cindex];
@@ -2577,6 +2574,12 @@ SampleHeapTupleVisible(TableScanDesc scan, Buffer buffer,
 
 	if (scan->rs_flags & SO_ALLOW_PAGEMODE)
 	{
+		uint32		start,
+					end;
+
+		if (hscan->rs_ntuples == 0)
+			return false;
+
 		/*
 		 * In pageatatime mode, heap_prepare_pagescan() already did visibility
 		 * checks, so just look at the info it left in rs_vistuples[].
@@ -2586,12 +2589,12 @@ SampleHeapTupleVisible(TableScanDesc scan, Buffer buffer,
 		 * in increasing order, but it's not clear that there would be enough
 		 * gain to justify the restriction.
 		 */
-		int			start = 0,
-					end = hscan->rs_ntuples - 1;
+		start = 0;
+		end = hscan->rs_ntuples - 1;
 
 		while (start <= end)
 		{
-			int			mid = (start + end) / 2;
+			uint32		mid = (start + end) / 2;
 			OffsetNumber curoffset = hscan->rs_vistuples[mid];
 
 			if (tupoffset == curoffset)
