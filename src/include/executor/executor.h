@@ -131,24 +131,18 @@ extern void execTuplesHashPrepare(int numCols,
 								  FmgrInfo **hashFunctions);
 extern TupleHashTable BuildTupleHashTable(PlanState *parent,
 										  TupleDesc inputDesc,
-										  int numCols, AttrNumber *keyColIdx,
+										  const TupleTableSlotOps *inputOps,
+										  int numCols,
+										  AttrNumber *keyColIdx,
 										  const Oid *eqfuncoids,
 										  FmgrInfo *hashfunctions,
 										  Oid *collations,
-										  long nbuckets, Size additionalsize,
+										  long nbuckets,
+										  Size additionalsize,
+										  MemoryContext metacxt,
 										  MemoryContext tablecxt,
-										  MemoryContext tempcxt, bool use_variable_hash_iv);
-extern TupleHashTable BuildTupleHashTableExt(PlanState *parent,
-											 TupleDesc inputDesc,
-											 const TupleTableSlotOps *inputOps,
-											 int numCols, AttrNumber *keyColIdx,
-											 const Oid *eqfuncoids,
-											 FmgrInfo *hashfunctions,
-											 Oid *collations,
-											 long nbuckets, Size additionalsize,
-											 MemoryContext metacxt,
-											 MemoryContext tablecxt,
-											 MemoryContext tempcxt, bool use_variable_hash_iv);
+										  MemoryContext tempcxt,
+										  bool use_variable_hash_iv);
 extern TupleHashEntry LookupTupleHashEntry(TupleHashTable hashtable,
 										   TupleTableSlot *slot,
 										   bool *isnew, uint32 *hash);
@@ -585,6 +579,9 @@ extern void ExecAssignExprContext(EState *estate, PlanState *planstate);
 extern TupleDesc ExecGetResultType(PlanState *planstate);
 extern const TupleTableSlotOps *ExecGetResultSlotOps(PlanState *planstate,
 													 bool *isfixed);
+extern const TupleTableSlotOps *ExecGetCommonSlotOps(PlanState **planstates,
+													 int nplans);
+extern const TupleTableSlotOps *ExecGetCommonChildSlotOps(PlanState *ps);
 extern void ExecAssignProjectionInfo(PlanState *planstate,
 									 TupleDesc inputDesc);
 extern void ExecConditionalAssignProjectionInfo(PlanState *planstate,
