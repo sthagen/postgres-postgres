@@ -66,9 +66,9 @@
 
 #include "access/xlog_internal.h"
 #include "catalog/pg_authid_d.h"
-#include "catalog/pg_class_d.h" /* pgrminclude ignore */
+#include "catalog/pg_class_d.h"
 #include "catalog/pg_collation_d.h"
-#include "catalog/pg_database_d.h"	/* pgrminclude ignore */
+#include "catalog/pg_database_d.h"
 #include "common/file_perm.h"
 #include "common/file_utils.h"
 #include "common/logging.h"
@@ -1119,7 +1119,7 @@ test_config_settings(void)
 #define MIN_BUFS_FOR_CONNS(nconns)	((nconns) * 10)
 
 	static const int trial_conns[] = {
-		100, 50, 40, 30, 20
+		100, 50, 40, 30, 25
 	};
 	static const int trial_bufs[] = {
 		16384, 8192, 4096, 3584, 3072, 2560, 2048, 1536,
