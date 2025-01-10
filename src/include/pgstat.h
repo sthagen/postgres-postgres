@@ -375,14 +375,23 @@ typedef struct PgStat_IO
 	PgStat_BktypeIO stats[BACKEND_NUM_TYPES];
 } PgStat_IO;
 
-/* Backend statistics store the same amount of IO data as PGSTAT_KIND_IO */
-typedef PgStat_PendingIO PgStat_BackendPendingIO;
-
 typedef struct PgStat_Backend
 {
 	TimestampTz stat_reset_timestamp;
-	PgStat_BktypeIO stats;
+	PgStat_BktypeIO io_stats;
 } PgStat_Backend;
+
+/* ---------
+ * PgStat_BackendPending	Non-flushed backend stats.
+ * ---------
+ */
+typedef struct PgStat_BackendPending
+{
+	/*
+	 * Backend statistics store the same amount of IO data as PGSTAT_KIND_IO.
+	 */
+	PgStat_PendingIO pending_io;
+} PgStat_BackendPending;
 
 typedef struct PgStat_StatDBEntry
 {
@@ -594,8 +603,8 @@ extern PgStat_CheckpointerStats *pgstat_fetch_stat_checkpointer(void);
 
 extern bool pgstat_bktype_io_stats_valid(PgStat_BktypeIO *backend_io,
 										 BackendType bktype);
-extern void pgstat_count_io_op(IOObject io_object, IOContext io_context, IOOp io_op);
-extern void pgstat_count_io_op_n(IOObject io_object, IOContext io_context, IOOp io_op, uint32 cnt);
+extern void pgstat_count_io_op(IOObject io_object, IOContext io_context,
+							   IOOp io_op, uint32 cnt);
 extern instr_time pgstat_prepare_io_time(bool track_io_guc);
 extern void pgstat_count_io_op_time(IOObject io_object, IOContext io_context,
 									IOOp io_op, instr_time start_time, uint32 cnt);
