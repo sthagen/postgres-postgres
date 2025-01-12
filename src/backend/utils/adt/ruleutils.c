@@ -10443,7 +10443,7 @@ get_rule_expr(Node *node, deparse_context *context,
 
 						get_rule_expr((Node *) lfirst(lc2), context, showimplicit);
 						appendStringInfo(buf, " AS %s",
-										 ((String *) lfirst_node(String, lc1))->sval);
+										 quote_identifier(lfirst_node(String, lc1)->sval));
 					}
 				}
 
@@ -11814,7 +11814,8 @@ get_xmltable(TableFunc *tf, deparse_context *context, bool showimplicit)
 			if (ns_node != NULL)
 			{
 				get_rule_expr(expr, context, showimplicit);
-				appendStringInfo(buf, " AS %s", strVal(ns_node));
+				appendStringInfo(buf, " AS %s",
+								 quote_identifier(strVal(ns_node)));
 			}
 			else
 			{
