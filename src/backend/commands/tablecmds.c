@@ -394,9 +394,20 @@ static ObjectAddress ATExecAlterConstraint(Relation rel, AlterTableCmd *cmd,
 static bool ATExecAlterConstrRecurse(Constraint *cmdcon, Relation conrel, Relation tgrel,
 									 Relation rel, HeapTuple contuple, List **otherrelids,
 									 LOCKMODE lockmode);
+static void AlterConstrTriggerDeferrability(Oid conoid, Relation tgrel, Relation rel,
+											bool deferrable, bool initdeferred,
+											List **otherrelids);
+static void ATExecAlterChildConstr(Constraint *cmdcon, Relation conrel, Relation tgrel,
+								   Relation rel, HeapTuple contuple, List **otherrelids,
+								   LOCKMODE lockmode);
 static ObjectAddress ATExecValidateConstraint(List **wqueue,
 											  Relation rel, char *constrName,
 											  bool recurse, bool recursing, LOCKMODE lockmode);
+static void QueueFKConstraintValidation(List **wqueue, Relation conrel, Relation rel,
+										HeapTuple contuple, LOCKMODE lockmode);
+static void QueueCheckConstraintValidation(List **wqueue, Relation conrel, Relation rel,
+										   char *constrName, HeapTuple contuple,
+										   bool recurse, bool recursing, LOCKMODE lockmode);
 static int	transformColumnNameList(Oid relId, List *colList,
 									int16 *attnums, Oid *atttypids, Oid *attcollids);
 static int	transformFkeyGetPrimaryKey(Relation pkrel, Oid *indexOid,
@@ -11861,9 +11872,6 @@ ATExecAlterConstrRecurse(Constraint *cmdcon, Relation conrel, Relation tgrel,
 	{
 		HeapTuple	copyTuple;
 		Form_pg_constraint copy_con;
-		HeapTuple	tgtuple;
-		ScanKeyData tgkey;
-		SysScanDesc tgscan;
 
 		copyTuple = heap_copytuple(contuple);
 		copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
@@ -11884,53 +11892,8 @@ ATExecAlterConstrRecurse(Constraint *cmdcon, Relation conrel, Relation tgrel,
 		 * Now we need to update the multiple entries in pg_trigger that
 		 * implement the constraint.
 		 */
-		ScanKeyInit(&tgkey,
-					Anum_pg_trigger_tgconstraint,
-					BTEqualStrategyNumber, F_OIDEQ,
-					ObjectIdGetDatum(conoid));
-		tgscan = systable_beginscan(tgrel, TriggerConstraintIndexId, true,
-									NULL, 1, &tgkey);
-		while (HeapTupleIsValid(tgtuple = systable_getnext(tgscan)))
-		{
-			Form_pg_trigger tgform = (Form_pg_trigger) GETSTRUCT(tgtuple);
-			Form_pg_trigger copy_tg;
-			HeapTuple	tgCopyTuple;
-
-			/*
-			 * Remember OIDs of other relation(s) involved in FK constraint.
-			 * (Note: it's likely that we could skip forcing a relcache inval
-			 * for other rels that don't have a trigger whose properties
-			 * change, but let's be conservative.)
-			 */
-			if (tgform->tgrelid != RelationGetRelid(rel))
-				*otherrelids = list_append_unique_oid(*otherrelids,
-													  tgform->tgrelid);
-
-			/*
-			 * Update deferrability of RI_FKey_noaction_del,
-			 * RI_FKey_noaction_upd, RI_FKey_check_ins and RI_FKey_check_upd
-			 * triggers, but not others; see createForeignKeyActionTriggers
-			 * and CreateFKCheckTrigger.
-			 */
-			if (tgform->tgfoid != F_RI_FKEY_NOACTION_DEL &&
-				tgform->tgfoid != F_RI_FKEY_NOACTION_UPD &&
-				tgform->tgfoid != F_RI_FKEY_CHECK_INS &&
-				tgform->tgfoid != F_RI_FKEY_CHECK_UPD)
-				continue;
-
-			tgCopyTuple = heap_copytuple(tgtuple);
-			copy_tg = (Form_pg_trigger) GETSTRUCT(tgCopyTuple);
-
-			copy_tg->tgdeferrable = cmdcon->deferrable;
-			copy_tg->tginitdeferred = cmdcon->initdeferred;
-			CatalogTupleUpdate(tgrel, &tgCopyTuple->t_self, tgCopyTuple);
-
-			InvokeObjectPostAlterHook(TriggerRelationId, tgform->oid, 0);
-
-			heap_freetuple(tgCopyTuple);
-		}
-
-		systable_endscan(tgscan);
+		AlterConstrTriggerDeferrability(conoid, tgrel, rel, cmdcon->deferrable,
+										cmdcon->initdeferred, otherrelids);
 	}
 
 	/*
@@ -11943,34 +11906,118 @@ ATExecAlterConstrRecurse(Constraint *cmdcon, Relation conrel, Relation tgrel,
 	 */
 	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
 		get_rel_relkind(refrelid) == RELKIND_PARTITIONED_TABLE)
-	{
-		ScanKeyData pkey;
-		SysScanDesc pscan;
-		HeapTuple	childtup;
-
-		ScanKeyInit(&pkey,
-					Anum_pg_constraint_conparentid,
-					BTEqualStrategyNumber, F_OIDEQ,
-					ObjectIdGetDatum(conoid));
-
-		pscan = systable_beginscan(conrel, ConstraintParentIndexId,
-								   true, NULL, 1, &pkey);
-
-		while (HeapTupleIsValid(childtup = systable_getnext(pscan)))
-		{
-			Form_pg_constraint childcon = (Form_pg_constraint) GETSTRUCT(childtup);
-			Relation	childrel;
-
-			childrel = table_open(childcon->conrelid, lockmode);
-			ATExecAlterConstrRecurse(cmdcon, conrel, tgrel, childrel, childtup,
-									 otherrelids, lockmode);
-			table_close(childrel, NoLock);
-		}
-
-		systable_endscan(pscan);
-	}
+		ATExecAlterChildConstr(cmdcon, conrel, tgrel, rel, contuple,
+							   otherrelids, lockmode);
 
 	return changed;
+}
+
+/*
+ * A subroutine of ATExecAlterConstrRecurse that updated constraint trigger's
+ * deferrability.
+ *
+ * The arguments to this function have the same meaning as the arguments to
+ * ATExecAlterConstrRecurse.
+ */
+static void
+AlterConstrTriggerDeferrability(Oid conoid, Relation tgrel, Relation rel,
+								bool deferrable, bool initdeferred,
+								List **otherrelids)
+{
+	HeapTuple	tgtuple;
+	ScanKeyData tgkey;
+	SysScanDesc tgscan;
+
+	ScanKeyInit(&tgkey,
+				Anum_pg_trigger_tgconstraint,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(conoid));
+	tgscan = systable_beginscan(tgrel, TriggerConstraintIndexId, true,
+								NULL, 1, &tgkey);
+	while (HeapTupleIsValid(tgtuple = systable_getnext(tgscan)))
+	{
+		Form_pg_trigger tgform = (Form_pg_trigger) GETSTRUCT(tgtuple);
+		Form_pg_trigger copy_tg;
+		HeapTuple	tgCopyTuple;
+
+		/*
+		 * Remember OIDs of other relation(s) involved in FK constraint.
+		 * (Note: it's likely that we could skip forcing a relcache inval for
+		 * other rels that don't have a trigger whose properties change, but
+		 * let's be conservative.)
+		 */
+		if (tgform->tgrelid != RelationGetRelid(rel))
+			*otherrelids = list_append_unique_oid(*otherrelids,
+												  tgform->tgrelid);
+
+		/*
+		 * Update enable status and deferrability of RI_FKey_noaction_del,
+		 * RI_FKey_noaction_upd, RI_FKey_check_ins and RI_FKey_check_upd
+		 * triggers, but not others; see createForeignKeyActionTriggers and
+		 * CreateFKCheckTrigger.
+		 */
+		if (tgform->tgfoid != F_RI_FKEY_NOACTION_DEL &&
+			tgform->tgfoid != F_RI_FKEY_NOACTION_UPD &&
+			tgform->tgfoid != F_RI_FKEY_CHECK_INS &&
+			tgform->tgfoid != F_RI_FKEY_CHECK_UPD)
+			continue;
+
+		tgCopyTuple = heap_copytuple(tgtuple);
+		copy_tg = (Form_pg_trigger) GETSTRUCT(tgCopyTuple);
+
+		copy_tg->tgdeferrable = deferrable;
+		copy_tg->tginitdeferred = initdeferred;
+		CatalogTupleUpdate(tgrel, &tgCopyTuple->t_self, tgCopyTuple);
+
+		InvokeObjectPostAlterHook(TriggerRelationId, tgform->oid, 0);
+
+		heap_freetuple(tgCopyTuple);
+	}
+
+	systable_endscan(tgscan);
+}
+
+/*
+ * Invokes ATExecAlterConstrRecurse for each constraint that is a child of the
+ * specified constraint.
+ *
+ * The arguments to this function have the same meaning as the arguments to
+ * ATExecAlterConstrRecurse.
+ */
+static void
+ATExecAlterChildConstr(Constraint *cmdcon, Relation conrel, Relation tgrel,
+					   Relation rel, HeapTuple contuple, List **otherrelids,
+					   LOCKMODE lockmode)
+{
+	Form_pg_constraint currcon;
+	Oid			conoid;
+	ScanKeyData pkey;
+	SysScanDesc pscan;
+	HeapTuple	childtup;
+
+	currcon = (Form_pg_constraint) GETSTRUCT(contuple);
+	conoid = currcon->oid;
+
+	ScanKeyInit(&pkey,
+				Anum_pg_constraint_conparentid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(conoid));
+
+	pscan = systable_beginscan(conrel, ConstraintParentIndexId,
+							   true, NULL, 1, &pkey);
+
+	while (HeapTupleIsValid(childtup = systable_getnext(pscan)))
+	{
+		Form_pg_constraint childcon = (Form_pg_constraint) GETSTRUCT(childtup);
+		Relation	childrel;
+
+		childrel = table_open(childcon->conrelid, lockmode);
+		ATExecAlterConstrRecurse(cmdcon, conrel, tgrel, childrel, childtup,
+								 otherrelids, lockmode);
+		table_close(childrel, NoLock);
+	}
+
+	systable_endscan(pscan);
 }
 
 /*
@@ -12037,123 +12084,15 @@ ATExecValidateConstraint(List **wqueue, Relation rel, char *constrName,
 
 	if (!con->convalidated)
 	{
-		AlteredTableInfo *tab;
-		HeapTuple	copyTuple;
-		Form_pg_constraint copy_con;
-
 		if (con->contype == CONSTRAINT_FOREIGN)
 		{
-			NewConstraint *newcon;
-			Constraint *fkconstraint;
-
-			/* Queue validation for phase 3 */
-			fkconstraint = makeNode(Constraint);
-			/* for now this is all we need */
-			fkconstraint->conname = constrName;
-
-			newcon = (NewConstraint *) palloc0(sizeof(NewConstraint));
-			newcon->name = constrName;
-			newcon->contype = CONSTR_FOREIGN;
-			newcon->refrelid = con->confrelid;
-			newcon->refindid = con->conindid;
-			newcon->conid = con->oid;
-			newcon->qual = (Node *) fkconstraint;
-
-			/* Find or create work queue entry for this table */
-			tab = ATGetQueueEntry(wqueue, rel);
-			tab->constraints = lappend(tab->constraints, newcon);
-
-			/*
-			 * We disallow creating invalid foreign keys to or from
-			 * partitioned tables, so ignoring the recursion bit is okay.
-			 */
+			QueueFKConstraintValidation(wqueue, conrel, rel, tuple, lockmode);
 		}
 		else if (con->contype == CONSTRAINT_CHECK)
 		{
-			List	   *children = NIL;
-			ListCell   *child;
-			NewConstraint *newcon;
-			Datum		val;
-			char	   *conbin;
-
-			/*
-			 * If we're recursing, the parent has already done this, so skip
-			 * it.  Also, if the constraint is a NO INHERIT constraint, we
-			 * shouldn't try to look for it in the children.
-			 */
-			if (!recursing && !con->connoinherit)
-				children = find_all_inheritors(RelationGetRelid(rel),
-											   lockmode, NULL);
-
-			/*
-			 * For CHECK constraints, we must ensure that we only mark the
-			 * constraint as validated on the parent if it's already validated
-			 * on the children.
-			 *
-			 * We recurse before validating on the parent, to reduce risk of
-			 * deadlocks.
-			 */
-			foreach(child, children)
-			{
-				Oid			childoid = lfirst_oid(child);
-				Relation	childrel;
-
-				if (childoid == RelationGetRelid(rel))
-					continue;
-
-				/*
-				 * If we are told not to recurse, there had better not be any
-				 * child tables, because we can't mark the constraint on the
-				 * parent valid unless it is valid for all child tables.
-				 */
-				if (!recurse)
-					ereport(ERROR,
-							(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-							 errmsg("constraint must be validated on child tables too")));
-
-				/* find_all_inheritors already got lock */
-				childrel = table_open(childoid, NoLock);
-
-				ATExecValidateConstraint(wqueue, childrel, constrName, false,
-										 true, lockmode);
-				table_close(childrel, NoLock);
-			}
-
-			/* Queue validation for phase 3 */
-			newcon = (NewConstraint *) palloc0(sizeof(NewConstraint));
-			newcon->name = constrName;
-			newcon->contype = CONSTR_CHECK;
-			newcon->refrelid = InvalidOid;
-			newcon->refindid = InvalidOid;
-			newcon->conid = con->oid;
-
-			val = SysCacheGetAttrNotNull(CONSTROID, tuple,
-										 Anum_pg_constraint_conbin);
-			conbin = TextDatumGetCString(val);
-			newcon->qual = (Node *) stringToNode(conbin);
-
-			/* Find or create work queue entry for this table */
-			tab = ATGetQueueEntry(wqueue, rel);
-			tab->constraints = lappend(tab->constraints, newcon);
-
-			/*
-			 * Invalidate relcache so that others see the new validated
-			 * constraint.
-			 */
-			CacheInvalidateRelcache(rel);
+			QueueCheckConstraintValidation(wqueue, conrel, rel, constrName,
+										   tuple, recurse, recursing, lockmode);
 		}
-
-		/*
-		 * Now update the catalog, while we have the door open.
-		 */
-		copyTuple = heap_copytuple(tuple);
-		copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
-		copy_con->convalidated = true;
-		CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
-
-		InvokeObjectPostAlterHook(ConstraintRelationId, con->oid, 0);
-
-		heap_freetuple(copyTuple);
 
 		ObjectAddressSet(address, ConstraintRelationId, con->oid);
 	}
@@ -12167,6 +12106,168 @@ ATExecValidateConstraint(List **wqueue, Relation rel, char *constrName,
 	return address;
 }
 
+/*
+ * QueueFKConstraintValidation
+ *
+ * Add an entry to the wqueue to validate the given foreign key constraint in
+ * Phase 3 and update the convalidated field in the pg_constraint catalog
+ * for the specified relation.
+ */
+static void
+QueueFKConstraintValidation(List **wqueue, Relation conrel, Relation rel,
+							HeapTuple contuple, LOCKMODE lockmode)
+{
+	Form_pg_constraint con;
+	AlteredTableInfo *tab;
+	HeapTuple	copyTuple;
+	Form_pg_constraint copy_con;
+
+	con = (Form_pg_constraint) GETSTRUCT(contuple);
+	Assert(con->contype == CONSTRAINT_FOREIGN);
+
+	if (rel->rd_rel->relkind == RELKIND_RELATION)
+	{
+		NewConstraint *newcon;
+		Constraint *fkconstraint;
+
+		/* Queue validation for phase 3 */
+		fkconstraint = makeNode(Constraint);
+		/* for now this is all we need */
+		fkconstraint->conname = pstrdup(NameStr(con->conname));
+
+		newcon = (NewConstraint *) palloc0(sizeof(NewConstraint));
+		newcon->name = fkconstraint->conname;
+		newcon->contype = CONSTR_FOREIGN;
+		newcon->refrelid = con->confrelid;
+		newcon->refindid = con->conindid;
+		newcon->conid = con->oid;
+		newcon->qual = (Node *) fkconstraint;
+
+		/* Find or create work queue entry for this table */
+		tab = ATGetQueueEntry(wqueue, rel);
+		tab->constraints = lappend(tab->constraints, newcon);
+	}
+
+	/*
+	 * We disallow creating invalid foreign keys to or from partitioned
+	 * tables, so ignoring the recursion bit is okay.
+	 */
+
+	/*
+	 * Now update the catalog, while we have the door open.
+	 */
+	copyTuple = heap_copytuple(contuple);
+	copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
+	copy_con->convalidated = true;
+	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
+
+	InvokeObjectPostAlterHook(ConstraintRelationId, con->oid, 0);
+
+	heap_freetuple(copyTuple);
+}
+
+/*
+ * QueueCheckConstraintValidation
+ *
+ * Add an entry to the wqueue to validate the given check constraint in Phase 3
+ * and update the convalidated field in the pg_constraint catalog for the
+ * specified relation and all its inheriting children.
+ */
+static void
+QueueCheckConstraintValidation(List **wqueue, Relation conrel, Relation rel,
+							   char *constrName, HeapTuple contuple,
+							   bool recurse, bool recursing, LOCKMODE lockmode)
+{
+	Form_pg_constraint con;
+	AlteredTableInfo *tab;
+	HeapTuple	copyTuple;
+	Form_pg_constraint copy_con;
+
+	List	   *children = NIL;
+	ListCell   *child;
+	NewConstraint *newcon;
+	Datum		val;
+	char	   *conbin;
+
+	con = (Form_pg_constraint) GETSTRUCT(contuple);
+	Assert(con->contype == CONSTRAINT_CHECK);
+
+	/*
+	 * If we're recursing, the parent has already done this, so skip it. Also,
+	 * if the constraint is a NO INHERIT constraint, we shouldn't try to look
+	 * for it in the children.
+	 */
+	if (!recursing && !con->connoinherit)
+		children = find_all_inheritors(RelationGetRelid(rel),
+									   lockmode, NULL);
+
+	/*
+	 * For CHECK constraints, we must ensure that we only mark the constraint
+	 * as validated on the parent if it's already validated on the children.
+	 *
+	 * We recurse before validating on the parent, to reduce risk of
+	 * deadlocks.
+	 */
+	foreach(child, children)
+	{
+		Oid			childoid = lfirst_oid(child);
+		Relation	childrel;
+
+		if (childoid == RelationGetRelid(rel))
+			continue;
+
+		/*
+		 * If we are told not to recurse, there had better not be any child
+		 * tables, because we can't mark the constraint on the parent valid
+		 * unless it is valid for all child tables.
+		 */
+		if (!recurse)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("constraint must be validated on child tables too")));
+
+		/* find_all_inheritors already got lock */
+		childrel = table_open(childoid, NoLock);
+
+		ATExecValidateConstraint(wqueue, childrel, constrName, false,
+								 true, lockmode);
+		table_close(childrel, NoLock);
+	}
+
+	/* Queue validation for phase 3 */
+	newcon = (NewConstraint *) palloc0(sizeof(NewConstraint));
+	newcon->name = constrName;
+	newcon->contype = CONSTR_CHECK;
+	newcon->refrelid = InvalidOid;
+	newcon->refindid = InvalidOid;
+	newcon->conid = con->oid;
+
+	val = SysCacheGetAttrNotNull(CONSTROID, contuple,
+								 Anum_pg_constraint_conbin);
+	conbin = TextDatumGetCString(val);
+	newcon->qual = (Node *) stringToNode(conbin);
+
+	/* Find or create work queue entry for this table */
+	tab = ATGetQueueEntry(wqueue, rel);
+	tab->constraints = lappend(tab->constraints, newcon);
+
+	/*
+	 * Invalidate relcache so that others see the new validated constraint.
+	 */
+	CacheInvalidateRelcache(rel);
+
+	/*
+	 * Now update the catalog, while we have the door open.
+	 */
+	copyTuple = heap_copytuple(contuple);
+	copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
+	copy_con->convalidated = true;
+	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
+
+	InvokeObjectPostAlterHook(ConstraintRelationId, con->oid, 0);
+
+	heap_freetuple(copyTuple);
+}
 
 /*
  * transformColumnNameList - transform list of column names
