@@ -44,6 +44,7 @@
 #include "fe-auth-sasl.h"
 #include "pqexpbuffer.h"
 
+/* IWYU pragma: begin_exports */
 #ifdef ENABLE_GSS
 #if defined(HAVE_GSSAPI_H)
 #include <gssapi.h>
@@ -51,6 +52,7 @@
 #include <gssapi/gssapi.h>
 #endif
 #endif
+/* IWYU pragma: end_exports */
 
 #ifdef ENABLE_SSPI
 #define SECURITY_WIN32
@@ -428,6 +430,8 @@ struct pg_conn
 	char	   *target_session_attrs;	/* desired session properties */
 	char	   *require_auth;	/* name of the expected auth method */
 	char	   *load_balance_hosts; /* load balance over hosts */
+	char	   *scram_client_key;	/* base64-encoded SCRAM client key */
+	char	   *scram_server_key;	/* base64-encoded SCRAM server key */
 
 	bool		cancelRequest;	/* true if this connection is used to send a
 								 * cancel request, instead of being a normal
@@ -518,6 +522,10 @@ struct pg_conn
 	AddrInfo   *addr;			/* the array of addresses for the currently
 								 * tried host */
 	bool		send_appname;	/* okay to send application_name? */
+	size_t		scram_client_key_len;
+	void	   *scram_client_key_binary;	/* binary SCRAM client key */
+	size_t		scram_server_key_len;
+	void	   *scram_server_key_binary;	/* binary SCRAM server key */
 
 	/* Miscellaneous stuff */
 	int			be_pid;			/* PID of backend --- needed for cancels */
