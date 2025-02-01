@@ -375,7 +375,7 @@ parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 		(nindexes_mwm > 0) ?
 		maintenance_work_mem / Min(parallel_workers, nindexes_mwm) :
 		maintenance_work_mem;
-	shared->dead_items_info.max_bytes = vac_work_mem * 1024L;
+	shared->dead_items_info.max_bytes = vac_work_mem * (size_t) 1024;
 
 	/* Prepare DSA space for dead items */
 	dead_items = TidStoreCreateShared(shared->dead_items_info.max_bytes,
@@ -1032,6 +1032,13 @@ parallel_vacuum_main(dsm_segment *seg, shm_toc *toc)
 	vac_open_indexes(rel, RowExclusiveLock, &nindexes, &indrels);
 	Assert(nindexes > 0);
 
+	/*
+	 * Apply the desired value of maintenance_work_mem within this process.
+	 * Really we should use SetConfigOption() to change a GUC, but since we're
+	 * already in parallel mode guc.c would complain about that.  Fortunately,
+	 * by the same token guc.c will not let any user-defined code change it.
+	 * So just avert your eyes while we do this:
+	 */
 	if (shared->maintenance_work_mem_worker > 0)
 		maintenance_work_mem = shared->maintenance_work_mem_worker;
 
