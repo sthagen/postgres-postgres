@@ -490,6 +490,8 @@ typedef struct ResultRelInfo
 
 	/* For UPDATE, attnums of generated columns to be computed */
 	Bitmapset  *ri_extraUpdatedCols;
+	/* true if the above has been computed */
+	bool		ri_extraUpdatedCols_valid;
 
 	/* Projection to generate new tuple in an INSERT/UPDATE */
 	ProjectionInfo *ri_projectNew;
@@ -658,6 +660,10 @@ typedef struct EState
 	List	   *es_part_prune_infos;	/* List of PartitionPruneInfo */
 	List	   *es_part_prune_states;	/* List of PartitionPruneState */
 	List	   *es_part_prune_results;	/* List of Bitmapset */
+	Bitmapset  *es_unpruned_relids; /* PlannedStmt.unprunableRelids + RT
+									 * indexes of leaf partitions that survive
+									 * initial pruning; see
+									 * ExecDoInitialPruning() */
 	const char *es_sourceText;	/* Source text from QueryDesc */
 
 	JunkFilter *es_junkFilter;	/* top-level junk filter, if any */
@@ -1440,6 +1446,12 @@ typedef struct ModifyTableState
 	double		mt_merge_inserted;
 	double		mt_merge_updated;
 	double		mt_merge_deleted;
+
+	/*
+	 * List of valid updateColnosLists.  Contains only those belonging to
+	 * unpruned relations from ModifyTable.updateColnosLists.
+	 */
+	List	   *mt_updateColnosLists;
 } ModifyTableState;
 
 /* ----------------
