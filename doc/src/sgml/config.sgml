@@ -2506,8 +2506,8 @@ include_dir 'conf.d'
      </para>
     </sect2>
 
-    <sect2 id="runtime-config-resource-async-behavior">
-     <title>Asynchronous Behavior</title>
+    <sect2 id="runtime-config-resource-io">
+     <title>I/O</title>
 
      <variablelist>
       <varlistentry id="guc-backend-flush-after" xreflabel="backend_flush_after">
@@ -2618,7 +2618,13 @@ include_dir 'conf.d'
         </para>
        </listitem>
       </varlistentry>
+     </variablelist>
+    </sect2>
 
+    <sect2 id="runtime-config-resource-worker-processes">
+     <title>Worker Processes</title>
+
+     <variablelist>
       <varlistentry id="guc-max-worker-processes" xreflabel="max_worker_processes">
        <term><varname>max_worker_processes</varname> (<type>integer</type>)
        <indexterm>
@@ -8246,6 +8252,30 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-track-cost-delay-timing" xreflabel="track_cost_delay_timing">
+      <term><varname>track_cost_delay_timing</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>track_cost_delay_timing</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables timing of cost-based vacuum delay (see
+        <xref linkend="runtime-config-resource-vacuum-cost"/>).  This parameter
+        is off by default, as it will repeatedly query the operating system for
+        the current time, which may cause significant overhead on some
+        platforms.  You can use the <xref linkend="pgtesttiming"/> tool to
+        measure the overhead of timing on your system.  Cost-based vacuum delay
+        timing information is displayed in
+        <link linkend="vacuum-progress-reporting"><structname>pg_stat_progress_vacuum</structname></link>
+        and
+        <link linkend="analyze-progress-reporting"><structname>pg_stat_progress_analyze</structname></link>.
+        Only superusers and users with the appropriate <literal>SET</literal>
+        privilege can change this setting.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-track-io-timing" xreflabel="track_io_timing">
       <term><varname>track_io_timing</varname> (<type>boolean</type>)
       <indexterm>
@@ -9140,6 +9170,45 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         </para>
        </listitem>
       </varlistentry>
+
+     <varlistentry id="guc-vacuum-max-eager-freeze-failure-rate" xreflabel="vacuum_max_eager_freeze_failure_rate">
+      <term><varname>vacuum_max_eager_freeze_failure_rate</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>vacuum_max_eager_freeze_failure_rate</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the maximum number of pages (as a fraction of total pages in
+        the relation) that <command>VACUUM</command> may scan and
+        <emphasis>fail</emphasis> to set all-frozen in the visibility map
+        before disabling eager scanning. A value of <literal>0</literal>
+        disables eager scanning altogether. The default is
+        <literal>0.03</literal> (3%).
+       </para>
+
+       <para>
+        Note that when eager scanning is enabled, successful page freezes do
+        not count against the cap on eager freeze failures. Successful page
+        freezes are capped internally at 20% of the all-visible but not
+        all-frozen pages in the relation. Capping successful page freezes helps
+        amortize the overhead across multiple normal vacuums and limits the
+        potential downside of wasted eager freezes of pages that are modified
+        again before the next aggressive vacuum.
+       </para>
+
+       <para>
+        This parameter can only be set in the
+        <filename>postgresql.conf</filename> file or on the server command
+        line; but the setting can be overridden for individual tables by
+        changing the
+        <link linkend="reloption-vacuum-max-eager-freeze-failure-rate">
+        corresponding table storage parameter</link>.
+        For more information on tuning vacuum's freezing behavior,
+        see <xref linkend="vacuum-for-wraparound"/>.
+       </para>
+      </listitem>
+     </varlistentry>
 
      </variablelist>
     </sect2>
