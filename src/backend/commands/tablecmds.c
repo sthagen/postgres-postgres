@@ -941,10 +941,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * while raw defaults go into a list of RawColumnDefault structs that will
 	 * be processed by AddRelationNewConstraints.  (We can't deal with raw
 	 * expressions until we can do transformExpr.)
-	 *
-	 * We can set the atthasdef flags now in the tuple descriptor; this just
-	 * saves StoreAttrDefault from having to do an immediate update of the
-	 * pg_attribute rows.
 	 */
 	rawDefaults = NIL;
 	cookedDefaults = NIL;
@@ -953,11 +949,8 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	foreach(listptr, stmt->tableElts)
 	{
 		ColumnDef  *colDef = lfirst(listptr);
-		Form_pg_attribute attr;
 
 		attnum++;
-		attr = TupleDescAttr(descriptor, attnum - 1);
-
 		if (colDef->raw_default != NULL)
 		{
 			RawColumnDefault *rawEnt;
@@ -967,10 +960,8 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
 			rawEnt->attnum = attnum;
 			rawEnt->raw_default = colDef->raw_default;
-			rawEnt->missingMode = false;
 			rawEnt->generated = colDef->generated;
 			rawDefaults = lappend(rawDefaults, rawEnt);
-			attr->atthasdef = true;
 		}
 		else if (colDef->cooked_default != NULL)
 		{
@@ -988,10 +979,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			cooked->inhcount = 0;	/* ditto */
 			cooked->is_no_inherit = false;
 			cookedDefaults = lappend(cookedDefaults, cooked);
-			attr->atthasdef = true;
 		}
-
-		populate_compact_attribute(descriptor, attnum - 1);
 	}
 
 	/*
@@ -6149,7 +6137,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap)
 		{
 			case CONSTR_CHECK:
 				needscan = true;
-				con->qualstate = ExecPrepareExpr((Expr *) expand_generated_columns_in_expr(con->qual, newrel ? newrel : oldrel, 1), estate);
+				con->qualstate = ExecPrepareExpr((Expr *) expand_generated_columns_in_expr(con->qual, oldrel, 1), estate);
 				break;
 			case CONSTR_FOREIGN:
 				/* Nothing to do here */
@@ -7321,7 +7309,6 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
 		rawEnt->attnum = attribute->attnum;
 		rawEnt->raw_default = copyObject(colDef->raw_default);
-		rawEnt->missingMode = false;	/* XXX vestigial */
 		rawEnt->generated = colDef->generated;
 
 		/*
@@ -7365,8 +7352,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	 * and the later subcommands had been issued in new ALTER TABLE commands.
 	 *
 	 * We can skip this entirely for relations without storage, since Phase 3
-	 * is certainly not going to touch them.  System attributes don't have
-	 * interesting defaults, either.
+	 * is certainly not going to touch them.
 	 */
 	if (RELKIND_HAS_STORAGE(relkind))
 	{
@@ -8077,7 +8063,6 @@ ATExecColumnDefault(Relation rel, const char *colName,
 		rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
 		rawEnt->attnum = attnum;
 		rawEnt->raw_default = newDefault;
-		rawEnt->missingMode = false;
 		rawEnt->generated = '\0';
 
 		/*
@@ -8115,7 +8100,7 @@ ATExecCookedColumnDefault(Relation rel, AttrNumber attnum,
 	RemoveAttrDefault(RelationGetRelid(rel), attnum, DROP_RESTRICT, false,
 					  true);
 
-	(void) StoreAttrDefault(rel, attnum, newDefault, true, false);
+	(void) StoreAttrDefault(rel, attnum, newDefault, true);
 
 	ObjectAddressSubSet(address, RelationRelationId,
 						RelationGetRelid(rel), attnum);
@@ -8578,7 +8563,6 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 	rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
 	rawEnt->attnum = attnum;
 	rawEnt->raw_default = newExpr;
-	rawEnt->missingMode = false;
 	rawEnt->generated = attgenerated;
 
 	/* Store the generated expression */
@@ -14130,7 +14114,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 		RemoveAttrDefault(RelationGetRelid(rel), attnum, DROP_RESTRICT, true,
 						  true);
 
-		StoreAttrDefault(rel, attnum, defaultexpr, true, false);
+		(void) StoreAttrDefault(rel, attnum, defaultexpr, true);
 	}
 
 	ObjectAddressSubSet(address, RelationRelationId,
