@@ -237,7 +237,6 @@ int			PreAuthDelay = 0;
 int			AuthenticationTimeout = 60;
 
 bool		log_hostname;		/* for ps display and logging */
-bool		Log_connections = false;
 
 bool		enable_bonjour = false;
 char	   *bonjour_name;
@@ -3477,6 +3476,12 @@ BackendStartup(ClientSocket *client_sock)
 	pid_t		pid;
 	BackendStartupData startup_data;
 	CAC_state	cac;
+
+	/*
+	 * Capture time that Postmaster got a socket from accept (for logging
+	 * connection establishment and setup total duration).
+	 */
+	startup_data.socket_created = GetCurrentTimestamp();
 
 	/*
 	 * Allocate and assign the child slot.  Note we must do this before

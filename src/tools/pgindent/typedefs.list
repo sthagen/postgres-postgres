@@ -484,6 +484,7 @@ ConnParams
 ConnStatusType
 ConnType
 ConnectionStateEnum
+ConnectionTiming
 ConsiderSplitContext
 Const
 ConstrCheck
@@ -1556,6 +1557,7 @@ LockTupleMode
 LockViewRecurse_context
 LockWaitPolicy
 LockingClause
+LogConnectionOption
 LogOpts
 LogStmtLevel
 LogicalDecodeBeginCB
