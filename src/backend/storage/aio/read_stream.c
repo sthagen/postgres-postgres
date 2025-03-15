@@ -17,30 +17,12 @@
  * pending read.  When that isn't possible, the existing pending read is sent
  * to StartReadBuffers() so that a new one can begin to form.
  *
- * The algorithm for controlling the look-ahead distance tries to classify the
- * stream into three ideal behaviors:
- *
- * A) No I/O is necessary, because the requested blocks are fully cached
- * already.  There is no benefit to looking ahead more than one block, so
- * distance is 1.  This is the default initial assumption.
- *
- * B) I/O is necessary, but read-ahead advice is undesirable because the
- * access is sequential and we can rely on the kernel's read-ahead heuristics,
- * or impossible because direct I/O is enabled, or the system doesn't support
- * read-ahead advice.  There is no benefit in looking ahead more than
- * io_combine_limit, because in this case the only goal is larger read system
- * calls.  Looking further ahead would pin many buffers and perform
- * speculative work for no benefit.
- *
- * C) I/O is necessary, it appears to be random, and this system supports
- * read-ahead advice.  We'll look further ahead in order to reach the
- * configured level of I/O concurrency.
- *
- * The distance increases rapidly and decays slowly, so that it moves towards
- * those levels as different I/O patterns are discovered.  For example, a
- * sequential scan of fully cached data doesn't bother looking ahead, but a
- * sequential scan that hits a region of uncached blocks will start issuing
- * increasingly wide read calls until it plateaus at io_combine_limit.
+ * The algorithm for controlling the look-ahead distance is based on recent
+ * cache hit and miss history.  When no I/O is necessary, there is no benefit
+ * in looking ahead more than one block.  This is the default initial
+ * assumption, but when blocks needing I/O are streamed, the distance is
+ * increased rapidly to try to benefit from I/O combining and concurrency.  It
+ * is reduced gradually when cached blocks are streamed.
  *
  * The main data structure is a circular queue of buffers of size
  * max_pinned_buffers plus some extra space for technical reasons, ready to be
@@ -133,6 +115,7 @@ struct ReadStream
 
 	/* Next expected block, for detecting sequential access. */
 	BlockNumber seq_blocknum;
+	BlockNumber seq_until_processed;
 
 	/* The read operation we are currently preparing. */
 	BlockNumber pending_read_blocknum;
@@ -238,7 +221,7 @@ read_stream_unget_block(ReadStream *stream, BlockNumber blocknum)
  * distance to a level that prevents look-ahead until buffers are released.
  */
 static bool
-read_stream_start_pending_read(ReadStream *stream, bool suppress_advice)
+read_stream_start_pending_read(ReadStream *stream)
 {
 	bool		need_wait;
 	int			nblocks;
@@ -262,16 +245,32 @@ read_stream_start_pending_read(ReadStream *stream, bool suppress_advice)
 	else
 		Assert(stream->next_buffer_index == stream->oldest_buffer_index);
 
-	/*
-	 * If advice hasn't been suppressed, this system supports it, and this
-	 * isn't a strictly sequential pattern, then we'll issue advice.
-	 */
-	if (!suppress_advice &&
-		stream->advice_enabled &&
-		stream->pending_read_blocknum != stream->seq_blocknum)
-		flags = READ_BUFFERS_ISSUE_ADVICE;
-	else
-		flags = 0;
+	/* Do we need to issue read-ahead advice? */
+	flags = 0;
+	if (stream->advice_enabled)
+	{
+		if (stream->pending_read_blocknum == stream->seq_blocknum)
+		{
+			/*
+			 * Sequential:  Issue advice until the preadv() calls have caught
+			 * up with the first advice issued for this sequential region, and
+			 * then stay of the way of the kernel's own read-ahead.
+			 */
+			if (stream->seq_until_processed != InvalidBlockNumber)
+				flags = READ_BUFFERS_ISSUE_ADVICE;
+		}
+		else
+		{
+			/*
+			 * Random jump:  Note the starting location of a new potential
+			 * sequential region and start issuing advice.  Skip it this time
+			 * if the preadv() follows immediately, eg first block in stream.
+			 */
+			stream->seq_until_processed = stream->pending_read_blocknum;
+			if (stream->pinned_buffers > 0)
+				flags = READ_BUFFERS_ISSUE_ADVICE;
+		}
+	}
 
 	/* How many more buffers is this backend allowed? */
 	if (stream->temporary)
@@ -316,7 +315,7 @@ read_stream_start_pending_read(ReadStream *stream, bool suppress_advice)
 	/* Remember whether we need to wait before returning this buffer. */
 	if (!need_wait)
 	{
-		/* Look-ahead distance decays, no I/O necessary (behavior A). */
+		/* Look-ahead distance decays, no I/O necessary. */
 		if (stream->distance > 1)
 			stream->distance--;
 	}
@@ -360,7 +359,7 @@ read_stream_start_pending_read(ReadStream *stream, bool suppress_advice)
 }
 
 static void
-read_stream_look_ahead(ReadStream *stream, bool suppress_advice)
+read_stream_look_ahead(ReadStream *stream)
 {
 	while (stream->ios_in_progress < stream->max_ios &&
 		   stream->pinned_buffers + stream->pending_read_nblocks < stream->distance)
@@ -371,8 +370,7 @@ read_stream_look_ahead(ReadStream *stream, bool suppress_advice)
 
 		if (stream->pending_read_nblocks == stream->io_combine_limit)
 		{
-			read_stream_start_pending_read(stream, suppress_advice);
-			suppress_advice = false;
+			read_stream_start_pending_read(stream);
 			continue;
 		}
 
@@ -405,15 +403,13 @@ read_stream_look_ahead(ReadStream *stream, bool suppress_advice)
 		/* We have to start the pending read before we can build another. */
 		while (stream->pending_read_nblocks > 0)
 		{
-			if (!read_stream_start_pending_read(stream, suppress_advice) ||
+			if (!read_stream_start_pending_read(stream) ||
 				stream->ios_in_progress == stream->max_ios)
 			{
 				/* We've hit the buffer or I/O limit.  Rewind and stop here. */
 				read_stream_unget_block(stream, blocknum);
 				return;
 			}
-
-			suppress_advice = false;
 		}
 
 		/* This is the start of a new pending read. */
@@ -437,7 +433,7 @@ read_stream_look_ahead(ReadStream *stream, bool suppress_advice)
 		  stream->pinned_buffers == 0) ||
 		 stream->distance == 0) &&
 		stream->ios_in_progress < stream->max_ios)
-		read_stream_start_pending_read(stream, suppress_advice);
+		read_stream_start_pending_read(stream);
 
 	/*
 	 * There should always be something pinned when we leave this function,
@@ -613,12 +609,14 @@ read_stream_begin_impl(int flags,
 	stream->callback = callback;
 	stream->callback_private_data = callback_private_data;
 	stream->buffered_blocknum = InvalidBlockNumber;
+	stream->seq_blocknum = InvalidBlockNumber;
+	stream->seq_until_processed = InvalidBlockNumber;
 	stream->temporary = SmgrIsTemp(smgr);
 
 	/*
 	 * Skip the initial ramp-up phase if the caller says we're going to be
 	 * reading the whole relation.  This way we start out assuming we'll be
-	 * doing full io_combine_limit sized reads (behavior B).
+	 * doing full io_combine_limit sized reads.
 	 */
 	if (flags & READ_STREAM_FULL)
 		stream->distance = Min(max_pinned_buffers, stream->io_combine_limit);
@@ -709,10 +707,10 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 #ifndef READ_STREAM_DISABLE_FAST_PATH
 
 	/*
-	 * A fast path for all-cached scans (behavior A).  This is the same as the
-	 * usual algorithm, but it is specialized for no I/O and no per-buffer
-	 * data, so we can skip the queue management code, stay in the same buffer
-	 * slot and use singular StartReadBuffer().
+	 * A fast path for all-cached scans.  This is the same as the usual
+	 * algorithm, but it is specialized for no I/O and no per-buffer data, so
+	 * we can skip the queue management code, stay in the same buffer slot and
+	 * use singular StartReadBuffer().
 	 */
 	if (likely(stream->fast_path))
 	{
@@ -793,7 +791,7 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 		 * space for more, but if we're just starting up we'll need to crank
 		 * the handle to get started.
 		 */
-		read_stream_look_ahead(stream, true);
+		read_stream_look_ahead(stream);
 
 		/* End of stream reached? */
 		if (stream->pinned_buffers == 0)
@@ -832,28 +830,19 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 		if (++stream->oldest_io_index == stream->max_ios)
 			stream->oldest_io_index = 0;
 
-		if (stream->ios[io_index].op.flags & READ_BUFFERS_ISSUE_ADVICE)
-		{
-			/* Distance ramps up fast (behavior C). */
-			distance = stream->distance * 2;
-			distance = Min(distance, stream->max_pinned_buffers);
-			stream->distance = distance;
-		}
-		else
-		{
-			/* No advice; move towards io_combine_limit (behavior B). */
-			if (stream->distance > stream->io_combine_limit)
-			{
-				stream->distance--;
-			}
-			else
-			{
-				distance = stream->distance * 2;
-				distance = Min(distance, stream->io_combine_limit);
-				distance = Min(distance, stream->max_pinned_buffers);
-				stream->distance = distance;
-			}
-		}
+		/* Look-ahead distance ramps up rapidly after we do I/O. */
+		distance = stream->distance * 2;
+		distance = Min(distance, stream->max_pinned_buffers);
+		stream->distance = distance;
+
+		/*
+		 * If we've reached the first block of a sequential region we're
+		 * issuing advice for, cancel that until the next jump.  The kernel
+		 * will see the sequential preadv() pattern starting here.
+		 */
+		if (stream->advice_enabled &&
+			stream->ios[io_index].op.blocknum == stream->seq_until_processed)
+			stream->seq_until_processed = InvalidBlockNumber;
 	}
 
 #ifdef CLOBBER_FREED_MEMORY
@@ -899,7 +888,7 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 		stream->oldest_buffer_index = 0;
 
 	/* Prepare for the next call. */
-	read_stream_look_ahead(stream, false);
+	read_stream_look_ahead(stream);
 
 #ifndef READ_STREAM_DISABLE_FAST_PATH
 	/* See if we can take the fast path for all-cached scans next time. */
