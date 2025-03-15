@@ -15919,7 +15919,6 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	HeapTuple	tuple;
 	HeapTuple	newtuple;
 	Datum		datum;
-	bool		isnull;
 	Datum		newOptions;
 	Datum		repl_val[Natts_pg_class];
 	bool		repl_null[Natts_pg_class];
@@ -15944,25 +15943,26 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 		 * there were none before.
 		 */
 		datum = (Datum) 0;
-		isnull = true;
 	}
 	else
 	{
+		bool		isnull;
+
 		/* Get the old reloptions */
 		datum = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions,
 								&isnull);
+		if (isnull)
+			datum = (Datum) 0;
 	}
 
 	/* Generate new proposed reloptions (text array) */
-	newOptions = transformRelOptions(isnull ? (Datum) 0 : datum,
-									 defList, NULL, validnsps, false,
+	newOptions = transformRelOptions(datum, defList, NULL, validnsps, false,
 									 operation == AT_ResetRelOptions);
 
 	/* Validate */
 	switch (rel->rd_rel->relkind)
 	{
 		case RELKIND_RELATION:
-		case RELKIND_TOASTVALUE:
 		case RELKIND_MATVIEW:
 			(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
 			break;
@@ -15976,6 +15976,8 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 		case RELKIND_PARTITIONED_INDEX:
 			(void) index_reloptions(rel->rd_indam->amoptions, newOptions, true);
 			break;
+		case RELKIND_TOASTVALUE:
+			/* fall through to error -- shouldn't ever get here */
 		default:
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -16065,18 +16067,20 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 			 * pretend there were none before.
 			 */
 			datum = (Datum) 0;
-			isnull = true;
 		}
 		else
 		{
+			bool		isnull;
+
 			/* Get the old reloptions */
 			datum = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions,
 									&isnull);
+			if (isnull)
+				datum = (Datum) 0;
 		}
 
-		newOptions = transformRelOptions(isnull ? (Datum) 0 : datum,
-										 defList, "toast", validnsps, false,
-										 operation == AT_ResetRelOptions);
+		newOptions = transformRelOptions(datum, defList, "toast", validnsps,
+										 false, operation == AT_ResetRelOptions);
 
 		(void) heap_reloptions(RELKIND_TOASTVALUE, newOptions, true);
 
