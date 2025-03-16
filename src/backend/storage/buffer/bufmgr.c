@@ -1038,7 +1038,7 @@ ZeroAndLockBuffer(Buffer buffer, ReadBufferMode mode, bool already_valid)
 	{
 		/* Simple case for non-shared buffers. */
 		bufHdr = GetLocalBufferDescriptor(-buffer - 1);
-		need_to_zero = (pg_atomic_read_u32(&bufHdr->state) & BM_VALID) == 0;
+		need_to_zero = StartLocalBufferIO(bufHdr, true);
 	}
 	else
 	{
@@ -1072,19 +1072,11 @@ ZeroAndLockBuffer(Buffer buffer, ReadBufferMode mode, bool already_valid)
 		if (!isLocalBuf)
 			LWLockAcquire(BufferDescriptorGetContentLock(bufHdr), LW_EXCLUSIVE);
 
+		/* Set BM_VALID, terminate IO, and wake up any waiters */
 		if (isLocalBuf)
-		{
-			/* Only need to adjust flags */
-			uint32		buf_state = pg_atomic_read_u32(&bufHdr->state);
-
-			buf_state |= BM_VALID;
-			pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
-		}
+			TerminateLocalBufferIO(bufHdr, false, BM_VALID);
 		else
-		{
-			/* Set BM_VALID, terminate IO, and wake up any waiters */
 			TerminateBufferIO(bufHdr, false, BM_VALID, true);
-		}
 	}
 	else if (!isLocalBuf)
 	{
@@ -1396,11 +1388,7 @@ static inline bool
 WaitReadBuffersCanStartIO(Buffer buffer, bool nowait)
 {
 	if (BufferIsLocal(buffer))
-	{
-		BufferDesc *bufHdr = GetLocalBufferDescriptor(-buffer - 1);
-
-		return (pg_atomic_read_u32(&bufHdr->state) & BM_VALID) == 0;
-	}
+		return StartLocalBufferIO(GetLocalBufferDescriptor(-buffer - 1), true);
 	else
 		return StartBufferIO(GetBufferDescriptor(buffer - 1), true, nowait);
 }
@@ -1554,19 +1542,11 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 									relpath(operation->smgr->smgr_rlocator, forknum).str)));
 			}
 
-			/* Terminate I/O and set BM_VALID. */
+			/* Set BM_VALID, terminate IO, and wake up any waiters */
 			if (persistence == RELPERSISTENCE_TEMP)
-			{
-				uint32		buf_state = pg_atomic_read_u32(&bufHdr->state);
-
-				buf_state |= BM_VALID;
-				pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
-			}
+				TerminateLocalBufferIO(bufHdr, false, BM_VALID);
 			else
-			{
-				/* Set BM_VALID, terminate IO, and wake up any waiters */
 				TerminateBufferIO(bufHdr, false, BM_VALID, true);
-			}
 
 			/* Report I/Os as completing individually. */
 			TRACE_POSTGRESQL_BUFFER_READ_DONE(forknum, io_first_block + j,
@@ -4469,7 +4449,6 @@ FlushRelationBuffers(Relation rel)
 		for (i = 0; i < NLocBuffer; i++)
 		{
 			uint32		buf_state;
-			instr_time	io_start;
 
 			bufHdr = GetLocalBufferDescriptor(i);
 			if (BufTagMatchesRelFileLocator(&bufHdr->tag, &rel->rd_locator) &&
@@ -4477,9 +4456,6 @@ FlushRelationBuffers(Relation rel)
 				 (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
 			{
 				ErrorContextCallback errcallback;
-				Page		localpage;
-
-				localpage = (char *) LocalBufHdrGetBlock(bufHdr);
 
 				/* Setup error traceback support for ereport() */
 				errcallback.callback = local_buffer_write_error_callback;
@@ -4487,24 +4463,7 @@ FlushRelationBuffers(Relation rel)
 				errcallback.previous = error_context_stack;
 				error_context_stack = &errcallback;
 
-				PageSetChecksumInplace(localpage, bufHdr->tag.blockNum);
-
-				io_start = pgstat_prepare_io_time(track_io_timing);
-
-				smgrwrite(srel,
-						  BufTagGetForkNum(&bufHdr->tag),
-						  bufHdr->tag.blockNum,
-						  localpage,
-						  false);
-
-				pgstat_count_io_op_time(IOOBJECT_TEMP_RELATION,
-										IOCONTEXT_NORMAL, IOOP_WRITE,
-										io_start, 1, BLCKSZ);
-
-				buf_state &= ~(BM_DIRTY | BM_JUST_DIRTIED);
-				pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
-
-				pgBufferUsage.local_blks_written++;
+				FlushLocalBuffer(bufHdr, srel);
 
 				/* Pop the error context stack */
 				error_context_stack = errcallback.previous;
@@ -5589,8 +5548,11 @@ TerminateBufferIO(BufferDesc *buf, bool clear_dirty, uint32 set_flag_bits,
 	buf_state = LockBufHdr(buf);
 
 	Assert(buf_state & BM_IO_IN_PROGRESS);
+	buf_state &= ~BM_IO_IN_PROGRESS;
 
-	buf_state &= ~(BM_IO_IN_PROGRESS | BM_IO_ERROR);
+	/* Clear earlier errors, if this IO failed, it'll be marked again */
+	buf_state &= ~BM_IO_ERROR;
+
 	if (clear_dirty && !(buf_state & BM_JUST_DIRTIED))
 		buf_state &= ~(BM_DIRTY | BM_CHECKPOINT_NEEDED);
 
