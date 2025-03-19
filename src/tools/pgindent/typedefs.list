@@ -55,6 +55,9 @@ AggStrategy
 AggTransInfo
 Aggref
 AggregateInstrumentation
+AioWorkerControl
+AioWorkerSlot
+AioWorkerSubmissionQueue
 AlenState
 Alias
 AllocBlock
@@ -4271,3 +4274,5 @@ yyscan_t
 z_stream
 z_streamp
 zic_t
+ExplainExtensionOption
+ExplainOptionHandler

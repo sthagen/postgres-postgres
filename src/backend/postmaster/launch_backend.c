@@ -48,6 +48,7 @@
 #include "replication/slotsync.h"
 #include "replication/walreceiver.h"
 #include "storage/dsm.h"
+#include "storage/io_worker.h"
 #include "storage/pg_shmem.h"
 #include "tcop/backend_startup.h"
 #include "utils/memutils.h"
@@ -115,6 +116,7 @@ typedef struct
 	bool		redirection_done;
 	bool		IsBinaryUpgrade;
 	bool		query_id_enabled;
+	bool		query_id_squash_values;
 	int			max_safe_fds;
 	int			MaxBackends;
 	int			num_pmchild_slots;
@@ -197,6 +199,7 @@ static child_process_kind child_process_kinds[] = {
 	[B_ARCHIVER] = {"archiver", PgArchiverMain, true},
 	[B_BG_WRITER] = {"bgwriter", BackgroundWriterMain, true},
 	[B_CHECKPOINTER] = {"checkpointer", CheckpointerMain, true},
+	[B_IO_WORKER] = {"io_worker", IoWorkerMain, true},
 	[B_STARTUP] = {"startup", StartupProcessMain, true},
 	[B_WAL_RECEIVER] = {"wal_receiver", WalReceiverMain, true},
 	[B_WAL_SUMMARIZER] = {"wal_summarizer", WalSummarizerMain, true},
@@ -775,6 +778,7 @@ save_backend_variables(BackendParameters *param,
 	param->redirection_done = redirection_done;
 	param->IsBinaryUpgrade = IsBinaryUpgrade;
 	param->query_id_enabled = query_id_enabled;
+	param->query_id_squash_values = query_id_squash_values;
 	param->max_safe_fds = max_safe_fds;
 
 	param->MaxBackends = MaxBackends;
@@ -1035,6 +1039,7 @@ restore_backend_variables(BackendParameters *param)
 	redirection_done = param->redirection_done;
 	IsBinaryUpgrade = param->IsBinaryUpgrade;
 	query_id_enabled = param->query_id_enabled;
+	query_id_squash_values = param->query_id_squash_values;
 	max_safe_fds = param->max_safe_fds;
 
 	MaxBackends = param->MaxBackends;

@@ -1520,7 +1520,7 @@ include_dir 'conf.d'
         It does not need to be the same curve used by the server's Elliptic
         Curve key.  This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command line.
-        The default is <literal>prime256v1</literal>.
+        The default is <literal>X25519:prime256v1</literal>.
        </para>
 
        <para>
@@ -2617,10 +2617,30 @@ include_dir 'conf.d'
          for maintenance work that is done on behalf of many client sessions.
         </para>
         <para>
-         The default is 10 on supported systems, otherwise 0.  This value can
-         be overridden for tables in a particular tablespace by setting the
-         tablespace parameter of the same name (see
-         <xref linkend="sql-altertablespace"/>).
+         The default is <literal>16</literal> on supported systems, otherwise
+         <literal>0</literal>.  This value can be overridden for tables in a
+         particular tablespace by setting the tablespace parameter of the same
+         name (see <xref linkend="sql-altertablespace"/>).
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-io-max-combine-limit" xreflabel="io_max_combine_limit">
+       <term><varname>io_max_combine_limit</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>io_max_combine_limit</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Controls the largest I/O size in operations that combine I/O, and silently
+         limits the user-settable parameter <varname>io_combine_limit</varname>.
+         This parameter can only be set in
+         the <filename>postgresql.conf</filename> file or on the server
+         command line.
+         The maximum possible size depends on the operating system and block
+         size, but is typically 1MB on Unix and 128kB on Windows.
+         The default is 128kB.
         </para>
        </listitem>
       </varlistentry>
@@ -2633,7 +2653,12 @@ include_dir 'conf.d'
        </term>
        <listitem>
         <para>
-         Controls the largest I/O size in operations that combine I/O.
+         Controls the largest I/O size in operations that combine I/O.  If set
+         higher than the <varname>io_max_combine_limit</varname> parameter, the
+         lower value will silently be used instead, so both may need to be raised
+         to increase the I/O size.
+         The maximum possible size depends on the operating system and block
+         size, but is typically 1MB on Unix and 128kB on Windows.
          The default is 128kB.
         </para>
        </listitem>
@@ -2678,6 +2703,11 @@ include_dir 'conf.d'
          <itemizedlist>
           <listitem>
            <para>
+            <literal>worker</literal> (execute asynchronous I/O using worker processes)
+           </para>
+          </listitem>
+          <listitem>
+           <para>
             <literal>sync</literal> (execute asynchronous-eligible I/O synchronously)
            </para>
           </listitem>
@@ -2689,6 +2719,25 @@ include_dir 'conf.d'
        </listitem>
       </varlistentry>
 
+      <varlistentry id="guc-io-workers" xreflabel="io_workers">
+       <term><varname>io_workers</varname> (<type>int</type>)
+       <indexterm>
+        <primary><varname>io_workers</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Selects the number of I/O worker processes to use. The default is
+         3. This parameter can only be set in the
+         <filename>postgresql.conf</filename> file or on the server command
+         line.
+        </para>
+        <para>
+         Only has an effect if <xref linkend="guc-io-method"/> is set to
+         <literal>worker</literal>.
+        </para>
+       </listitem>
+      </varlistentry>
      </variablelist>
     </sect2>
 
@@ -8674,6 +8723,36 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
          throw an error if a query identifier has already been computed.
         </para>
        </note>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-query-id-squash-values" xreflabel="query_id_squash_values">
+      <term><varname>query_id_squash_values</varname> (<type>bool</type>)
+      <indexterm>
+       <primary><varname>query_id_squash_values</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies how a list of constants (e.g., for an <literal>IN</literal>
+        clause) contributes to the query identifier computation.
+        Normally, every element of such a list contributes to the query
+        identifier separately, which means that two queries that only differ
+        in the number of elements in such a list would get different query
+        identifiers.
+        If this parameter is on, a list of constants will not contribute
+        to the query identifier. This means that two queries whose only
+        difference is the number of constants in such a list are going to get the
+        same query identifier.
+       </para>
+       <para>
+        Only constants are affected; bind parameters do not benefit from this
+        functionality. The default value is <literal>off</literal>.
+       </para>
+       <para>
+        This parameter also affects how <xref linkend="pgstatstatements"/>
+        generates normalized query texts.
+       </para>
       </listitem>
      </varlistentry>
 

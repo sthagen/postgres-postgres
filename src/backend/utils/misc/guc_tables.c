@@ -75,6 +75,7 @@
 #include "storage/aio.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/io_worker.h"
 #include "storage/large_object.h"
 #include "storage/pg_shmem.h"
 #include "storage/predicate.h"
@@ -2119,6 +2120,16 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"query_id_squash_values", PGC_USERSET, STATS_MONITORING,
+			gettext_noop("Allows to merge constants in a list when computing "
+						 "query_id."),
+		},
+		&query_id_squash_values,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -3242,6 +3253,20 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"io_max_combine_limit",
+			PGC_POSTMASTER,
+			RESOURCES_IO,
+			gettext_noop("Server-wide limit that clamps io_combine_limit."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&io_max_combine_limit,
+		DEFAULT_IO_COMBINE_LIMIT,
+		1, MAX_IO_COMBINE_LIMIT,
+		NULL, assign_io_max_combine_limit, NULL
+	},
+
+	{
 		{"io_combine_limit",
 			PGC_USERSET,
 			RESOURCES_IO,
@@ -3252,7 +3277,7 @@ struct config_int ConfigureNamesInt[] =
 		&io_combine_limit,
 		DEFAULT_IO_COMBINE_LIMIT,
 		1, MAX_IO_COMBINE_LIMIT,
-		NULL, NULL, NULL
+		NULL, assign_io_combine_limit, NULL
 	},
 
 	{
@@ -3265,6 +3290,18 @@ struct config_int ConfigureNamesInt[] =
 		&io_max_concurrency,
 		-1, -1, 1024,
 		check_io_max_concurrency, NULL, NULL
+	},
+
+	{
+		{"io_workers",
+			PGC_SIGHUP,
+			RESOURCES_IO,
+			gettext_noop("Number of IO worker processes, for io_method=worker."),
+			NULL,
+		},
+		&io_workers,
+		3, 1, MAX_IO_WORKERS,
+		NULL, NULL, NULL
 	},
 
 	{
@@ -4768,7 +4805,7 @@ struct config_string ConfigureNamesString[] =
 		},
 		&SSLECDHCurve,
 #ifdef USE_SSL
-		"prime256v1",
+		"X25519:prime256v1",
 #else
 		"none",
 #endif
