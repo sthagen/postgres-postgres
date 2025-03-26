@@ -1399,6 +1399,27 @@ SELECT NOT(ROW(table.*) IS NOT NULL) FROM TABLE; -- detect at least one null in 
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>gamma</primary>
+        </indexterm>
+        <function>gamma</function> ( <type>double precision</type> )
+        <returnvalue>double precision</returnvalue>
+       </para>
+       <para>
+        Gamma function
+       </para>
+       <para>
+        <literal>gamma(0.5)</literal>
+        <returnvalue>1.772453850905516</returnvalue>
+       </para>
+       <para>
+        <literal>gamma(6)</literal>
+        <returnvalue>120</returnvalue>
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>gcd</primary>
         </indexterm>
         <function>gcd</function> ( <replaceable>numeric_type</replaceable>, <replaceable>numeric_type</replaceable> )
@@ -1433,6 +1454,23 @@ SELECT NOT(ROW(table.*) IS NOT NULL) FROM TABLE; -- detect at least one null in 
        <para>
         <literal>lcm(1071, 462)</literal>
         <returnvalue>23562</returnvalue>
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>lgamma</primary>
+        </indexterm>
+        <function>lgamma</function> ( <type>double precision</type> )
+        <returnvalue>double precision</returnvalue>
+       </para>
+       <para>
+        Natural logarithm of the absolute value of the gamma function
+       </para>
+       <para>
+        <literal>lgamma(1000)</literal>
+        <returnvalue>5905.220423209181</returnvalue>
        </para></entry>
       </row>
 
@@ -24999,6 +25037,28 @@ SELECT * FROM pg_ls_dir('.') WITH ORDINALITY AS t(ls,n);
         This function is restricted to superusers and roles with privileges of
         the <literal>pg_monitor</literal> role by default, but other users can
         be granted EXECUTE to run the function.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_get_loaded_modules</primary>
+        </indexterm>
+        <function>pg_get_loaded_modules</function> ()
+        <returnvalue>setof record</returnvalue>
+        ( <parameter>module_name</parameter> <type>text</type>,
+        <parameter>version</parameter> <type>text</type>,
+        <parameter>file_name</parameter> <type>text</type> )
+       </para>
+       <para>
+        Returns a list of the loadable modules that are loaded into the
+        current server session.  The <parameter>module_name</parameter>
+        and <parameter>version</parameter> fields are NULL unless the
+        module author supplied values for them using
+        the <literal>PG_MODULE_MAGIC_EXT</literal> macro.
+        The <parameter>file_name</parameter> field gives the file
+        name of the module (shared library).
        </para></entry>
       </row>
 

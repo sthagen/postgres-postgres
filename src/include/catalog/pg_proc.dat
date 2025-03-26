@@ -3564,6 +3564,13 @@
   proname => 'erfc', prorettype => 'float8', proargtypes => 'float8',
   prosrc => 'derfc' },
 
+{ oid => '8702', descr => 'gamma function',
+  proname => 'gamma', prorettype => 'float8', proargtypes => 'float8',
+  prosrc => 'dgamma' },
+{ oid => '8703', descr => 'natural logarithm of absolute value of gamma function',
+  proname => 'lgamma', prorettype => 'float8', proargtypes => 'float8',
+  prosrc => 'dlgamma' },
+
 { oid => '1618',
   proname => 'interval_mul', prorettype => 'interval',
   proargtypes => 'interval float8', prosrc => 'interval_mul' },
@@ -6748,6 +6755,13 @@
   proallargtypes => '{int4,text,bool}', proargmodes => '{o,o,o}',
   proargnames => '{rm_id, rm_name, rm_builtin}',
   prosrc => 'pg_get_wal_resource_managers' },
+
+{ oid => '8303', descr => 'get info about loaded modules',
+  proname => 'pg_get_loaded_modules', prorows => '10', proretset => 't',
+  provolatile => 'v', proparallel => 'r', prorettype => 'record',
+  proargtypes => '', proallargtypes => '{text,text,text}',
+  proargmodes => '{o,o,o}', proargnames => '{module_name,version,file_name}',
+  prosrc => 'pg_get_loaded_modules' },
 
 { oid => '2621', descr => 'reload configuration files',
   proname => 'pg_reload_conf', provolatile => 'v', prorettype => 'bool',
