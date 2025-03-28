@@ -21,7 +21,10 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "pg_overexplain",
+					.version = PG_VERSION
+);
 
 typedef struct
 {
@@ -134,6 +137,10 @@ overexplain_per_node_hook(PlanState *planstate, List *ancestors,
 {
 	overexplain_options *options;
 	Plan	   *plan = planstate->plan;
+
+	if (prev_explain_per_node_hook)
+		(*prev_explain_per_node_hook) (planstate, ancestors, relationship,
+									   plan_name, es);
 
 	options = GetExplainExtensionState(es, es_extension_id);
 	if (options == NULL)
@@ -250,6 +257,10 @@ overexplain_per_plan_hook(PlannedStmt *plannedstmt,
 						  QueryEnvironment *queryEnv)
 {
 	overexplain_options *options;
+
+	if (prev_explain_per_plan_hook)
+		(*prev_explain_per_plan_hook) (plannedstmt, into, es, queryString,
+									   params, queryEnv);
 
 	options = GetExplainExtensionState(es, es_extension_id);
 	if (options == NULL)
