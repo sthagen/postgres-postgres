@@ -80,7 +80,7 @@ typedef enum PgAioHandleFlags
 /*
  * The IO operations supported by the AIO subsystem.
  *
- * This could be in aio_internal.h, as it is not pubicly referenced, but
+ * This could be in aio_internal.h, as it is not publicly referenced, but
  * PgAioOpData currently *does* need to be public, therefore keeping this
  * public seems to make sense.
  */
@@ -117,9 +117,10 @@ typedef enum PgAioTargetID
 {
 	/* intentionally the zero value, to help catch zeroed memory etc */
 	PGAIO_TID_INVALID = 0,
+	PGAIO_TID_SMGR,
 } PgAioTargetID;
 
-#define PGAIO_TID_COUNT (PGAIO_TID_INVALID + 1)
+#define PGAIO_TID_COUNT (PGAIO_TID_SMGR + 1)
 
 
 /*
@@ -191,6 +192,8 @@ struct PgAioTargetInfo
 typedef enum PgAioHandleCallbackID
 {
 	PGAIO_HCB_INVALID,
+
+	PGAIO_HCB_MD_READV,
 } PgAioHandleCallbackID;
 
 
