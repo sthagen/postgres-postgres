@@ -18,6 +18,7 @@
 #include "miscadmin.h"
 #include "storage/aio.h"
 #include "storage/aio_internal.h"
+#include "storage/bufmgr.h"
 #include "storage/md.h"
 
 
@@ -40,6 +41,10 @@ static const PgAioHandleCallbacksEntry aio_handle_cbs[] = {
 	CALLBACK_ENTRY(PGAIO_HCB_INVALID, aio_invalid_cb),
 
 	CALLBACK_ENTRY(PGAIO_HCB_MD_READV, aio_md_readv_cb),
+
+	CALLBACK_ENTRY(PGAIO_HCB_SHARED_BUFFER_READV, aio_shared_buffer_readv_cb),
+
+	CALLBACK_ENTRY(PGAIO_HCB_LOCAL_BUFFER_READV, aio_local_buffer_readv_cb),
 #undef CALLBACK_ENTRY
 };
 
@@ -83,6 +88,7 @@ pgaio_io_register_callbacks(PgAioHandle *ioh, PgAioHandleCallbackID cb_id,
 {
 	const PgAioHandleCallbacksEntry *ce = &aio_handle_cbs[cb_id];
 
+	Assert(cb_id <= PGAIO_HCB_MAX);
 	if (cb_id >= lengthof(aio_handle_cbs))
 		elog(ERROR, "callback %d is out of range", cb_id);
 	if (aio_handle_cbs[cb_id].cb->complete_shared == NULL &&
