@@ -114,6 +114,9 @@ typedef struct BufferManagerRelation
 #define READ_BUFFERS_ISSUE_ADVICE (1 << 1)
 /* Don't treat page as invalid due to checksum failures. */
 #define READ_BUFFERS_IGNORE_CHECKSUM_FAILURES (1 << 2)
+/* IO will immediately be waited for */
+#define READ_BUFFERS_SYNCHRONOUSLY (1 << 3)
+
 
 struct ReadBuffersOperation
 {
@@ -133,6 +136,9 @@ struct ReadBuffersOperation
 	BlockNumber blocknum;
 	int			flags;
 	int16		nblocks;
+	int16		nblocks_done;
+	PgAioWaitRef io_wref;
+	PgAioReturn io_return;
 };
 
 typedef struct ReadBuffersOperation ReadBuffersOperation;
@@ -152,14 +158,8 @@ extern PGDLLIMPORT int bgwriter_lru_maxpages;
 extern PGDLLIMPORT double bgwriter_lru_multiplier;
 extern PGDLLIMPORT bool track_io_timing;
 
-/* only applicable when prefetching is available */
-#ifdef USE_PREFETCH
 #define DEFAULT_EFFECTIVE_IO_CONCURRENCY 16
 #define DEFAULT_MAINTENANCE_IO_CONCURRENCY 16
-#else
-#define DEFAULT_EFFECTIVE_IO_CONCURRENCY 0
-#define DEFAULT_MAINTENANCE_IO_CONCURRENCY 0
-#endif
 extern PGDLLIMPORT int effective_io_concurrency;
 extern PGDLLIMPORT int maintenance_io_concurrency;
 
