@@ -175,6 +175,7 @@ AttributeOpts
 AuthRequest
 AuthToken
 AutoPrewarmSharedState
+AutoPrewarmReadStreamData
 AutoVacOpts
 AutoVacuumShmemStruct
 AutoVacuumWorkItem
@@ -2746,6 +2747,8 @@ SimpleActionListCell
 SimpleEcontextStackEntry
 SimpleOidList
 SimpleOidListCell
+SimpleOidStringList
+SimpleOidListStringCell
 SimplePtrList
 SimplePtrListCell
 SimpleStats
@@ -2754,6 +2757,8 @@ SimpleStringListCell
 SingleBoundSortItem
 Size
 SkipPages
+SkipSupport
+SkipSupportData
 SlabBlock
 SlabContext
 SlabSlot
