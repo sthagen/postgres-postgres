@@ -1794,11 +1794,11 @@ OnConflictAction
 OnConflictClause
 OnConflictExpr
 OnConflictSetState
-OpBtreeInterpretation
 OpClassCacheEnt
 OpExpr
 OpFamilyMember
 OpFamilyOpFuncGroup
+OpIndexInterpretation
 OpclassInfo
 Operator
 OperatorElement
@@ -1825,6 +1825,7 @@ PGAlignedBlock
 PGAlignedXLogBlock
 PGAsyncStatusType
 PGCALL2
+PGCRYPTO_SHA_t
 PGChecksummablePage
 PGContextVisibility
 PGErrorVerbosity

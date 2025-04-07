@@ -991,6 +991,8 @@ get_dbnames_list_to_restore(PGconn *conn,
 				break;
 		}
 
+		destroyPQExpBuffer(db_lit);
+
 		/*
 		 * Mark db to be skipped or increment the counter of dbs to be
 		 * restored
@@ -1005,6 +1007,8 @@ get_dbnames_list_to_restore(PGconn *conn,
 			count_db++;
 		}
 	}
+
+	destroyPQExpBuffer(query);
 
 	return count_db;
 }
@@ -1048,14 +1052,14 @@ get_dbname_oid_list_from_mfile(const char *dumpdirpath, SimpleOidStringList *dbn
 	{
 		Oid			db_oid = InvalidOid;
 		char		db_oid_str[MAXPGPATH + 1] = "";
-		char		dbname[MAXPGPATH + 1] = "";
+		char	   *dbname;
 
 		/* Extract dboid. */
 		sscanf(line, "%u", &db_oid);
 		sscanf(line, "%20s", db_oid_str);
 
-		/* Now copy dbname. */
-		strcpy(dbname, line + strlen(db_oid_str) + 1);
+		/* dbname is the rest of the line */
+		dbname = line + strlen(db_oid_str) + 1;
 
 		/* Remove \n from dbname. */
 		dbname[strlen(dbname) - 1] = '\0';
