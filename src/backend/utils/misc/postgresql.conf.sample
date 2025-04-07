@@ -427,6 +427,7 @@
 #enable_tidscan = on
 #enable_group_by_reordering = on
 #enable_distinct_reordering = on
+#enable_self_join_elimination = on
 
 # - Planner Cost Constants -
 
@@ -603,6 +604,7 @@
 					#   %d = database name
 					#   %r = remote host and port
 					#   %h = remote host
+					#   %L = local address
 					#   %b = backend type
 					#   %p = process ID
 					#   %P = process ID of parallel group leader
