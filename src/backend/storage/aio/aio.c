@@ -670,6 +670,21 @@ pgaio_io_reclaim(PgAioHandle *ioh)
 
 	Assert(!ioh->resowner);
 
+	/*
+	 * Update generation & state first, before resetting the IO's fields,
+	 * otherwise a concurrent "viewer" could think the fields are valid, even
+	 * though they are being reset.  Increment the generation first, so that
+	 * we can assert elsewhere that we never wait for an IDLE IO.  While it's
+	 * a bit weird for the state to go backwards for a generation, it's OK
+	 * here, as there cannot be references to the "reborn" IO yet.  Can't
+	 * update both at once, so something has to give.
+	 */
+	ioh->generation++;
+	pgaio_io_update_state(ioh, PGAIO_HS_IDLE);
+
+	/* ensure the state update is visible before we reset fields */
+	pg_write_barrier();
+
 	ioh->op = PGAIO_OP_INVALID;
 	ioh->target = PGAIO_TID_INVALID;
 	ioh->flags = 0;
@@ -678,12 +693,6 @@ pgaio_io_reclaim(PgAioHandle *ioh)
 	ioh->report_return = NULL;
 	ioh->result = 0;
 	ioh->distilled_result.status = PGAIO_RS_UNKNOWN;
-
-	/* XXX: the barrier is probably superfluous */
-	pg_write_barrier();
-	ioh->generation++;
-
-	pgaio_io_update_state(ioh, PGAIO_HS_IDLE);
 
 	/*
 	 * We push the IO to the head of the idle IO list, that seems more cache
@@ -702,8 +711,10 @@ pgaio_io_wait_for_free(void)
 {
 	int			reclaimed = 0;
 
-	pgaio_debug(DEBUG2, "waiting for self with %d pending",
-				pgaio_my_backend->num_staged_ios);
+	pgaio_debug(DEBUG2, "waiting for free IO with %d pending, %d in-flight, %d idle IOs",
+				pgaio_my_backend->num_staged_ios,
+				dclist_count(&pgaio_my_backend->in_flight_ios),
+				dclist_is_empty(&pgaio_my_backend->idle_ios));
 
 	/*
 	 * First check if any of our IOs actually have completed - when using
@@ -734,7 +745,12 @@ pgaio_io_wait_for_free(void)
 		pgaio_submit_staged();
 
 	if (dclist_count(&pgaio_my_backend->in_flight_ios) == 0)
-		elog(ERROR, "no free IOs despite no in-flight IOs");
+		ereport(ERROR,
+				errmsg_internal("no free IOs despite no in-flight IOs"),
+				errdetail_internal("%d pending, %d in-flight, %d idle IOs",
+								   pgaio_my_backend->num_staged_ios,
+								   dclist_count(&pgaio_my_backend->in_flight_ios),
+								   dclist_is_empty(&pgaio_my_backend->idle_ios)));
 
 	/*
 	 * Wait for the oldest in-flight IO to complete.
@@ -1127,7 +1143,13 @@ pgaio_closing_fd(int fd)
 	 * For now just submit all staged IOs - we could be more selective, but
 	 * it's probably not worth it.
 	 */
-	pgaio_submit_staged();
+	if (pgaio_my_backend->num_staged_ios > 0)
+	{
+		pgaio_debug(DEBUG2,
+					"submitting %d IOs before FD %d gets closed",
+					pgaio_my_backend->num_staged_ios, fd);
+		pgaio_submit_staged();
+	}
 
 	/*
 	 * If requested by the IO method, wait for all IOs that use the
@@ -1159,6 +1181,10 @@ pgaio_closing_fd(int fd)
 			if (!ioh)
 				break;
 
+			pgaio_debug_io(DEBUG2, ioh,
+						   "waiting for IO before FD %d gets closed, %d in-flight IOs",
+						   fd, dclist_count(&pgaio_my_backend->in_flight_ios));
+
 			/* see comment in pgaio_io_wait_for_free() about raciness */
 			pgaio_io_wait(ioh, ioh->generation);
 		}
@@ -1189,6 +1215,10 @@ pgaio_shutdown(int code, Datum arg)
 	while (!dclist_is_empty(&pgaio_my_backend->in_flight_ios))
 	{
 		PgAioHandle *ioh = dclist_head_element(PgAioHandle, node, &pgaio_my_backend->in_flight_ios);
+
+		pgaio_debug_io(DEBUG2, ioh,
+					   "waiting for IO to complete during shutdown, %d in-flight IOs",
+					   dclist_count(&pgaio_my_backend->in_flight_ios));
 
 		/* see comment in pgaio_io_wait_for_free() about raciness */
 		pgaio_io_wait(ioh, ioh->generation);
