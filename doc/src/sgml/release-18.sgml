@@ -111,7 +111,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Prevent COPY IN from treating \. as an end-of-file marker when reading CSV files (Daniel Vérité, Tom Lane)
+Prevent COPY FROM from treating \. as an end-of-file marker when reading CSV files (Daniel Vérité, Tom Lane)
 <ulink url="&commit_baseurl;770233748">&sect;</ulink>
 <ulink url="&commit_baseurl;da8a4c166">&sect;</ulink>
 </para>
@@ -1121,12 +1121,15 @@ Add function pg_check_fipsmode() to report the server's FIPS mode (Daniel Gustaf
 <!--
 Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 2025-04-02 [a460251f0] Make cancel request keys longer
+Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
+2024-07-29 [9d9b9d46f] Move cancel key generation to after forking the backend
 -->
 
 <listitem>
 <para>
-Make cancel request keys 256 bits (Heikki Linnakangas)
+Make cancel request keys 256 bits (Heikki Linnakangas, Jelte Fennema-Nio)
 <ulink url="&commit_baseurl;a460251f0">&sect;</ulink>
+<ulink url="&commit_baseurl;9d9b9d46f">&sect;</ulink>
 </para>
 
 <para>
@@ -1527,23 +1530,6 @@ This is specified by WITHOUT OVERLAPS on the last column.
 </para>
 </listitem>
 
-
-<!--
-Author: Peter Eisentraut <peter@eisentraut.org>
-2024-11-15 [9321d2fdf] Fix collation handling for foreign keys
--->
-
-<listitem>
-<para>
-Require primary/foreign key relationships to use either deterministic collations or the the same nondeterministic collations (Peter Eisentraut)
-<ulink url="&commit_baseurl;9321d2fdf">&sect;</ulink>
-</para>
-
-<para>
-The restore of a pg_dump, also used by pg_upgrade, will fail if these requirements are not met;  schema changes must be made for these upgrade methods to succeed.
-</para>
-</listitem>
-
 <!--
 Author: Peter Eisentraut <peter@eisentraut.org>
 2025-01-11 [ca87c415e] Add support for NOT ENFORCED in CHECK constraints
@@ -1564,6 +1550,38 @@ This also adds column pg_constraint.conenforced.
 </listitem>
 
 <!--
+Author: Peter Eisentraut <peter@eisentraut.org>
+2024-11-15 [9321d2fdf] Fix collation handling for foreign keys
+-->
+
+<listitem>
+<para>
+Require primary/foreign key relationships to use either deterministic collations or the the same nondeterministic collations (Peter Eisentraut)
+<ulink url="&commit_baseurl;9321d2fdf">&sect;</ulink>
+</para>
+
+<para>
+The restore of a pg_dump, also used by pg_upgrade, will fail if these requirements are not met;  schema changes must be made for these upgrade methods to succeed.
+</para>
+</listitem>
+
+<!--
+Author: Álvaro Herrera <alvherre@alvh.no-ip.org>
+2024-11-08 [14e87ffa5] Add pg_constraint rows for not-null constraints
+-->
+
+<listitem>
+<para>
+Store column NOT NULL specifications in pg_constraint (Álvaro Herrera, Bernd Helmle)
+<ulink url="&commit_baseurl;14e87ffa5">&sect;</ulink>
+</para>
+
+<para>
+This allows names to be specified for NOT NULL constraint.  This also adds NOT NULL constraints to foreign tables and NOT NULL inheritance control to local tables.
+</para>
+</listitem>
+
+<!--
 Author: Álvaro Herrera <alvherre@alvh.no-ip.org>
 2025-04-07 [a379061a2] Allow NOT NULL constraints to be added as NOT VALID
 -->
@@ -1572,6 +1590,25 @@ Author: Álvaro Herrera <alvherre@alvh.no-ip.org>
 <para>
 Allow ALTER TABLE to set the NOT VALID attribute of NOT NULL constraints (Rushabh Lathia, Jian He)
 <ulink url="&commit_baseurl;a379061a2">&sect;</ulink>
+</para>
+</listitem>
+
+<!--
+Author: Álvaro Herrera <alvherre@alvh.no-ip.org>
+2025-03-05 [f4e53e10b] Add ALTER TABLE ... ALTER CONSTRAINT ... SET [NO] INHERI
+Author: Álvaro Herrera <alvherre@alvh.no-ip.org>
+2025-03-27 [4a02af8b1] Simplify syntax for ALTER TABLE ALTER CONSTRAINT NO INHE
+-->
+
+<listitem>
+<para>
+Allow modification of the inheritability of NOT NULL constraints (Suraj Kharage, Álvaro Herrera)
+<ulink url="&commit_baseurl;f4e53e10b">&sect;</ulink>
+<ulink url="&commit_baseurl;4a02af8b1">&sect;</ulink>
+</para>
+
+<para>
+The syntax is ALTER TABLE ... ALTER CONSTRAINT ... [NO] INHERIT.
 </para>
 </listitem>
 
@@ -1603,41 +1640,6 @@ This was previously erroneously prohibited.
 </para>
 </listitem>
 
-<!--
-Author: Álvaro Herrera <alvherre@alvh.no-ip.org>
-2025-03-05 [f4e53e10b] Add ALTER TABLE ... ALTER CONSTRAINT ... SET [NO] INHERI
-Author: Álvaro Herrera <alvherre@alvh.no-ip.org>
-2025-03-27 [4a02af8b1] Simplify syntax for ALTER TABLE ALTER CONSTRAINT NO INHE
--->
-
-<listitem>
-<para>
-Allow modification of the inheritability of constraints (Suraj Kharage, Álvaro Herrera)
-<ulink url="&commit_baseurl;f4e53e10b">&sect;</ulink>
-<ulink url="&commit_baseurl;4a02af8b1">&sect;</ulink>
-</para>
-
-<para>
-The syntax is ALTER TABLE ... ALTER CONSTRAINT ... [NO] INHERIT.
-</para>
-</listitem>
-
-<!--
-Author: Álvaro Herrera <alvherre@alvh.no-ip.org>
-2024-11-08 [14e87ffa5] Add pg_constraint rows for not-null constraints
--->
-
-<listitem>
-<para>
-Store column NOT NULL specifications in pg_constraint (Álvaro Herrera, Bernd Helmle)
-<ulink url="&commit_baseurl;14e87ffa5">&sect;</ulink>
-</para>
-
-<para>
-This allows names to be specified for NOT NULL constraint.  This also adds NOT NULL constraints to foreign tables and NOT NULL inheritance control to local tables.
-</para>
-</listitem>
-
       </itemizedlist>
     </sect4>
 
@@ -1653,12 +1655,12 @@ Author: Fujii Masao <fujii@postgresql.org>
 
 <listitem>
 <para>
-Add REJECT_LIMIT to control the number of invalid rows COPY IN can ignore (Atsushi Torikoshi)
+Add REJECT_LIMIT to control the number of invalid rows COPY FROM can ignore (Atsushi Torikoshi)
 <ulink url="&commit_baseurl;4ac2a9bec">&sect;</ulink>
 </para>
 
 <para>
-This is active when ON_ERROR = 'ignore'.
+This is available when ON_ERROR = 'ignore'.
 </para>
 </listitem>
 
@@ -1676,12 +1678,12 @@ Allow COPY TO to copy rows from populated materialized view (Jian He)
 
 <!--
 Author: Fujii Masao <fujii@postgresql.org>
-2024-10-03 [e7834a1a2] Add log_verbosity = 'silent' support to COPY command.
+2024-10-03 [e7834a1a2] Add LOG_VERBOSITY = 'silent' support to COPY command.
 -->
 
 <listitem>
 <para>
-Add COPY log_verbosity level "silent" to suppress all log output (Atsushi Torikoshi)
+Add COPY LOG_VERBOSITY level "silent" to suppress log output of ignored rows (Atsushi Torikoshi)
 <ulink url="&commit_baseurl;e7834a1a2">&sect;</ulink>
 </para>
 
@@ -2169,12 +2171,15 @@ Add function PQfullProtocolVersion() to report the full, including minor, protoc
 <!--
 Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 2025-04-02 [285613c60] libpq: Add min/max_protocol_version connection options
+Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
+2025-04-02 [507034910] libpq: Handle NegotiateProtocolVersion message different
 -->
 
 <listitem>
 <para>
 Add libpq connection parameters and environment variables to specify the minimum and maximum acceptable protocol version for connections (Jelte Fennema-Nio)
 <ulink url="&commit_baseurl;285613c60">&sect;</ulink>
+<ulink url="&commit_baseurl;507034910">&sect;</ulink>
 </para>
 </listitem>
 
@@ -3241,7 +3246,7 @@ Author: Fujii Masao <fujii@postgresql.org>
 
 <listitem>
 <para>
-Add REJECT_LIMIT to control the number of invalid rows file_fdw can ignore (Atsushi Torikoshi)
+Add "reject_limit" to control the number of invalid rows file_fdw can ignore (Atsushi Torikoshi)
 <ulink url="&commit_baseurl;6c8f67032">&sect;</ulink>
 </para>
 
