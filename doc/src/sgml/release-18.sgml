@@ -174,14 +174,18 @@ This is now longer needed since pg_backend_memory_contexts.path was added.
 Author: David Rowley <drowley@postgresql.org>
 2024-07-25 [32d3ed816] Add path column to pg_backend_memory_contexts view
 Author: David Rowley <drowley@postgresql.org>
-2025-04-18 [d9e03864b] Make levels 1-based in pg_log_backend_memory_contexts()
+2025-04-18 [d9e03864b] Make levels 1-based in
+pg_log_backend_memory_contexts()
+Author: Fujii Masao <fujii@postgresql.org>
+2025-04-21 [706cbed35] doc: Fix memory context level in pg_log_backend_memory_c
 -->
 
 <listitem>
 <para>
-Change pg_backend_memory_contexts.level and pg_log_backend_memory_contexts()() to be one-based (Melih Mutlu, Fujii Masao)
+Change pg_backend_memory_contexts.level and pg_log_backend_memory_contexts() to be one-based (Melih Mutlu, Atsushi Torikoshi, David Rowley, Fujii Masao)
 <ulink url="&commit_baseurl;32d3ed816">&sect;</ulink>
 <ulink url="&commit_baseurl;d9e03864b">&sect;</ulink>
+<ulink url="&commit_baseurl;706cbed35">&sect;</ulink>
 </para>
 
 <para>
@@ -1428,9 +1432,9 @@ Add OLD/NEW support to RETURNING in DML queries (Dean Rasheed)
 </para>
 
 <para>
-Previously RETURNING only returned new values for INSERT and UPDATE, old values for DELETE;  MERGE would return the appropriate value for the internal query executed.  This new syntax
-allows INSERT with an ON CONFLICT action to return old values, UPDATE to return old values, and DELETE to return new values if the query assigned to an ON DELETE row would return new
-values.  New syntax allows changeable relation aliases "old" and "new" to specify which values should be returned.
+Previously RETURNING only returned new values for INSERT and UPDATE, and old values for DELETE; MERGE would return the appropriate value for the internal query executed.  This new syntax
+allows the RETURNING list of INSERT/UPDATE/DELETE/MERGE to explicitly return old and new values by using the special aliases "old" and "new".  These aliases can be renamed to
+avoid identifier conflicts.
 </para>
 </listitem>
 
