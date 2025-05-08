@@ -173,16 +173,19 @@ This is now longer needed since pg_backend_memory_contexts.path was added.
 <!--
 Author: David Rowley <drowley@postgresql.org>
 2024-07-25 [32d3ed816] Add path column to pg_backend_memory_contexts view
+Author: David Rowley <drowley@postgresql.org>
+2025-04-18 [d9e03864b] Make levels 1-based in pg_log_backend_memory_contexts()
 -->
 
 <listitem>
 <para>
-Change pg_backend_memory_contexts.level to be one-based (Melih Mutlu)
+Change pg_backend_memory_contexts.level and pg_log_backend_memory_contexts()() to be one-based (Melih Mutlu, Fujii Masao)
 <ulink url="&commit_baseurl;32d3ed816">&sect;</ulink>
+<ulink url="&commit_baseurl;d9e03864b">&sect;</ulink>
 </para>
 
 <para>
-It was previously zero-based.
+These were previously zero-based.
 </para>
 </listitem>
 
@@ -304,16 +307,25 @@ from the grouping.  This was already true for non-deferred primary keys.
 <!--
 Author: Richard Guo <rguo@postgresql.org>
 2024-10-09 [67a54b9e8] Allow pushdown of HAVING clauses with grouping sets
+Author: Richard Guo <rguo@postgresql.org>
+2024-09-10 [247dea89f] Introduce an RTE for the grouping step
+Author: Richard Guo <rguo@postgresql.org>
+2024-09-10 [f5050f795] Mark expressions nullable by grouping sets
+Author: Richard Guo <rguo@postgresql.org>
+2025-03-13 [cc5d98525] Fix incorrect handling of subquery pullup
 -->
 
 <listitem>
 <para>
 Allow some HAVING clauses on GROUPING SETS to be pushed to WHERE clauses (Richard Guo)
 <ulink url="&commit_baseurl;67a54b9e8">&sect;</ulink>
+<ulink url="&commit_baseurl;247dea89f">&sect;</ulink>
+<ulink url="&commit_baseurl;f5050f795">&sect;</ulink>
+<ulink url="&commit_baseurl;cc5d98525">&sect;</ulink>
 </para>
 
 <para>
-This allows earlier row filtering.
+This allows earlier row filtering.  This release also fixes some GROUPING SETS queries that used to return incorrect results.
 </para>
 </listitem>
 
@@ -397,30 +409,9 @@ Author: David Rowley <drowley@postgresql.org>
 
 <listitem>
 <para>
-Allow partitions to be pruned more efficienty (Ashutosh Bapat, Yuya Watari, David Rowley)
+Improve the efficiency of planning queries accessing many partitions (Ashutosh Bapat, Yuya Watari, David Rowley)
 <ulink url="&commit_baseurl;88f55bc97">&sect;</ulink>
 <ulink url="&commit_baseurl;d69d45a5a">&sect;</ulink>
-</para>
-</listitem>
-
-<!--
-Author: Amit Langote <amitlan@postgresql.org>
-2025-01-30 [bb3ec16e1] Move PartitionPruneInfo out of plan nodes into PlannedSt
-Author: Amit Langote <amitlan@postgresql.org>
-2025-01-31 [d47cbf474] Perform runtime initial pruning outside ExecInitNode()
-Author: Amit Langote <amitlan@postgresql.org>
-2025-02-07 [cbc127917] Track unpruned relids to avoid processing pruned relatio
-Author: Amit Langote <amitlan@postgresql.org>
-2025-02-20 [525392d57] Don't lock partitions pruned by initial pruning
--->
-
-<listitem>
-<para>
-Avoid the locking of pruned partitions during planning (Amit Langote)
-<ulink url="&commit_baseurl;bb3ec16e1">&sect;</ulink>
-<ulink url="&commit_baseurl;d47cbf474">&sect;</ulink>
-<ulink url="&commit_baseurl;cbc127917">&sect;</ulink>
-<ulink url="&commit_baseurl;525392d57">&sect;</ulink>
 </para>
 </listitem>
 
@@ -618,6 +609,27 @@ Author: Tomas Vondra <tomas.vondra@postgresql.org>
 <para>
 Improve the locking performance of queries that access many relations (Tomas Vondra)
 <ulink url="&commit_baseurl;c4d5cb71d">&sect;</ulink>
+</para>
+</listitem>
+
+<!--
+Author: Amit Langote <amitlan@postgresql.org>
+2025-01-30 [bb3ec16e1] Move PartitionPruneInfo out of plan nodes into PlannedSt
+Author: Amit Langote <amitlan@postgresql.org>
+2025-01-31 [d47cbf474] Perform runtime initial pruning outside ExecInitNode()
+Author: Amit Langote <amitlan@postgresql.org>
+2025-02-07 [cbc127917] Track unpruned relids to avoid processing pruned relatio
+Author: Amit Langote <amitlan@postgresql.org>
+2025-02-20 [525392d57] Don't lock partitions pruned by initial pruning
+-->
+
+<listitem>
+<para>
+Avoid the locking of pruned partitions during execution (Amit Langote)
+<ulink url="&commit_baseurl;bb3ec16e1">&sect;</ulink>
+<ulink url="&commit_baseurl;d47cbf474">&sect;</ulink>
+<ulink url="&commit_baseurl;cbc127917">&sect;</ulink>
+<ulink url="&commit_baseurl;525392d57">&sect;</ulink>
 </para>
 </listitem>
 
@@ -1916,7 +1928,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Allow jsonb NULL values to be cast to scalar types as NULL (Tom Lane)
+Allow jsonb "null" values to be cast to scalar types as NULL (Tom Lane)
 <ulink url="&commit_baseurl;a5579a90a">&sect;</ulink>
 </para>
 
@@ -2596,12 +2608,8 @@ Author: Jeff Davis <jdavis@postgresql.org>
 
 <listitem>
 <para>
-Add pg_dump options --with-schema, --with-data, and --with_statistics (Jeff Davis)
+Add pg_dump options --with-schema, --with-data, and --with-statistics (Jeff Davis)
 <ulink url="&commit_baseurl;bde2fb797">&sect;</ulink>
-</para>
-
-<para>
-The negative versions of these options already existed.
 </para>
 </listitem>
 
@@ -2636,7 +2644,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Add option --no-policies to pg_dump, pg_dumpall, pg_restore to avoid policy specification (Nikolay Samokhvalov)
+Add option --no-policies to disable row level security policy processing in pg_dump, pg_dumpall, pg_restore (Nikolay Samokhvalov)
 <ulink url="&commit_baseurl;cd3c45125">&sect;</ulink>
 </para>
 
@@ -3308,7 +3316,7 @@ Author: Tatsuo Ishii <ishii@postgresql.org>
 
 <listitem>
 <para>
-Have pgbench report the number of failed transactions (Yugo Nagata)
+Have pgbench report the number of failed, retried, or skipped transactions in per-script reports (Yugo Nagata)
 <ulink url="&commit_baseurl;cae0f3c40">&sect;</ulink>
 </para>
 </listitem>
