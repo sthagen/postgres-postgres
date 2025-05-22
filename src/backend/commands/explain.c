@@ -369,8 +369,7 @@ standard_ExplainOneQuery(Query *query, int cursorOptions,
 	}
 
 	/* run it (if needed) and produce output */
-	ExplainOnePlan(plan, NULL, NULL, -1, into, es, queryString, params,
-				   queryEnv,
+	ExplainOnePlan(plan, into, es, queryString, params, queryEnv,
 				   &planduration, (es->buffers ? &bufusage : NULL),
 				   es->memory ? &mem_counters : NULL);
 }
@@ -492,9 +491,7 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
  * to call it.
  */
 void
-ExplainOnePlan(PlannedStmt *plannedstmt, CachedPlan *cplan,
-			   CachedPlanSource *plansource, int query_index,
-			   IntoClause *into, ExplainState *es,
+ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 			   const char *queryString, ParamListInfo params,
 			   QueryEnvironment *queryEnv, const instr_time *planduration,
 			   const BufferUsage *bufusage,
@@ -550,7 +547,7 @@ ExplainOnePlan(PlannedStmt *plannedstmt, CachedPlan *cplan,
 		dest = None_Receiver;
 
 	/* Create a QueryDesc for the query */
-	queryDesc = CreateQueryDesc(plannedstmt, cplan, queryString,
+	queryDesc = CreateQueryDesc(plannedstmt, queryString,
 								GetActiveSnapshot(), InvalidSnapshot,
 								dest, params, queryEnv, instrument_option);
 
@@ -564,17 +561,8 @@ ExplainOnePlan(PlannedStmt *plannedstmt, CachedPlan *cplan,
 	if (into)
 		eflags |= GetIntoRelEFlags(into);
 
-	/* Prepare the plan for execution. */
-	if (queryDesc->cplan)
-	{
-		ExecutorStartCachedPlan(queryDesc, eflags, plansource, query_index);
-		Assert(queryDesc->planstate);
-	}
-	else
-	{
-		if (!ExecutorStart(queryDesc, eflags))
-			elog(ERROR, "ExecutorStart() failed unexpectedly");
-	}
+	/* call ExecutorStart to prepare the plan for execution */
+	ExecutorStart(queryDesc, eflags);
 
 	/* Execute the plan for statistics if asked for */
 	if (es->analyze)
@@ -1232,6 +1220,10 @@ ExplainPreScanNode(PlanState *planstate, Bitmapset **rels_used)
 			if (((ModifyTable *) plan)->exclRelRTI)
 				*rels_used = bms_add_member(*rels_used,
 											((ModifyTable *) plan)->exclRelRTI);
+			/* Ensure Vars used in RETURNING will have refnames */
+			if (plan->targetlist)
+				*rels_used = bms_add_member(*rels_used,
+											linitial_int(((ModifyTable *) plan)->resultRelations));
 			break;
 		case T_Append:
 			*rels_used = bms_add_members(*rels_used,
