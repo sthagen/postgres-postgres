@@ -459,8 +459,6 @@ Author: Peter Geoghegan <pg@bowt.ie>
 2025-04-04 [92fe23d93] Add nbtree skip scan optimization.
 Author: Peter Geoghegan <pg@bowt.ie>
 2025-04-04 [8a510275d] Further optimize nbtree search scan key comparisons.
-Author: Peter Geoghegan <pg@bowt.ie>
-2025-04-04 [8a510275d] Further optimize nbtree search scan key comparisons.
 -->
 
 <listitem>
@@ -468,11 +466,11 @@ Author: Peter Geoghegan <pg@bowt.ie>
 Allow skip scans of btree indexes (Peter Geoghegan)
 <ulink url="&commit_baseurl;92fe23d93">&sect;</ulink>
 <ulink url="&commit_baseurl;8a510275d">&sect;</ulink>
-<ulink url="&commit_baseurl;8a510275d">&sect;</ulink>
 </para>
 
 <para>
-This is effective if the earlier non-referenced columns contain few unique values.
+This allows muti-column btree indexes to be used by queries that only
+reference the second or later indexed columns.
 </para>
 </listitem>
 
@@ -964,21 +962,6 @@ This is true even if the tables in different schemas have different column names
 </listitem>
 
 <!--
-Author: Daniel Gustafsson <dgustafsson@postgresql.org>
-2025-04-08 [042a66291] Add function to get memory context stats for processes
-Author: Daniel Gustafsson <dgustafsson@postgresql.org>
-2025-04-08 [c57971034] Rename argument in pg_get_process_memory_contexts().
--->
-
-<listitem>
-<para>
-Add function pg_get_process_memory_contexts() to report process memory context statistics (Rahila Syed)
-<ulink url="&commit_baseurl;042a66291">&sect;</ulink>
-<ulink url="&commit_baseurl;c57971034">&sect;</ulink>
-</para>
-</listitem>
-
-<!--
 Author: David Rowley <drowley@postgresql.org>
 2024-07-01 [12227a1d5] Add context type field to pg_backend_memory_contexts
 -->
@@ -1318,7 +1301,7 @@ Author: Amit Kapila <akapila@postgresql.org>
 
 <listitem>
 <para>
-Change the default CREATE SUBSCRIPTION streaming option from "off" to "parallel" (Hayato Kuroda, Masahiko Sawada, Peter Smith, Amit Kapila)
+Change the default CREATE SUBSCRIPTION streaming option from "off" to "parallel" (Vignesh C)
 <ulink url="&commit_baseurl;1bf1140be">&sect;</ulink>
 </para>
 </listitem>
