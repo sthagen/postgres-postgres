@@ -8609,7 +8609,7 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 		rel->rd_att->constr && rel->rd_att->constr->num_check > 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns on tables with check constraints"),
+				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns in tables with check constraints"),
 				 errdetail("Column \"%s\" of relation \"%s\" is a virtual generated column.",
 						   colName, RelationGetRelationName(rel))));
 
@@ -8627,7 +8627,7 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 		GetRelationPublications(RelationGetRelid(rel)) != NIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns on tables that are part of a publication"),
+				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns in tables that are part of a publication"),
 				 errdetail("Column \"%s\" of relation \"%s\" is a virtual generated column.",
 						   colName, RelationGetRelationName(rel))));
 
@@ -10189,7 +10189,7 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	if (pk_has_without_overlaps && !with_period)
 		ereport(ERROR,
 				errcode(ERRCODE_INVALID_FOREIGN_KEY),
-				errmsg("foreign key must use PERIOD when referencing a primary using WITHOUT OVERLAPS"));
+				errmsg("foreign key must use PERIOD when referencing a primary key using WITHOUT OVERLAPS"));
 
 	/*
 	 * Now we can check permissions.
@@ -12913,8 +12913,9 @@ ATExecValidateConstraint(List **wqueue, Relation rel, char *constrName,
 		con->contype != CONSTRAINT_NOTNULL)
 		ereport(ERROR,
 				errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				errmsg("constraint \"%s\" of relation \"%s\" is not a foreign key, check, or not-null constraint",
-					   constrName, RelationGetRelationName(rel)));
+				errmsg("cannot validate constraint \"%s\" of relation \"%s\"",
+					   constrName, RelationGetRelationName(rel)),
+				errdetail("This operation is not supported for this type of constraint."));
 
 	if (!con->conenforced)
 		ereport(ERROR,
@@ -15414,9 +15415,12 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 	/*
 	 * Re-parse the index and constraint definitions, and attach them to the
 	 * appropriate work queue entries.  We do this before dropping because in
-	 * the case of a FOREIGN KEY constraint, we might not yet have exclusive
-	 * lock on the table the constraint is attached to, and we need to get
-	 * that before reparsing/dropping.
+	 * the case of a constraint on another table, we might not yet have
+	 * exclusive lock on the table the constraint is attached to, and we need
+	 * to get that before reparsing/dropping.  (That's possible at least for
+	 * FOREIGN KEY, CHECK, and EXCLUSION constraints; in non-FK cases it
+	 * requires a dependency on the target table's composite type in the other
+	 * table's constraint expressions.)
 	 *
 	 * We can't rely on the output of deparsing to tell us which relation to
 	 * operate on, because concurrent activity might have made the name
@@ -15432,7 +15436,6 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 		Form_pg_constraint con;
 		Oid			relid;
 		Oid			confrelid;
-		char		contype;
 		bool		conislocal;
 
 		tup = SearchSysCache1(CONSTROID, ObjectIdGetDatum(oldId));
@@ -15449,7 +15452,6 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 				elog(ERROR, "could not identify relation associated with constraint %u", oldId);
 		}
 		confrelid = con->confrelid;
-		contype = con->contype;
 		conislocal = con->conislocal;
 		ReleaseSysCache(tup);
 
@@ -15467,12 +15469,12 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 			continue;
 
 		/*
-		 * When rebuilding an FK constraint that references the table we're
-		 * modifying, we might not yet have any lock on the FK's table, so get
-		 * one now.  We'll need AccessExclusiveLock for the DROP CONSTRAINT
-		 * step, so there's no value in asking for anything weaker.
+		 * When rebuilding another table's constraint that references the
+		 * table we're modifying, we might not yet have any lock on the other
+		 * table, so get one now.  We'll need AccessExclusiveLock for the DROP
+		 * CONSTRAINT step, so there's no value in asking for anything weaker.
 		 */
-		if (relid != tab->relid && contype == CONSTRAINT_FOREIGN)
+		if (relid != tab->relid)
 			LockRelationOid(relid, AccessExclusiveLock);
 
 		ATPostAlterTypeParse(oldId, relid, confrelid,
