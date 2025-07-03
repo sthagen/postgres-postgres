@@ -74,6 +74,7 @@ AlterDatabaseSetStmt
 AlterDatabaseStmt
 AlterDefaultPrivilegesStmt
 AlterDomainStmt
+AlterDomainType
 AlterEnumStmt
 AlterEventTrigStmt
 AlterExtensionContentsStmt
@@ -521,7 +522,6 @@ CopyFormatOptions
 CopyFromRoutine
 CopyFromState
 CopyFromStateData
-CopyHeaderChoice
 CopyInsertMethod
 CopyLogVerbosityChoice
 CopyMethod
@@ -1291,6 +1291,7 @@ InjectionPointCacheEntry
 InjectionPointCallback
 InjectionPointCondition
 InjectionPointConditionType
+InjectionPointData
 InjectionPointEntry
 InjectionPointSharedState
 InjectionPointsCtl
