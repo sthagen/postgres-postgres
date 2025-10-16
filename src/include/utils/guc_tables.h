@@ -188,6 +188,7 @@ struct config_generic
 	Oid			reset_srole;	/* role that set the reset value */
 	GucStack   *stack;			/* stacked prior values */
 	void	   *extra;			/* "extra" pointer for current actual value */
+	void	   *reset_extra;
 	dlist_node	nondef_link;	/* list link for variables that have source
 								 * different from PGC_S_DEFAULT */
 	slist_node	stack_link;		/* list link for variables that have non-NULL
@@ -224,7 +225,6 @@ struct config_bool
 	GucShowHook show_hook;
 	/* variable fields, initialized at runtime: */
 	bool		reset_val;
-	void	   *reset_extra;
 };
 
 struct config_int
@@ -240,7 +240,6 @@ struct config_int
 	GucShowHook show_hook;
 	/* variable fields, initialized at runtime: */
 	int			reset_val;
-	void	   *reset_extra;
 };
 
 struct config_real
@@ -256,7 +255,6 @@ struct config_real
 	GucShowHook show_hook;
 	/* variable fields, initialized at runtime: */
 	double		reset_val;
-	void	   *reset_extra;
 };
 
 /*
@@ -280,7 +278,6 @@ struct config_string
 	GucShowHook show_hook;
 	/* variable fields, initialized at runtime: */
 	char	   *reset_val;
-	void	   *reset_extra;
 };
 
 struct config_enum
@@ -295,7 +292,6 @@ struct config_enum
 	GucShowHook show_hook;
 	/* variable fields, initialized at runtime: */
 	int			reset_val;
-	void	   *reset_extra;
 };
 
 /* constant tables corresponding to enums above and in guc.h */
@@ -319,10 +315,10 @@ extern struct config_generic *find_option(const char *name,
 extern struct config_generic **get_explain_guc_options(int *num);
 
 /* get string value of variable */
-extern char *ShowGUCOption(struct config_generic *record, bool use_units);
+extern char *ShowGUCOption(const struct config_generic *record, bool use_units);
 
 /* get whether or not the GUC variable is visible to current user */
-extern bool ConfigOptionIsVisible(struct config_generic *conf);
+extern bool ConfigOptionIsVisible(const struct config_generic *conf);
 
 /* get the current set of variables */
 extern struct config_generic **get_guc_variables(int *num_vars);
@@ -330,10 +326,10 @@ extern struct config_generic **get_guc_variables(int *num_vars);
 extern void build_guc_variables(void);
 
 /* search in enum options */
-extern const char *config_enum_lookup_by_value(struct config_enum *record, int val);
-extern bool config_enum_lookup_by_name(struct config_enum *record,
+extern const char *config_enum_lookup_by_value(const struct config_enum *record, int val);
+extern bool config_enum_lookup_by_name(const struct config_enum *record,
 									   const char *value, int *retval);
-extern char *config_enum_get_options(struct config_enum *record,
+extern char *config_enum_get_options(const struct config_enum *record,
 									 const char *prefix,
 									 const char *suffix,
 									 const char *separator);
