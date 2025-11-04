@@ -152,7 +152,9 @@ typedef struct
 	 * only in the leader process.
 	 */
 	GinLeader  *bs_leader;
-	int			bs_worker_id;
+
+	/* number of participating workers (including leader) */
+	int			bs_num_workers;
 
 	/* used to pass information from workers to leader */
 	double		bs_numtuples;
@@ -483,6 +485,15 @@ ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
 /*
  * ginFlushBuildState
  *		Write all data from BuildAccumulator into the tuplesort.
+ *
+ * The number of TIDs written to the tuplesort at once is limited, to reduce
+ * the amount of memory needed when merging the intermediate results later.
+ * The leader will see up to two chunks per worker, so calculate the limit to
+ * not need more than MaxAllocSize overall.
+ *
+ * We don't need to worry about overflowing maintenance_work_mem. We can't
+ * build chunks larger than work_mem, and that limit was set so that workers
+ * produce sufficiently small chunks.
  */
 static void
 ginFlushBuildState(GinBuildState *buildstate, Relation index)
@@ -493,6 +504,11 @@ ginFlushBuildState(GinBuildState *buildstate, Relation index)
 	uint32		nlist;
 	OffsetNumber attnum;
 	TupleDesc	tdesc = RelationGetDescr(index);
+	uint32		maxlen;
+
+	/* maximum number of TIDs per chunk (two chunks per worker) */
+	maxlen = MaxAllocSize / sizeof(ItemPointerData);
+	maxlen /= (2 * buildstate->bs_num_workers);
 
 	ginBeginBAScan(&buildstate->accum);
 	while ((list = ginGetBAEntry(&buildstate->accum,
@@ -501,20 +517,31 @@ ginFlushBuildState(GinBuildState *buildstate, Relation index)
 		/* information about the key */
 		CompactAttribute *attr = TupleDescCompactAttr(tdesc, (attnum - 1));
 
-		/* GIN tuple and tuple length */
-		GinTuple   *tup;
-		Size		tuplen;
+		/* start of the chunk */
+		uint32		offset = 0;
 
-		/* there could be many entries, so be willing to abort here */
-		CHECK_FOR_INTERRUPTS();
+		/* split the entry into smaller chunk with up to maxlen items */
+		while (offset < nlist)
+		{
+			/* GIN tuple and tuple length */
+			GinTuple   *tup;
+			Size		tuplen;
+			uint32		len = Min(maxlen, nlist - offset);
 
-		tup = _gin_build_tuple(attnum, category,
-							   key, attr->attlen, attr->attbyval,
-							   list, nlist, &tuplen);
+			/* there could be many entries, so be willing to abort here */
+			CHECK_FOR_INTERRUPTS();
 
-		tuplesort_putgintuple(buildstate->bs_worker_sort, tup, tuplen);
+			tup = _gin_build_tuple(attnum, category,
+								   key, attr->attlen, attr->attbyval,
+								   &list[offset], len,
+								   &tuplen);
 
-		pfree(tup);
+			offset += len;
+
+			tuplesort_putgintuple(buildstate->bs_worker_sort, tup, tuplen);
+
+			pfree(tup);
+		}
 	}
 
 	MemoryContextReset(buildstate->tmpCtx);
@@ -1374,10 +1401,46 @@ GinBufferKeyEquals(GinBuffer *buffer, GinTuple *tup)
  * enough TIDs to trim (with values less than "first" TID from the new tuple),
  * we do the trim. By enough we mean at least 128 TIDs (mostly an arbitrary
  * number).
+ *
+ * We try freezing TIDs at the beginning of the list first, before attempting
+ * to trim the buffer. This may allow trimming the data earlier, reducing the
+ * memory usage and excluding it from the mergesort.
  */
 static bool
 GinBufferShouldTrim(GinBuffer *buffer, GinTuple *tup)
 {
+	/*
+	 * Check if the last TID in the current list is frozen. This is the case
+	 * when merging non-overlapping lists, e.g. in each parallel worker.
+	 */
+	if ((buffer->nitems > 0) &&
+		(ItemPointerCompare(&buffer->items[buffer->nitems - 1],
+							GinTupleGetFirst(tup)) == 0))
+		buffer->nfrozen = buffer->nitems;
+
+	/*
+	 * Now find the last TID we know to be frozen, i.e. the last TID right
+	 * before the new GIN tuple.
+	 *
+	 * Start with the first not-yet-frozen tuple, and walk until we find the
+	 * first TID that's higher. If we already know the whole list is frozen
+	 * (i.e. nfrozen == nitems), this does nothing.
+	 *
+	 * XXX This might do a binary search for sufficiently long lists, but it
+	 * does not seem worth the complexity. Overlapping lists should be rare
+	 * common, TID comparisons are cheap, and we should quickly freeze most of
+	 * the list.
+	 */
+	for (int i = buffer->nfrozen; i < buffer->nitems; i++)
+	{
+		/* Is the TID after the first TID of the new tuple? Can't freeze. */
+		if (ItemPointerCompare(&buffer->items[i],
+							   GinTupleGetFirst(tup)) > 0)
+			break;
+
+		buffer->nfrozen++;
+	}
+
 	/* not enough TIDs to trim (1024 is somewhat arbitrary number) */
 	if (buffer->nfrozen < 1024)
 		return false;
@@ -1441,48 +1504,6 @@ GinBufferStoreTuple(GinBuffer *buffer, GinTuple *tup)
 			buffer->key = datumCopy(key, buffer->typbyval, buffer->typlen);
 		else
 			buffer->key = (Datum) 0;
-	}
-
-	/*
-	 * Try freeze TIDs at the beginning of the list, i.e. exclude them from
-	 * the mergesort. We can do that with TIDs before the first TID in the new
-	 * tuple we're about to add into the buffer.
-	 *
-	 * We do this incrementally when adding data into the in-memory buffer,
-	 * and not later (e.g. when hitting a memory limit), because it allows us
-	 * to skip the frozen data during the mergesort, making it cheaper.
-	 */
-
-	/*
-	 * Check if the last TID in the current list is frozen. This is the case
-	 * when merging non-overlapping lists, e.g. in each parallel worker.
-	 */
-	if ((buffer->nitems > 0) &&
-		(ItemPointerCompare(&buffer->items[buffer->nitems - 1],
-							GinTupleGetFirst(tup)) == 0))
-		buffer->nfrozen = buffer->nitems;
-
-	/*
-	 * Now find the last TID we know to be frozen, i.e. the last TID right
-	 * before the new GIN tuple.
-	 *
-	 * Start with the first not-yet-frozen tuple, and walk until we find the
-	 * first TID that's higher. If we already know the whole list is frozen
-	 * (i.e. nfrozen == nitems), this does nothing.
-	 *
-	 * XXX This might do a binary search for sufficiently long lists, but it
-	 * does not seem worth the complexity. Overlapping lists should be rare
-	 * common, TID comparisons are cheap, and we should quickly freeze most of
-	 * the list.
-	 */
-	for (int i = buffer->nfrozen; i < buffer->nitems; i++)
-	{
-		/* Is the TID after the first TID of the new tuple? Can't freeze. */
-		if (ItemPointerCompare(&buffer->items[i],
-							   GinTupleGetFirst(tup)) > 0)
-			break;
-
-		buffer->nfrozen++;
 	}
 
 	/* add the new TIDs into the buffer, combine using merge-sort */
@@ -2016,6 +2037,9 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 
 	/* remember how much space is allowed for the accumulated entries */
 	state->work_mem = (sortmem / 2);
+
+	/* remember how many workers participate in the build */
+	state->bs_num_workers = ginshared->scantuplesortstates;
 
 	/* Begin "partial" tuplesort */
 	state->bs_sortstate = tuplesort_begin_index_gin(heap, index,
