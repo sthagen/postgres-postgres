@@ -393,7 +393,7 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 				lsn = DatumGetLSN(DirectFunctionCall1(pg_lsn_in,
 													  CStringGetDatum(lsn_str)));
 
-				if (XLogRecPtrIsInvalid(lsn))
+				if (!XLogRecPtrIsValid(lsn))
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("invalid WAL location (LSN): %s", lsn_str)));
@@ -491,20 +491,20 @@ static void
 check_publications(WalReceiverConn *wrconn, List *publications)
 {
 	WalRcvExecResult *res;
-	StringInfo	cmd;
+	StringInfoData cmd;
 	TupleTableSlot *slot;
 	List	   *publicationsCopy = NIL;
 	Oid			tableRow[1] = {TEXTOID};
 
-	cmd = makeStringInfo();
-	appendStringInfoString(cmd, "SELECT t.pubname FROM\n"
+	initStringInfo(&cmd);
+	appendStringInfoString(&cmd, "SELECT t.pubname FROM\n"
 						   " pg_catalog.pg_publication t WHERE\n"
 						   " t.pubname IN (");
-	GetPublicationsStr(publications, cmd, true);
-	appendStringInfoChar(cmd, ')');
+	GetPublicationsStr(publications, &cmd, true);
+	appendStringInfoChar(&cmd, ')');
 
-	res = walrcv_exec(wrconn, cmd->data, 1, tableRow);
-	destroyStringInfo(cmd);
+	res = walrcv_exec(wrconn, cmd.data, 1, tableRow);
+	pfree(cmd.data);
 
 	if (res->status != WALRCV_OK_TUPLES)
 		ereport(ERROR,
@@ -535,15 +535,17 @@ check_publications(WalReceiverConn *wrconn, List *publications)
 	if (list_length(publicationsCopy))
 	{
 		/* Prepare the list of non-existent publication(s) for error message. */
-		StringInfo	pubnames = makeStringInfo();
+		StringInfoData pubnames;
 
-		GetPublicationsStr(publicationsCopy, pubnames, false);
+		initStringInfo(&pubnames);
+
+		GetPublicationsStr(publicationsCopy, &pubnames, false);
 		ereport(WARNING,
 				errcode(ERRCODE_UNDEFINED_OBJECT),
 				errmsg_plural("publication %s does not exist on the publisher",
 							  "publications %s do not exist on the publisher",
 							  list_length(publicationsCopy),
-							  pubnames->data));
+							  pubnames.data));
 	}
 }
 
@@ -1893,7 +1895,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				 * If the user sets subskiplsn, we do a sanity check to make
 				 * sure that the specified LSN is a probable value.
 				 */
-				if (!XLogRecPtrIsInvalid(opts.lsn))
+				if (XLogRecPtrIsValid(opts.lsn))
 				{
 					RepOriginId originid;
 					char		originname[NAMEDATALEN];
@@ -1905,7 +1907,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					remote_lsn = replorigin_get_progress(originid, false);
 
 					/* Check the given LSN is at least a future LSN */
-					if (!XLogRecPtrIsInvalid(remote_lsn) && opts.lsn < remote_lsn)
+					if (XLogRecPtrIsValid(remote_lsn) && opts.lsn < remote_lsn)
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 								 errmsg("skip WAL location (LSN %X/%08X) must be greater than origin LSN %X/%08X",
@@ -2885,12 +2887,13 @@ fetch_relation_list(WalReceiverConn *wrconn, List *publications)
 	int			server_version = walrcv_server_version(wrconn);
 	bool		check_columnlist = (server_version >= 150000);
 	int			column_count = check_columnlist ? 4 : 3;
-	StringInfo	pub_names = makeStringInfo();
+	StringInfoData pub_names;
 
 	initStringInfo(&cmd);
+	initStringInfo(&pub_names);
 
 	/* Build the pub_names comma-separated string. */
-	GetPublicationsStr(publications, pub_names, true);
+	GetPublicationsStr(publications, &pub_names, true);
 
 	/* Get the list of relations from the publisher */
 	if (server_version >= 160000)
@@ -2917,7 +2920,7 @@ fetch_relation_list(WalReceiverConn *wrconn, List *publications)
 						 "                FROM pg_publication\n"
 						 "                WHERE pubname IN ( %s )) AS gpt\n"
 						 "             ON gpt.relid = c.oid\n",
-						 pub_names->data);
+						 pub_names.data);
 
 		/* From version 19, inclusion of sequences in the target is supported */
 		if (server_version >= 190000)
@@ -2926,7 +2929,7 @@ fetch_relation_list(WalReceiverConn *wrconn, List *publications)
 							 "  SELECT DISTINCT s.schemaname, s.sequencename, " CppAsString2(RELKIND_SEQUENCE) "::\"char\" AS relkind, NULL::int2vector AS attrs\n"
 							 "  FROM pg_catalog.pg_publication_sequences s\n"
 							 "  WHERE s.pubname IN ( %s )",
-							 pub_names->data);
+							 pub_names.data);
 	}
 	else
 	{
@@ -2939,10 +2942,10 @@ fetch_relation_list(WalReceiverConn *wrconn, List *publications)
 
 		appendStringInfo(&cmd, "FROM pg_catalog.pg_publication_tables t\n"
 						 " WHERE t.pubname IN ( %s )",
-						 pub_names->data);
+						 pub_names.data);
 	}
 
-	destroyStringInfo(pub_names);
+	pfree(pub_names.data);
 
 	res = walrcv_exec(wrconn, cmd.data, column_count, tableRow);
 	pfree(cmd.data);
