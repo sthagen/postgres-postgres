@@ -2807,6 +2807,7 @@ SlabSlot
 SlotInvalidationCauseMap
 SlotNumber
 SlotSyncCtxStruct
+SlotSyncSkipReason
 SlruCtl
 SlruCtlData
 SlruErrorCause
@@ -2927,6 +2928,7 @@ SupportRequestOptimizeWindowClause
 SupportRequestRows
 SupportRequestSelectivity
 SupportRequestSimplify
+SupportRequestSimplifyAggref
 SupportRequestWFuncMonotonic
 Syn
 SyncOps
