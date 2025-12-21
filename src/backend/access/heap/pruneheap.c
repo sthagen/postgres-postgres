@@ -158,9 +158,9 @@ typedef struct
 
 /* Local functions */
 static void prune_freeze_setup(PruneFreezeParams *params,
-							   TransactionId new_relfrozen_xid,
-							   MultiXactId new_relmin_mxid,
-							   const PruneFreezeResult *presult,
+							   TransactionId *new_relfrozen_xid,
+							   MultiXactId *new_relmin_mxid,
+							   PruneFreezeResult *presult,
 							   PruneState *prstate);
 static void prune_freeze_plan(Oid reloid, Buffer buffer,
 							  PruneState *prstate,
@@ -322,12 +322,15 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 /*
  * Helper for heap_page_prune_and_freeze() to initialize the PruneState using
  * the provided parameters.
+ *
+ * params, new_relfrozen_xid, new_relmin_mxid, and presult are input
+ * parameters and are not modified by this function. Only prstate is modified.
  */
 static void
 prune_freeze_setup(PruneFreezeParams *params,
-				   TransactionId new_relfrozen_xid,
-				   MultiXactId new_relmin_mxid,
-				   const PruneFreezeResult *presult,
+				   TransactionId *new_relfrozen_xid,
+				   MultiXactId *new_relmin_mxid,
+				   PruneFreezeResult *presult,
 				   PruneState *prstate)
 {
 	/* Copy parameters to prstate */
@@ -362,15 +365,15 @@ prune_freeze_setup(PruneFreezeParams *params,
 	prstate->pagefrz.freeze_required = false;
 	if (prstate->attempt_freeze)
 	{
-		prstate->pagefrz.FreezePageRelfrozenXid = new_relfrozen_xid;
-		prstate->pagefrz.NoFreezePageRelfrozenXid = new_relfrozen_xid;
-		prstate->pagefrz.FreezePageRelminMxid = new_relmin_mxid;
-		prstate->pagefrz.NoFreezePageRelminMxid = new_relmin_mxid;
+		Assert(new_relfrozen_xid && new_relmin_mxid);
+		prstate->pagefrz.FreezePageRelfrozenXid = *new_relfrozen_xid;
+		prstate->pagefrz.NoFreezePageRelfrozenXid = *new_relfrozen_xid;
+		prstate->pagefrz.FreezePageRelminMxid = *new_relmin_mxid;
+		prstate->pagefrz.NoFreezePageRelminMxid = *new_relmin_mxid;
 	}
 	else
 	{
-		Assert(new_relfrozen_xid == InvalidTransactionId &&
-			   new_relmin_mxid == InvalidMultiXactId);
+		Assert(!new_relfrozen_xid && !new_relmin_mxid);
 		prstate->pagefrz.FreezePageRelminMxid = InvalidMultiXactId;
 		prstate->pagefrz.NoFreezePageRelminMxid = InvalidMultiXactId;
 		prstate->pagefrz.FreezePageRelfrozenXid = InvalidTransactionId;
@@ -382,7 +385,14 @@ prune_freeze_setup(PruneFreezeParams *params,
 	prstate->recently_dead_tuples = 0;
 	prstate->hastup = false;
 	prstate->lpdead_items = 0;
-	prstate->deadoffsets = (OffsetNumber *) presult->deadoffsets;
+
+	/*
+	 * deadoffsets are filled in during pruning but are only used to populate
+	 * PruneFreezeResult->deadoffsets. To avoid needing two copies of the
+	 * array, just save a pointer to the result offsets array in the
+	 * PruneState.
+	 */
+	prstate->deadoffsets = presult->deadoffsets;
 	prstate->frz_conflict_horizon = InvalidTransactionId;
 
 	/*
@@ -823,12 +833,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 
 	/* Initialize prstate */
 	prune_freeze_setup(params,
-					   new_relfrozen_xid ?
-					   *new_relfrozen_xid : InvalidTransactionId,
-					   new_relmin_mxid ?
-					   *new_relmin_mxid : InvalidMultiXactId,
-					   presult,
-					   &prstate);
+					   new_relfrozen_xid, new_relmin_mxid,
+					   presult, &prstate);
 
 	/*
 	 * Examine all line pointers and tuple visibility information to determine

@@ -664,7 +664,7 @@ AssignTransactionId(TransactionState s)
 		TransactionState *parents;
 		size_t		parentOffset = 0;
 
-		parents = palloc(sizeof(TransactionState) * s->nestingLevel);
+		parents = palloc_array(TransactionState, s->nestingLevel);
 		while (p != NULL && !FullTransactionIdIsValid(p->fullTransactionId))
 		{
 			parents[parentOffset++] = p;
@@ -5709,9 +5709,9 @@ ShowTransactionStateRec(const char *str, TransactionState s)
 							 s->name ? s->name : "unnamed",
 							 BlockStateAsString(s->blockState),
 							 TransStateAsString(s->state),
-							 (unsigned int) XidFromFullTransactionId(s->fullTransactionId),
-							 (unsigned int) s->subTransactionId,
-							 (unsigned int) currentCommandId,
+							 XidFromFullTransactionId(s->fullTransactionId),
+							 s->subTransactionId,
+							 currentCommandId,
 							 currentCommandIdUsed ? " (used)" : "",
 							 buf.data)));
 	pfree(buf.data);

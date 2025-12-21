@@ -42,7 +42,7 @@ blbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	GenericXLogState *gxlogState;
 
 	if (stats == NULL)
-		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
+		stats = palloc0_object(IndexBulkDeleteResult);
 
 	initBloomState(&state, index);
 
@@ -121,7 +121,7 @@ blbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			if (BloomPageGetMaxOffset(page) == 0)
 				BloomPageSetDeleted(page);
 			/* Adjust pd_lower */
-			((PageHeader) page)->pd_lower = (Pointer) itupPtr - page;
+			((PageHeader) page)->pd_lower = (char *) itupPtr - page;
 			/* Finish WAL-logging */
 			GenericXLogFinish(gxlogState);
 		}
@@ -171,7 +171,7 @@ blvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		return stats;
 
 	if (stats == NULL)
-		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
+		stats = palloc0_object(IndexBulkDeleteResult);
 
 	/*
 	 * Iterate over the pages: insert deleted pages into FSM and collect

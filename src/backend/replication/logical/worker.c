@@ -875,7 +875,7 @@ create_edata_for_relation(LogicalRepRelMapEntry *rel)
 	List	   *perminfos = NIL;
 	ResultRelInfo *resultRelInfo;
 
-	edata = (ApplyExecutionData *) palloc0(sizeof(ApplyExecutionData));
+	edata = palloc0_object(ApplyExecutionData);
 	edata->targetRel = rel;
 
 	edata->estate = estate = CreateExecutorState();
@@ -1702,7 +1702,7 @@ stream_start_internal(TransactionId xid, bool first_segment)
 
 		oldctx = MemoryContextSwitchTo(ApplyContext);
 
-		MyLogicalRepWorker->stream_fileset = palloc(sizeof(FileSet));
+		MyLogicalRepWorker->stream_fileset = palloc_object(FileSet);
 		FileSetInit(MyLogicalRepWorker->stream_fileset);
 
 		MemoryContextSwitchTo(oldctx);
@@ -3951,7 +3951,7 @@ store_flush_position(XLogRecPtr remote_lsn, XLogRecPtr local_lsn)
 	MemoryContextSwitchTo(ApplyContext);
 
 	/* Track commit lsn  */
-	flushpos = (FlushPosition *) palloc(sizeof(FlushPosition));
+	flushpos = palloc_object(FlushPosition);
 	flushpos->local_end = local_lsn;
 	flushpos->remote_end = remote_lsn;
 
@@ -5561,7 +5561,7 @@ set_stream_options(WalRcvStreamOptions *options,
  * Cleanup the memory for subxacts and reset the related variables.
  */
 static inline void
-cleanup_subxact_info()
+cleanup_subxact_info(void)
 {
 	if (subxact_data.subxacts)
 		pfree(subxact_data.subxacts);
@@ -5621,7 +5621,7 @@ start_apply(XLogRecPtr origin_startpos)
  * It sets up replication origin, streaming options and then starts streaming.
  */
 static void
-run_apply_worker()
+run_apply_worker(void)
 {
 	char		originname[NAMEDATALEN];
 	XLogRecPtr	origin_startpos = InvalidXLogRecPtr;

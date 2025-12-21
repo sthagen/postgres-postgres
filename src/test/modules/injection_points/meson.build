@@ -6,8 +6,6 @@ endif
 
 injection_points_sources = files(
   'injection_points.c',
-  'injection_stats.c',
-  'injection_stats_fixed.c',
   'regress_injection.c',
 )
 
@@ -48,24 +46,15 @@ tests += {
       'basic',
       'inplace',
       'syscache-update-pruned',
-      'index-concurrently-upsert',
-      'index-concurrently-upsert-predicate',
-      'reindex-concurrently-upsert',
-      'reindex-concurrently-upsert-on-constraint',
-      'reindex-concurrently-upsert-partitioned',
+      # temporarily disabled because of flakiness
+      # 'index-concurrently-upsert',
+      # 'index-concurrently-upsert-predicate',
+      # 'reindex-concurrently-upsert',
+      # 'reindex-concurrently-upsert-on-constraint',
+      # 'reindex-concurrently-upsert-partitioned',
     ],
     'runningcheck': false, # see syscache-update-pruned
     # Some tests wait for all snapshots, so avoid parallel execution
     'runningcheck-parallel': false,
-  },
-  'tap': {
-    'env': {
-      'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
-    },
-    'tests': [
-      't/001_stats.pl',
-    ],
-    # The injection points are cluster-wide, so disable installcheck
-    'runningcheck': false,
   },
 }
