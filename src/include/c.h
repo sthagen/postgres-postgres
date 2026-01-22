@@ -154,7 +154,7 @@
  * common style is to put them before the return type.  (The MSVC fallback has
  * the same requirement.  The GCC fallback is more flexible.)
  */
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L) && !defined(__cplusplus)
 #define pg_noreturn _Noreturn
 #elif defined(__GNUC__)
 #define pg_noreturn __attribute__((noreturn))
@@ -1228,6 +1228,25 @@ typedef struct PGAlignedXLogBlock
 	((underlying_type) (expr))
 #define unvolatize(underlying_type, expr) \
 	((underlying_type) (expr))
+#endif
+
+/*
+ * SSE2 instructions are part of the spec for the 64-bit x86 ISA. We assume
+ * that compilers targeting this architecture understand SSE2 intrinsics.
+ */
+#if (defined(__x86_64__) || defined(_M_AMD64))
+#define USE_SSE2
+
+/*
+ * We use the Neon instructions if the compiler provides access to them (as
+ * indicated by __ARM_NEON) and we are on aarch64.  While Neon support is
+ * technically optional for aarch64, it appears that all available 64-bit
+ * hardware does have it.  Neon exists in some 32-bit hardware too, but we
+ * could not realistically use it there without a run-time check, which seems
+ * not worth the trouble for now.
+ */
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+#define USE_NEON
 #endif
 
 /* ----------------------------------------------------------------
