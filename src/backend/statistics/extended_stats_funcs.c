@@ -24,6 +24,8 @@
 #include "catalog/pg_statistic_ext_data.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/stat_utils.h"
 #include "utils/acl.h"
@@ -45,6 +47,7 @@ enum extended_stats_argnum
 	STATNAME_ARG,
 	INHERITED_ARG,
 	NDISTINCT_ARG,
+	DEPENDENCIES_ARG,
 	NUM_EXTENDED_STATS_ARGS,
 };
 
@@ -60,6 +63,7 @@ static struct StatsArgInfo extarginfo[] =
 	[STATNAME_ARG] = {"statistics_name", TEXTOID},
 	[INHERITED_ARG] = {"inherited", BOOLOID},
 	[NDISTINCT_ARG] = {"n_distinct", PG_NDISTINCTOID},
+	[DEPENDENCIES_ARG] = {"dependencies", PG_DEPENDENCIESOID},
 	[NUM_EXTENDED_STATS_ARGS] = {0},
 };
 
@@ -246,6 +250,8 @@ extended_statistics_update(FunctionCallInfo fcinfo)
 	bool		nulls[Natts_pg_statistic_ext_data] = {0};
 	bool		replaces[Natts_pg_statistic_ext_data] = {0};
 	bool		success = true;
+	Datum		exprdatum;
+	bool		isnull;
 	int			numexprs = 0;
 
 	/* arrays of type info, if we need them */
@@ -257,6 +263,7 @@ extended_statistics_update(FunctionCallInfo fcinfo)
 	 * were provided to the function.
 	 */
 	has.ndistinct = !PG_ARGISNULL(NDISTINCT_ARG);
+	has.dependencies = !PG_ARGISNULL(DEPENDENCIES_ARG);
 
 	if (RecoveryInProgress())
 	{
@@ -338,6 +345,38 @@ extended_statistics_update(FunctionCallInfo fcinfo)
 	/* Find out what extended statistics kinds we should expect. */
 	expand_stxkind(tup, &enabled);
 
+	/* decode expression (if any) */
+	exprdatum = SysCacheGetAttr(STATEXTOID,
+								tup,
+								Anum_pg_statistic_ext_stxexprs,
+								&isnull);
+	if (!isnull)
+	{
+		char	   *s;
+		List	   *exprs;
+
+		s = TextDatumGetCString(exprdatum);
+		exprs = (List *) stringToNode(s);
+		pfree(s);
+
+		/*
+		 * Run the expressions through eval_const_expressions().  This is not
+		 * just an optimization, but is necessary, because the planner will be
+		 * comparing them to similarly-processed qual clauses, and may fail to
+		 * detect valid matches without this.
+		 *
+		 * We must not use canonicalize_qual(), however, since these are not
+		 * qual expressions.
+		 */
+		exprs = (List *) eval_const_expressions(NULL, (Node *) exprs);
+
+		/* May as well fix opfuncids too */
+		fix_opfuncids((Node *) exprs);
+
+		/* Compute the number of expression, for input validation. */
+		numexprs = list_length(exprs);
+	}
+
 	/*
 	 * If the object cannot support ndistinct, we should not have data for it.
 	 */
@@ -352,6 +391,23 @@ extended_statistics_update(FunctionCallInfo fcinfo)
 						quote_identifier(stxname)));
 
 		has.ndistinct = false;
+		success = false;
+	}
+
+	/*
+	 * If the object cannot support dependencies, we should not have data for
+	 * it.
+	 */
+	if (has.dependencies && !enabled.dependencies)
+	{
+		ereport(WARNING,
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("cannot specify parameter \"%s\".",
+					   extarginfo[DEPENDENCIES_ARG].argname),
+				errhint("Extended statistics object \"%s\".\"%s\" does not support statistics of this type.",
+						quote_identifier(nspname),
+						quote_identifier(stxname)));
+		has.dependencies = false;
 		success = false;
 	}
 
@@ -394,6 +450,25 @@ extended_statistics_update(FunctionCallInfo fcinfo)
 			success = false;
 
 		statext_ndistinct_free(ndistinct);
+	}
+
+	if (has.dependencies)
+	{
+		Datum		dependencies_datum = PG_GETARG_DATUM(DEPENDENCIES_ARG);
+		bytea	   *data = DatumGetByteaPP(dependencies_datum);
+		MVDependencies *dependencies = statext_dependencies_deserialize(data);
+
+		if (statext_dependencies_validate(dependencies, &stxform->stxkeys,
+										  numexprs, WARNING))
+		{
+			values[Anum_pg_statistic_ext_data_stxddependencies - 1] = dependencies_datum;
+			nulls[Anum_pg_statistic_ext_data_stxddependencies - 1] = false;
+			replaces[Anum_pg_statistic_ext_data_stxddependencies - 1] = true;
+		}
+		else
+			success = false;
+
+		statext_dependencies_free(dependencies);
 	}
 
 	upsert_pg_statistic_ext_data(values, nulls, replaces);
