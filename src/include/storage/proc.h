@@ -237,6 +237,16 @@ struct PGPROC
 	BackendType backendType;	/* what kind of process is this? */
 
 	/*
+	 * While in hot standby mode, shows that a conflict signal has been sent
+	 * for the current transaction. Set/cleared while holding ProcArrayLock,
+	 * though not required. Accessed without lock, if needed.
+	 *
+	 * This is a bitmask; each bit corresponds to a RecoveryConflictReason
+	 * enum value.
+	 */
+	pg_atomic_uint32 pendingRecoveryConflicts;
+
+	/*
 	 * Info about LWLock the process is currently waiting for, if any.
 	 *
 	 * This is currently used both for lwlocks and buffer content locks, which
@@ -410,6 +420,16 @@ typedef struct PROC_HDR
 
 	/* Length of allProcs array */
 	uint32		allProcCount;
+
+	/*
+	 * This spinlock protects the below freelists of PGPROC structures.  We
+	 * cannot use an LWLock because the LWLock manager depends on already
+	 * having a PGPROC and a wait semaphore!  But these structures are touched
+	 * relatively infrequently (only at backend startup or shutdown) and not
+	 * for very long, so a spinlock is okay.
+	 */
+	slock_t		freeProcsLock;
+
 	/* Head of list of free PGPROC structures */
 	dlist_head	freeProcs;
 	/* Head of list of autovacuum & special worker free PGPROC structures */
@@ -418,6 +438,7 @@ typedef struct PROC_HDR
 	dlist_head	bgworkerFreeProcs;
 	/* Head of list of walsender free PGPROC structures */
 	dlist_head	walsenderFreeProcs;
+
 	/* First pgproc waiting for group XID clear */
 	pg_atomic_uint32 procArrayGroupFirst;
 	/* First pgproc waiting for group transaction status update */
@@ -479,7 +500,6 @@ extern PGDLLIMPORT int IdleSessionTimeout;
 extern PGDLLIMPORT bool log_lock_waits;
 
 #ifdef EXEC_BACKEND
-extern PGDLLIMPORT slock_t *ProcStructLock;
 extern PGDLLIMPORT PGPROC *AuxiliaryProcs;
 #endif
 

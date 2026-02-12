@@ -1263,6 +1263,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 	plan->plan.lefttree = NULL;
 	plan->plan.righttree = NULL;
 	plan->apprelids = rel->relids;
+	plan->child_append_relid_sets = best_path->child_append_relid_sets;
 
 	if (pathkeys != NIL)
 	{
@@ -1475,6 +1476,7 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
 	node->apprelids = rel->relids;
+	node->child_append_relid_sets = best_path->child_append_relid_sets;
 
 	/*
 	 * Compute sort column info, and adjust MergeAppend's tlist as needed.
@@ -6525,10 +6527,6 @@ materialize_finished_plan(Plan *subplan)
 							 &initplan_cost, &unsafe_initplans);
 	subplan->startup_cost -= initplan_cost;
 	subplan->total_cost -= initplan_cost;
-
-	/* Clear fields that cost_material() will consult */
-	matpath.parallel_workers = 0;
-	matpath.parent = NULL;
 
 	/* Set cost data */
 	cost_material(&matpath,
