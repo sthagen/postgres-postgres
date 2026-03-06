@@ -998,6 +998,20 @@ CREATE VIEW pg_stat_wal_receiver AS
     FROM pg_stat_get_wal_receiver() s
     WHERE s.pid IS NOT NULL;
 
+CREATE VIEW pg_stat_recovery AS
+    SELECT
+            s.promote_triggered,
+            s.last_replayed_read_lsn,
+            s.last_replayed_end_lsn,
+            s.last_replayed_tli,
+            s.replay_end_lsn,
+            s.replay_end_tli,
+            s.recovery_last_xact_time,
+            s.current_chunk_start_time,
+            s.pause_state
+    FROM pg_stat_get_recovery() s
+    WHERE s.promote_triggered IS NOT NULL;
+
 CREATE VIEW pg_stat_recovery_prefetch AS
     SELECT
             s.stats_reset,
@@ -1435,7 +1449,7 @@ GRANT SELECT (oid, subdbid, subskiplsn, subname, subowner, subenabled,
               subbinary, substream, subtwophasestate, subdisableonerr,
 			  subpasswordrequired, subrunasowner, subfailover,
               subretaindeadtuples, submaxretention, subretentionactive,
-              subslotname, subsynccommit, subpublications, suborigin)
+              subserver, subslotname, subsynccommit, subpublications, suborigin)
     ON pg_subscription TO public;
 
 CREATE VIEW pg_stat_subscription_stats AS

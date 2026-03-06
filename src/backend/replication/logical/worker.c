@@ -296,6 +296,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/usercontext.h"
+#include "utils/wait_event.h"
 
 #define NAPTIME_PER_CYCLE 1000	/* max sleep time between cycles (1s) */
 
@@ -5058,7 +5059,7 @@ maybe_reread_subscription(void)
 	/* Ensure allocations in permanent context. */
 	oldctx = MemoryContextSwitchTo(ApplyContext);
 
-	newsub = GetSubscription(MyLogicalRepWorker->subid, true);
+	newsub = GetSubscription(MyLogicalRepWorker->subid, true, true);
 
 	/*
 	 * Exit if the subscription was removed. This normally should not happen
@@ -5200,7 +5201,9 @@ set_wal_receiver_timeout(void)
 }
 
 /*
- * Callback from subscription syscache invalidation.
+ * Callback from subscription syscache invalidation. Also needed for server or
+ * user mapping invalidation, which can change the connection information for
+ * subscriptions that connect using a server object.
  */
 static void
 subscription_change_cb(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
@@ -5805,7 +5808,7 @@ InitializeLogRepWorker(void)
 	 */
 	LockSharedObject(SubscriptionRelationId, MyLogicalRepWorker->subid, 0,
 					 AccessShareLock);
-	MySubscription = GetSubscription(MyLogicalRepWorker->subid, true);
+	MySubscription = GetSubscription(MyLogicalRepWorker->subid, true, true);
 	if (!MySubscription)
 	{
 		ereport(LOG,
@@ -5868,6 +5871,22 @@ InitializeLogRepWorker(void)
 	 * role's superuser privilege can be revoked.
 	 */
 	CacheRegisterSyscacheCallback(SUBSCRIPTIONOID,
+								  subscription_change_cb,
+								  (Datum) 0);
+	/* Changes to foreign servers may affect subscriptions using SERVER. */
+	CacheRegisterSyscacheCallback(FOREIGNSERVEROID,
+								  subscription_change_cb,
+								  (Datum) 0);
+	/* Changes to user mappings may affect subscriptions using SERVER. */
+	CacheRegisterSyscacheCallback(USERMAPPINGOID,
+								  subscription_change_cb,
+								  (Datum) 0);
+
+	/*
+	 * Changes to FDW connection_function may affect subscriptions using
+	 * SERVER.
+	 */
+	CacheRegisterSyscacheCallback(FOREIGNDATAWRAPPEROID,
 								  subscription_change_cb,
 								  (Datum) 0);
 
