@@ -1788,6 +1788,7 @@ Node
 NodeTag
 NonEmptyRange
 NoneCompressorState
+NotNullSource
 Notification
 NotificationList
 NotifyStmt
@@ -2581,6 +2582,8 @@ ReorderBufferTupleCidEnt
 ReorderBufferTupleCidKey
 ReorderBufferUpdateProgressTxnCB
 ReorderTuple
+RepackCommand
+RepackStmt
 ReparameterizeForeignPathByChild_function
 ReplOriginId
 ReplOriginXactState
@@ -2763,6 +2766,7 @@ SetConstraintStateData
 SetConstraintTriggerData
 SetExprState
 SetFunctionReturnMode
+SetHintBitsState
 SetOp
 SetOpCmd
 SetOpPath
