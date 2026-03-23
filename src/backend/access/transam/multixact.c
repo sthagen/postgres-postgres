@@ -1059,6 +1059,8 @@ GetNewMultiXactId(int nmembers, MultiXactOffset *offset)
 									   multiWrapLimit - result,
 									   oldest_datname,
 									   multiWrapLimit - result),
+						 errdetail("Approximately %.2f%% of MultiXactIds are available for use.",
+								   (double) (multiWrapLimit - result) / (MaxMultiXactId / 2) * 100),
 						 errhint("Execute a database-wide VACUUM in that database.\n"
 								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
 			else
@@ -1068,6 +1070,8 @@ GetNewMultiXactId(int nmembers, MultiXactOffset *offset)
 									   multiWrapLimit - result,
 									   oldest_datoid,
 									   multiWrapLimit - result),
+						 errdetail("Approximately %.2f%% of MultiXactIds are available for use.",
+								   (double) (multiWrapLimit - result) / (MaxMultiXactId / 2) * 100),
 						 errhint("Execute a database-wide VACUUM in that database.\n"
 								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
 		}
@@ -2098,16 +2102,16 @@ SetMultiXactIdLimit(MultiXactId oldest_datminmxid, Oid oldest_datoid)
 		multiStopLimit -= FirstMultiXactId;
 
 	/*
-	 * We'll start complaining loudly when we get within 40M multis of data
+	 * We'll start complaining loudly when we get within 100M multis of data
 	 * loss.  This is kind of arbitrary, but if you let your gas gauge get
-	 * down to 2% of full, would you be looking for the next gas station?  We
+	 * down to 5% of full, would you be looking for the next gas station?  We
 	 * need to be fairly liberal about this number because there are lots of
 	 * scenarios where most transactions are done by automatic clients that
 	 * won't pay attention to warnings.  (No, we're not gonna make this
 	 * configurable.  If you know enough to configure it, you know enough to
 	 * not get in this kind of trouble in the first place.)
 	 */
-	multiWarnLimit = multiWrapLimit - 40000000;
+	multiWarnLimit = multiWrapLimit - 100000000;
 	if (multiWarnLimit < FirstMultiXactId)
 		multiWarnLimit -= FirstMultiXactId;
 
@@ -2196,6 +2200,8 @@ SetMultiXactIdLimit(MultiXactId oldest_datminmxid, Oid oldest_datoid)
 								   multiWrapLimit - curMulti,
 								   oldest_datname,
 								   multiWrapLimit - curMulti),
+					 errdetail("Approximately %.2f%% of MultiXactIds are available for use.",
+							   (double) (multiWrapLimit - curMulti) / (MaxMultiXactId / 2) * 100),
 					 errhint("To avoid MultiXactId assignment failures, execute a database-wide VACUUM in that database.\n"
 							 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
 		else
@@ -2205,6 +2211,8 @@ SetMultiXactIdLimit(MultiXactId oldest_datminmxid, Oid oldest_datoid)
 								   multiWrapLimit - curMulti,
 								   oldest_datoid,
 								   multiWrapLimit - curMulti),
+					 errdetail("Approximately %.2f%% of MultiXactIds are available for use.",
+							   (double) (multiWrapLimit - curMulti) / (MaxMultiXactId / 2) * 100),
 					 errhint("To avoid MultiXactId assignment failures, execute a database-wide VACUUM in that database.\n"
 							 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
 	}
@@ -2949,7 +2957,6 @@ multixact_redo(XLogReaderState *record)
 	else if (info == XLOG_MULTIXACT_TRUNCATE_ID)
 	{
 		xl_multixact_truncate xlrec;
-		int64		pageno;
 
 		memcpy(&xlrec, XLogRecGetData(record),
 			   SizeOfMultiXactTruncate);
@@ -2972,15 +2979,6 @@ multixact_redo(XLogReaderState *record)
 		SetMultiXactIdLimit(xlrec.oldestMulti, xlrec.oldestMultiDB);
 
 		PerformMembersTruncation(xlrec.oldestOffset);
-
-		/*
-		 * During XLOG replay, latest_page_number isn't necessarily set up
-		 * yet; insert a suitable value to bypass the sanity test in
-		 * SimpleLruTruncate.
-		 */
-		pageno = MultiXactIdToOffsetPage(xlrec.oldestMulti);
-		pg_atomic_write_u64(&MultiXactOffsetCtl->shared->latest_page_number,
-							pageno);
 		PerformOffsetsTruncation(xlrec.oldestMulti);
 
 		LWLockRelease(MultiXactTruncationLock);
