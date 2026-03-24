@@ -2282,6 +2282,7 @@ PgStatShared_Database
 PgStatShared_Function
 PgStatShared_HashEntry
 PgStatShared_IO
+PgStatShared_Lock
 PgStatShared_Relation
 PgStatShared_ReplSlot
 PgStatShared_SLRU
@@ -2304,8 +2305,11 @@ PgStat_HashKey
 PgStat_IO
 PgStat_KindInfo
 PgStat_LocalState
+PgStat_Lock
+PgStat_LockEntry
 PgStat_PendingDroppedStatsItem
 PgStat_PendingIO
+PgStat_PendingLock
 PgStat_SLRUStats
 PgStat_ShmemControl
 PgStat_Snapshot
@@ -4421,7 +4425,6 @@ xl_heap_prune
 xl_heap_rewrite_mapping
 xl_heap_truncate
 xl_heap_update
-xl_heap_visible
 xl_invalid_page
 xl_invalid_page_key
 xl_invalidations
