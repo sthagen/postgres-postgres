@@ -2561,8 +2561,7 @@ again:
 			XLogNeedsFlush(BufferGetLSN(buf_hdr)) &&
 			StrategyRejectBuffer(strategy, buf_hdr, from_ring))
 		{
-			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-			UnpinBuffer(buf_hdr);
+			UnlockReleaseBuffer(buf);
 			goto again;
 		}
 
@@ -4440,7 +4439,6 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 	ErrorContextCallback errcallback;
 	instr_time	io_start;
 	Block		bufBlock;
-	char	   *bufToWrite;
 
 	Assert(BufferLockHeldByMeInMode(buf, BUFFER_LOCK_EXCLUSIVE) ||
 		   BufferLockHeldByMeInMode(buf, BUFFER_LOCK_SHARE_EXCLUSIVE));
@@ -4503,22 +4501,15 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 	 */
 	bufBlock = BufHdrGetBlock(buf);
 
-	/*
-	 * Update page checksum if desired.  Since we have only shared lock on the
-	 * buffer, other processes might be updating hint bits in it, so we must
-	 * copy the page to private storage if we do checksumming.
-	 */
-	bufToWrite = PageSetChecksumCopy((Page) bufBlock, buf->tag.blockNum);
+	/* Update page checksum if desired. */
+	PageSetChecksum((Page) bufBlock, buf->tag.blockNum);
 
 	io_start = pgstat_prepare_io_time(track_io_timing);
 
-	/*
-	 * bufToWrite is either the shared buffer or a copy, as appropriate.
-	 */
 	smgrwrite(reln,
 			  BufTagGetForkNum(&buf->tag),
 			  buf->tag.blockNum,
-			  bufToWrite,
+			  bufBlock,
 			  false);
 
 	/*
@@ -5538,13 +5529,65 @@ ReleaseBuffer(Buffer buffer)
 /*
  * UnlockReleaseBuffer -- release the content lock and pin on a buffer
  *
- * This is just a shorthand for a common combination.
+ * This is just a, more efficient, shorthand for a common combination.
  */
 void
 UnlockReleaseBuffer(Buffer buffer)
 {
-	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-	ReleaseBuffer(buffer);
+	int			mode;
+	BufferDesc *buf;
+	PrivateRefCountEntry *ref;
+	uint64		sub;
+	uint64		lockstate;
+
+	Assert(BufferIsPinned(buffer));
+
+	if (BufferIsLocal(buffer))
+	{
+		UnpinLocalBuffer(buffer);
+		return;
+	}
+
+	ResourceOwnerForgetBuffer(CurrentResourceOwner, buffer);
+
+	buf = GetBufferDescriptor(buffer - 1);
+
+	mode = BufferLockDisownInternal(buffer, buf);
+
+	/* compute state modification for lock release */
+	sub = BufferLockReleaseSub(mode);
+
+	/* compute state modification for pin release */
+	ref = GetPrivateRefCountEntry(buffer, false);
+	Assert(ref != NULL);
+	Assert(ref->data.refcount > 0);
+	ref->data.refcount--;
+
+	/* no more backend local pins, reduce shared pin count */
+	if (likely(ref->data.refcount == 0))
+	{
+		/* See comment in UnpinBufferNoOwner() */
+		VALGRIND_MAKE_MEM_NOACCESS(BufHdrGetBlock(buf), BLCKSZ);
+
+		sub |= BUF_REFCOUNT_ONE;
+		ForgetPrivateRefCountEntry(ref);
+	}
+
+	/* perform the lock and pin release in one atomic op */
+	lockstate = pg_atomic_sub_fetch_u64(&buf->state, sub);
+
+	/* wake up waiters for the lock */
+	BufferLockProcessRelease(buf, mode, lockstate);
+
+	/* wake up waiter for the pin release */
+	if (lockstate & BM_PIN_COUNT_WAITER)
+		WakePinCountWaiter(buf);
+
+	/*
+	 * Now okay to allow cancel/die interrupts again, which were held when the
+	 * lock was acquired.
+	 */
+	RESUME_INTERRUPTS();
 }
 
 /*

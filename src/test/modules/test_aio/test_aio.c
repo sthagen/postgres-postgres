@@ -221,9 +221,7 @@ modify_rel_block(PG_FUNCTION_ARGS)
 	 */
 	memcpy(page, BufferGetPage(buf), BLCKSZ);
 
-	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-
-	ReleaseBuffer(buf);
+	UnlockReleaseBuffer(buf);
 
 	/*
 	 * Don't want to have a buffer in-memory that's marked valid where the
@@ -288,7 +286,7 @@ modify_rel_block(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		PageSetChecksumInplace(page, blkno);
+		PageSetChecksum(page, blkno);
 	}
 
 	smgrwrite(RelationGetSmgr(rel),
@@ -496,8 +494,7 @@ invalidate_rel_block(PG_FUNCTION_ARGS)
 				else
 					FlushOneBuffer(buf);
 			}
-			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-			ReleaseBuffer(buf);
+			UnlockReleaseBuffer(buf);
 
 			if (BufferIsLocal(buf))
 				InvalidateLocalBuffer(GetLocalBufferDescriptor(-buf - 1), true);
