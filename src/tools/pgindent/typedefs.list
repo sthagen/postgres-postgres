@@ -430,6 +430,7 @@ CatCacheHeader
 CatalogId
 CatalogIdMapEntry
 CatalogIndexState
+ChangeContext
 ChangeVarNodes_callback
 ChangeVarNodes_context
 ChannelName
@@ -509,6 +510,7 @@ CompressFileHandle
 CompressionLocation
 CompressorState
 ComputeXidHorizonsResult
+ConcurrentChangeKind
 ConditionVariable
 ConditionVariableMinimallyPadded
 ConditionalStack
@@ -585,7 +587,6 @@ CreateRangeStmt
 CreateReplicationSlotCmd
 CreateRoleStmt
 CreateSchemaStmt
-CreateSchemaStmtContext
 CreateSeqStmt
 CreateStatsStmt
 CreateStmt
@@ -656,6 +657,8 @@ DeclareCursorStmt
 DecodedBkpBlock
 DecodedXLogRecord
 DecodingOutputState
+DecodingWorker
+DecodingWorkerShared
 DefElem
 DefElemAction
 DefaultACLInfo
@@ -1319,6 +1322,7 @@ IndexElem
 IndexFetchHeapData
 IndexFetchTableData
 IndexInfo
+IndexInsertState
 IndexList
 IndexOnlyScan
 IndexOnlyScanState
@@ -2112,6 +2116,7 @@ PVIndStats
 PVIndVacStatus
 PVOID
 PVShared
+PVSharedCostParams
 PVWorkerUsage
 PVWorkerStats
 PX_Alias
@@ -2635,6 +2640,7 @@ ReorderBufferTupleCidKey
 ReorderBufferUpdateProgressTxnCB
 ReorderTuple
 RepackCommand
+RepackDecodingState
 RepackStmt
 ReparameterizeForeignPathByChild_function
 ReplOriginId
@@ -3585,6 +3591,8 @@ astreamer_verify
 astreamer_waldump
 astreamer_zstd_frame
 auth_password_hook_typ
+auto_explain_extension_options
+auto_explain_option
 autovac_table
 av_relation
 avc_cache
@@ -4079,10 +4087,14 @@ pgpa_trove_slice
 pgpa_unrolled_join
 pgsa_entry
 pgsa_entry_key
+pgsa_saved_entry
+pgsa_saved_stash
+pgsa_saved_stash_table_hash
 pgsa_shared_state
 pgsa_stash
 pgsa_stash_count
 pgsa_stash_name
+pgsa_writer_context
 pgsocket
 pgsql_thing_t
 pgssEntry

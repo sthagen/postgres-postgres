@@ -9,7 +9,7 @@
  *
  * VACUUM for heap AM is implemented in vacuumlazy.c, parallel vacuum in
  * vacuumparallel.c, ANALYZE in analyze.c, and VACUUM FULL is a variant of
- * CLUSTER, handled in cluster.c.
+ * REPACK, handled in repack.c.
  *
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
@@ -38,9 +38,9 @@
 #include "catalog/pg_database.h"
 #include "catalog/pg_inherits.h"
 #include "commands/async.h"
-#include "commands/cluster.h"
 #include "commands/defrem.h"
 #include "commands/progress.h"
+#include "commands/repack.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -127,7 +127,7 @@ static void vac_truncate_clog(TransactionId frozenXID,
 							  TransactionId lastSaneFrozenXid,
 							  MultiXactId lastSaneMinMulti);
 static bool vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
-					   BufferAccessStrategy bstrategy);
+					   BufferAccessStrategy bstrategy, bool isTopLevel);
 static double compute_parallel_delay(void);
 static VacOptValue get_vacoptval_from_boolean(DefElem *def);
 static bool vac_tid_reaped(ItemPointer itemptr, void *state);
@@ -630,7 +630,8 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 
 			if (params->options & VACOPT_VACUUM)
 			{
-				if (!vacuum_rel(vrel->oid, vrel->relation, *params, bstrategy))
+				if (!vacuum_rel(vrel->oid, vrel->relation, *params, bstrategy,
+								isTopLevel))
 					continue;
 			}
 
@@ -2004,7 +2005,7 @@ vac_truncate_clog(TransactionId frozenXID,
  */
 static bool
 vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
-		   BufferAccessStrategy bstrategy)
+		   BufferAccessStrategy bstrategy, bool isTopLevel)
 {
 	LOCKMODE	lmode;
 	Relation	rel;
@@ -2293,9 +2294,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 			if ((params.options & VACOPT_VERBOSE) != 0)
 				cluster_params.options |= CLUOPT_VERBOSE;
 
-			/* VACUUM FULL is a variant of REPACK; see cluster.c */
+			/* VACUUM FULL is a variant of REPACK; see repack.c */
 			cluster_rel(REPACK_COMMAND_VACUUMFULL, rel, InvalidOid,
-						&cluster_params);
+						&cluster_params, isTopLevel);
 			/* cluster_rel closes the relation, but keeps lock */
 
 			rel = NULL;
@@ -2338,7 +2339,8 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 		toast_vacuum_params.options |= VACOPT_PROCESS_MAIN;
 		toast_vacuum_params.toast_parent = relid;
 
-		vacuum_rel(toast_relid, NULL, toast_vacuum_params, bstrategy);
+		vacuum_rel(toast_relid, NULL, toast_vacuum_params, bstrategy,
+				   isTopLevel);
 	}
 
 	/*
@@ -2435,8 +2437,20 @@ vacuum_delay_point(bool is_analyze)
 	/* Always check for interrupts */
 	CHECK_FOR_INTERRUPTS();
 
-	if (InterruptPending ||
-		(!VacuumCostActive && !ConfigReloadPending))
+	if (InterruptPending)
+		return;
+
+	if (IsParallelWorker())
+	{
+		/*
+		 * Update cost-based vacuum delay parameters for a parallel autovacuum
+		 * worker if any changes are detected. It might enable cost-based
+		 * delay so it needs to be called before VacuumCostActive check.
+		 */
+		parallel_vacuum_update_shared_delay_params();
+	}
+
+	if (!VacuumCostActive && !ConfigReloadPending)
 		return;
 
 	/*
@@ -2450,6 +2464,12 @@ vacuum_delay_point(bool is_analyze)
 		ConfigReloadPending = false;
 		ProcessConfigFile(PGC_SIGHUP);
 		VacuumUpdateCosts();
+
+		/*
+		 * Propagate cost-based vacuum delay parameters to shared memory if
+		 * any of them have changed during the config reload.
+		 */
+		parallel_vacuum_propagate_shared_delay_params();
 	}
 
 	/*

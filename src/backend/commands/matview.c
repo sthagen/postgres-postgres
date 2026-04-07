@@ -24,8 +24,8 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_opclass.h"
-#include "commands/cluster.h"
 #include "commands/matview.h"
+#include "commands/repack.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
 #include "executor/executor.h"
@@ -893,6 +893,7 @@ static void
 refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap, char relpersistence)
 {
 	finish_heap_swap(matviewOid, OIDNewHeap, false, false, true, true,
+					 true,		/* reindex */
 					 RecentXmin, ReadNextMultiXactId(), relpersistence);
 }
 

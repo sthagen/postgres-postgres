@@ -57,10 +57,10 @@
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
 #include "catalog/toasting.h"
-#include "commands/cluster.h"
 #include "commands/comment.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
+#include "commands/repack.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
@@ -6058,6 +6058,7 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
 			finish_heap_swap(tab->relid, OIDNewHeap,
 							 false, false, true,
 							 !OidIsValid(tab->newTableSpace),
+							 true,	/* reindex */
 							 RecentXmin,
 							 ReadNextMultiXactId(),
 							 persistence);

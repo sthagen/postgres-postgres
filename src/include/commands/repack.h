@@ -1,17 +1,19 @@
 /*-------------------------------------------------------------------------
  *
- * cluster.h
- *	  header file for postgres cluster command stuff
+ * repack.h
+ *	  header file for the REPACK command
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
- * src/include/commands/cluster.h
+ * src/include/commands/repack.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef CLUSTER_H
-#define CLUSTER_H
+#ifndef REPACK_H
+#define REPACK_H
+
+#include <signal.h>
 
 #include "nodes/parsenodes.h"
 #include "parser/parse_node.h"
@@ -25,6 +27,7 @@
 #define CLUOPT_RECHECK_ISCLUSTERED 0x04 /* recheck relation state for
 										 * indisclustered */
 #define CLUOPT_ANALYZE 0x08		/* do an ANALYZE */
+#define CLUOPT_CONCURRENT 0x10	/* allow concurrent data changes */
 
 /* options for CLUSTER */
 typedef struct ClusterParams
@@ -32,11 +35,13 @@ typedef struct ClusterParams
 	uint32		options;		/* bitmask of CLUOPT_* */
 } ClusterParams;
 
+extern PGDLLIMPORT volatile sig_atomic_t RepackMessagePending;
+
 
 extern void ExecRepack(ParseState *pstate, RepackStmt *stmt, bool isTopLevel);
 
 extern void cluster_rel(RepackCommand command, Relation OldHeap, Oid indexOid,
-						ClusterParams *params);
+						ClusterParams *params, bool isTopLevel);
 extern void check_index_is_clusterable(Relation OldHeap, Oid indexOid,
 									   LOCKMODE lockmode);
 extern void mark_index_clustered(Relation rel, Oid indexOid, bool is_internal);
@@ -48,8 +53,16 @@ extern void finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 							 bool swap_toast_by_content,
 							 bool check_constraints,
 							 bool is_internal,
+							 bool reindex,
 							 TransactionId frozenXid,
 							 MultiXactId cutoffMulti,
 							 char newrelpersistence);
 
-#endif							/* CLUSTER_H */
+extern void HandleRepackMessageInterrupt(void);
+extern void ProcessRepackMessages(void);
+
+/* in repack_worker.c */
+extern void RepackWorkerMain(Datum main_arg);
+extern bool AmRepackWorker(void);
+
+#endif							/* REPACK_H */
