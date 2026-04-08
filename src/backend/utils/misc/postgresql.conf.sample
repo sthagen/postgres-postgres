@@ -196,6 +196,10 @@
 #max_files_per_process = 1000           # min 64
                                         # (change requires restart)
 
+# - Time -
+
+#timing_clock_source = auto             # auto, system, tsc (if supported)
+
 # - Background Writer -
 
 #bgwriter_delay = 200ms                 # 10-10000ms between rounds
@@ -218,7 +222,11 @@
                                         # can execute simultaneously
                                         # -1 sets based on shared_buffers
                                         # (change requires restart)
-#io_workers = 3                         # 1-32;
+
+#io_min_workers = 2                     # 1-32
+#io_max_workers = 8                     # 1-32
+#io_worker_idle_timeout = 60s
+#io_worker_launch_interval = 100ms
 
 # - Worker Processes -
 

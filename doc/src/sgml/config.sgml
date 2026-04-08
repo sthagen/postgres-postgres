@@ -2533,6 +2533,78 @@ include_dir 'conf.d'
      </variablelist>
     </sect2>
 
+    <sect2 id="runtime-config-resource-time">
+     <title>Timing</title>
+
+     <variablelist>
+      <varlistentry id="guc-timing-clock-source" xreflabel="timing_clock_source">
+       <term><varname>timing_clock_source</varname> (<type>enum</type>)
+       <indexterm>
+        <primary><varname>timing_clock_source</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Selects the method for making timing measurements using the OS or
+         specialized CPU instructions. Possible values are:
+         <itemizedlist>
+          <listitem>
+           <para>
+            <literal>auto</literal> (automatically chooses <acronym>TSC</acronym>
+            clock source on supported x86-64 CPUs, otherwise uses the OS system
+            clock)
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <literal>system</literal> (measures timing using the OS system clock)
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <literal>tsc</literal> (measures timing with a CPU instruction, e.g.
+            using <command>RDTSC</command>/<command>RDTSCP</command> on x86-64)
+           </para>
+          </listitem>
+         </itemizedlist>
+         The default is <literal>auto</literal>. Only superusers can change this
+         setting. Changing the setting during query execution is not recommended
+         and may cause interval timings to jump significantly or produce negative
+         values.
+        </para>
+        <para>
+         <indexterm>
+          <primary>Time-Stamp Counter</primary>
+          <see><acronym>TSC</acronym></see>
+         </indexterm>
+         <indexterm><primary><acronym>TSC</acronym></primary></indexterm>
+         If enabled, the <acronym>TSC</acronym> clock source, named after the
+         Time-Stamp Counter on x86-64, will use specialized CPU instructions when
+         measuring time intervals. This lowers timing overhead compared to reading
+         the OS system clock, and reduces the measurement error on top of the
+         actual runtime, for example with <command>EXPLAIN ANALYZE</command>.
+        </para>
+        <para>
+         <indexterm><primary><acronym>RDTSC</acronym></primary></indexterm>
+         On x86-64 CPUs the <acronym>TSC</acronym> clock source utilizes the
+         <command>RDTSC</command> instruction for <command>EXPLAIN ANALYZE</command>.
+         For timings that require higher precision the <command>RDTSCP</command>
+         instruction is used, which avoids inaccuracies due to CPU instruction
+         re-ordering. Use of the <acronym>TSC</acronym> clock source is not
+         supported on older x86-64 CPUs and other architectures, and is not
+         advised on systems that utilize an emulated <acronym>TSC</acronym>, as it
+         is likely slower than the system clock source.
+        </para>
+       <para>
+        To help decide which clock source to use you can run the
+        <xref linkend="pgtesttiming"/> utility to check <acronym>TSC</acronym>
+        availability, and perform timing measurements.
+       </para>
+
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </sect2>
 
     <sect2 id="runtime-config-resource-background-writer">
      <title>Background Writer</title>
@@ -2870,16 +2942,75 @@ include_dir 'conf.d'
        </listitem>
       </varlistentry>
 
-      <varlistentry id="guc-io-workers" xreflabel="io_workers">
-       <term><varname>io_workers</varname> (<type>integer</type>)
+      <varlistentry id="guc-io-min-workers" xreflabel="io_min_workers">
+       <term><varname>io_min_workers</varname> (<type>integer</type>)
        <indexterm>
-        <primary><varname>io_workers</varname> configuration parameter</primary>
+        <primary><varname>io_min_workers</varname> configuration parameter</primary>
        </indexterm>
        </term>
        <listitem>
         <para>
-         Selects the number of I/O worker processes to use. The default is
-         3. This parameter can only be set in the
+         Sets the minimum number of I/O worker processes. The default is
+         2. This parameter can only be set in the
+         <filename>postgresql.conf</filename> file or on the server command
+         line.
+        </para>
+        <para>
+         Only has an effect if <xref linkend="guc-io-method"/> is set to
+         <literal>worker</literal>.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry id="guc-io-max-workers" xreflabel="io_max_workers">
+       <term><varname>io_max_workers</varname> (<type>int</type>)
+       <indexterm>
+        <primary><varname>io_max_workers</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Sets the maximum number of I/O worker processes. The default is
+         8. This parameter can only be set in the
+         <filename>postgresql.conf</filename> file or on the server command
+         line.
+        </para>
+        <para>
+         Only has an effect if <xref linkend="guc-io-method"/> is set to
+         <literal>worker</literal>.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry id="guc-io-worker-idle-timeout" xreflabel="io_worker_idle_timeout">
+       <term><varname>io_worker_idle_timeout</varname> (<type>int</type>)
+       <indexterm>
+        <primary><varname>io_worker_idle_timeout</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Sets the time after which entirely idle I/O worker processes exit, reducing the
+         size of pool to match demand.  The default is 1 minute.  This
+         parameter can only be set in the
+         <filename>postgresql.conf</filename> file or on the server command
+         line.
+        </para>
+        <para>
+         Only has an effect if <xref linkend="guc-io-method"/> is set to
+         <literal>worker</literal>.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry id="guc-io-worker-launch-interval" xreflabel="io_worker_launch_interval">
+       <term><varname>io_worker_launch_interval</varname> (<type>int</type>)
+       <indexterm>
+        <primary><varname>io_worker_launch_interval</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Sets the minimum time before another I/O worker can be launched.  This avoids
+         creating too many for an unsustained burst of activity.  The default is 100ms.
+         This parameter can only be set in the
          <filename>postgresql.conf</filename> file or on the server command
          line.
         </para>
@@ -12051,15 +12182,17 @@ dynamic_library_path = '/usr/local/lib/postgresql:$libdir'
      </varlistentry>
 
      <varlistentry id="guc-data-checksums" xreflabel="data_checksums">
-      <term><varname>data_checksums</varname> (<type>boolean</type>)
+      <term><varname>data_checksums</varname> (<type>enum</type>)
       <indexterm>
        <primary><varname>data_checksums</varname> configuration parameter</primary>
       </indexterm>
       </term>
       <listitem>
        <para>
-        Reports whether data checksums are enabled for this cluster.
-        See <xref linkend="app-initdb-data-checksums"/> for more information.
+        Reports the state of data checksums for this cluster.
+        Possible values are <literal>on</literal>, <literal>off</literal>,
+        <literal>inprogress-on</literal> and <literal>inprogress-off</literal>.
+        See <xref linkend="checksums"/> for more information.
        </para>
       </listitem>
      </varlistentry>
