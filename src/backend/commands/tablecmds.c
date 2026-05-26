@@ -12367,6 +12367,12 @@ ATExecAlterConstraint(List **wqueue, Relation rel, ATAlterConstraint *cmdcon,
 				errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				errmsg("constraint \"%s\" of relation \"%s\" is not a not-null constraint",
 					   cmdcon->conname, RelationGetRelationName(rel)));
+	if (cmdcon->alterInheritability &&
+		cmdcon->noinherit && rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("not-null constraint \"%s\" on partitioned table \"%s\" cannot be NO INHERIT",
+					   cmdcon->conname, RelationGetRelationName(rel)));
 
 	/* Refuse to modify inheritability of inherited constraints */
 	if (cmdcon->alterInheritability &&
@@ -13274,6 +13280,9 @@ QueueFKConstraintValidation(List **wqueue, Relation conrel, Relation fkrel,
 	AlteredTableInfo *tab;
 	HeapTuple	copyTuple;
 	Form_pg_constraint copy_con;
+
+	/* since this function recurses, it could be driven to stack overflow */
+	check_stack_depth();
 
 	con = (Form_pg_constraint) GETSTRUCT(contuple);
 	Assert(con->contype == CONSTRAINT_FOREIGN);

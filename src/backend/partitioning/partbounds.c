@@ -5774,11 +5774,11 @@ split_partition_values_contained_in_new_part(Relation parent,
  * split partition is already established.  Given containment, RANGE bounds
  * are equal iff their lower and upper rbounds match; LIST bound sets are
  * equal iff the split partition's values are also contained in the new
- * partition (the containment is then bidirectional).  Both checks honor
- * the partition key collation via the operator-family comparators
- * (partition_rbound_cmp / find_value_in_new_partitions_list), so e.g.
- * ('a','b') and ('A','B') under a case-insensitive ICU collation are
- * correctly recognised as the same bound.
+ * partition (the containment is then bidirectional).  Both checks go
+ * through the partition operator family (partition_rbound_cmp /
+ * find_value_in_new_partitions_list) rather than byte equality, so e.g.
+ * -0.0 and 0.0 -- which have different bit patterns but compare equal
+ * under float8 -- are correctly recognised as the same bound.
  */
 static void
 check_split_partition_not_same_bound(Relation parent,

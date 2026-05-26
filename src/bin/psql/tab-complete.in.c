@@ -3274,6 +3274,8 @@ match_previous_words(int pattern_id,
 			COMPLETE_WITH("MODE", "FLUSH_UNLOGGED");
 		else if (TailMatches("MODE"))
 			COMPLETE_WITH("FAST", "SPREAD");
+		else if (TailMatches("FLUSH_UNLOGGED"))
+			COMPLETE_WITH("ON", "OFF");
 	}
 /* CLOSE */
 	else if (Matches("CLOSE"))
@@ -4538,8 +4540,8 @@ match_previous_words(int pattern_id,
 		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
 			COMPLETE_WITH("ANALYZE", "VERBOSE", "COSTS", "SETTINGS", "GENERIC_PLAN",
 						  "BUFFERS", "SERIALIZE", "WAL", "TIMING", "SUMMARY",
-						  "MEMORY", "FORMAT");
-		else if (TailMatches("ANALYZE|VERBOSE|COSTS|SETTINGS|GENERIC_PLAN|BUFFERS|WAL|TIMING|SUMMARY|MEMORY"))
+						  "MEMORY", "IO", "FORMAT");
+		else if (TailMatches("ANALYZE|VERBOSE|COSTS|SETTINGS|GENERIC_PLAN|BUFFERS|WAL|TIMING|SUMMARY|MEMORY|IO"))
 			COMPLETE_WITH("ON", "OFF");
 		else if (TailMatches("SERIALIZE"))
 			COMPLETE_WITH("TEXT", "NONE", "BINARY");

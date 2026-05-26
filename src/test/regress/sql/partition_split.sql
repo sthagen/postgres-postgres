@@ -867,24 +867,23 @@ SELECT tableoid::regclass, i FROM t ORDER BY tableoid::regclass::text COLLATE "C
 DROP TABLE t;
 
 --
--- Test that the same-bound check for LIST partitioning uses partition
--- comparison semantics, not raw list length.  The case-insensitive collation
--- treats 'a' and 'A' as equal, so the non-DEFAULT replacement partition
--- covers only the 'a' group and the DEFAULT partition covers the rest.
+-- Test that the same-bound check for LIST partitioning uses the
+-- partition operator family, not byte equality.  -0.0 and 0.0 have
+-- different bit patterns but compare equal under float8, so the
+-- replacement bound (-0.0, 1.0) is the same set as the original
+-- (0.0, 1.0) and the SPLIT is degenerate.  A datumIsEqual()-based
+-- check would let this through; the partsupfunc-based check correctly
+-- rejects it.
 --
-CREATE COLLATION case_insensitive (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
-CREATE TABLE t (b text COLLATE case_insensitive) PARTITION BY LIST (b);
-CREATE TABLE tp_ab PARTITION OF t FOR VALUES IN ('a', 'b');
+CREATE TABLE t (v float8) PARTITION BY LIST (v);
+CREATE TABLE tp_zero_one PARTITION OF t FOR VALUES IN (0.0, 1.0);
 
-ALTER TABLE t SPLIT PARTITION tp_ab INTO
-  (PARTITION tp_a FOR VALUES IN ('a', 'A'),
+-- ERROR
+ALTER TABLE t SPLIT PARTITION tp_zero_one INTO
+  (PARTITION tp_zero_one FOR VALUES IN (-0.0, 1.0),
    PARTITION tp_default DEFAULT);
 
-INSERT INTO t VALUES ('a'), ('A'), ('b'), ('c');
-SELECT tableoid::regclass, count(*) FROM t GROUP BY 1 ORDER BY 1;
-
 DROP TABLE t;
-DROP COLLATION case_insensitive;
 
 --
 -- Test that the explicit partition bound cannot extend outside the split

@@ -1225,27 +1225,26 @@ SELECT tableoid::regclass, i FROM t ORDER BY tableoid::regclass::text COLLATE "C
 
 DROP TABLE t;
 --
--- Test that the same-bound check for LIST partitioning uses partition
--- comparison semantics, not raw list length.  The case-insensitive collation
--- treats 'a' and 'A' as equal, so the non-DEFAULT replacement partition
--- covers only the 'a' group and the DEFAULT partition covers the rest.
+-- Test that the same-bound check for LIST partitioning uses the
+-- partition operator family, not byte equality.  -0.0 and 0.0 have
+-- different bit patterns but compare equal under float8, so the
+-- replacement bound (-0.0, 1.0) is the same set as the original
+-- (0.0, 1.0) and the SPLIT is degenerate.  A datumIsEqual()-based
+-- check would let this through; the partsupfunc-based check correctly
+-- rejects it.
 --
-CREATE COLLATION case_insensitive (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
-CREATE TABLE t (b text COLLATE case_insensitive) PARTITION BY LIST (b);
-CREATE TABLE tp_ab PARTITION OF t FOR VALUES IN ('a', 'b');
-ALTER TABLE t SPLIT PARTITION tp_ab INTO
-  (PARTITION tp_a FOR VALUES IN ('a', 'A'),
+CREATE TABLE t (v float8) PARTITION BY LIST (v);
+CREATE TABLE tp_zero_one PARTITION OF t FOR VALUES IN (0.0, 1.0);
+-- ERROR
+ALTER TABLE t SPLIT PARTITION tp_zero_one INTO
+  (PARTITION tp_zero_one FOR VALUES IN (-0.0, 1.0),
    PARTITION tp_default DEFAULT);
-INSERT INTO t VALUES ('a'), ('A'), ('b'), ('c');
-SELECT tableoid::regclass, count(*) FROM t GROUP BY 1 ORDER BY 1;
-  tableoid  | count 
-------------+-------
- tp_a       |     2
- tp_default |     2
-(2 rows)
-
+ERROR:  cannot split partition "tp_zero_one" only to add a DEFAULT partition
+LINE 2:   (PARTITION tp_zero_one FOR VALUES IN (-0.0, 1.0),
+                     ^
+DETAIL:  The non-DEFAULT partition would keep the same partition bound.
+HINT:  Use CREATE TABLE ... PARTITION OF ... DEFAULT to add a DEFAULT partition.
 DROP TABLE t;
-DROP COLLATION case_insensitive;
 --
 -- Test that the explicit partition bound cannot extend outside the split
 -- partition's bound when a DEFAULT partition is specified.

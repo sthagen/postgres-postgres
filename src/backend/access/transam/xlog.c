@@ -6612,7 +6612,7 @@ StartupXLOG(void)
 
 		ereport(WARNING,
 				errmsg("enabling data checksums was interrupted"),
-				errhint("Data checksum processing must be manually restarted for checksums to be enabled"));
+				errhint("Data checksum processing must be manually restarted for checksums to be enabled."));
 	}
 
 	/*
@@ -7735,7 +7735,7 @@ CreateCheckPoint(int flags)
 	 * recovery we don't need to write running xact data.
 	 */
 	if (!shutdown && XLogStandbyInfoActive())
-		LogStandbySnapshot(InvalidOid);
+		LogStandbySnapshot();
 
 	START_CRIT_SECTION();
 
