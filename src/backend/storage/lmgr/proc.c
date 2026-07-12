@@ -240,8 +240,9 @@ ProcGlobalShmemInit(void *arg)
 	dlist_init(&ProcGlobal->bgworkerFreeProcs);
 	dlist_init(&ProcGlobal->walsenderFreeProcs);
 	ProcGlobal->startupBufferPinWaitBufId = -1;
-	ProcGlobal->walwriterProc = INVALID_PROC_NUMBER;
-	ProcGlobal->checkpointerProc = INVALID_PROC_NUMBER;
+	pg_atomic_init_u32(&ProcGlobal->avLauncherProc, INVALID_PROC_NUMBER);
+	pg_atomic_init_u32(&ProcGlobal->walwriterProc, INVALID_PROC_NUMBER);
+	pg_atomic_init_u32(&ProcGlobal->checkpointerProc, INVALID_PROC_NUMBER);
 	pg_atomic_init_u32(&ProcGlobal->procArrayGroupFirst, INVALID_PROC_NUMBER);
 	pg_atomic_init_u32(&ProcGlobal->clogGroupFirst, INVALID_PROC_NUMBER);
 
@@ -549,6 +550,10 @@ InitProcess(void)
 	 */
 	PGSemaphoreReset(MyProc->sem);
 
+	/* autovacuum launcher is specially advertised in ProcGlobal */
+	if (MyBackendType == B_AUTOVAC_LAUNCHER)
+		pg_atomic_write_u32(&ProcGlobal->avLauncherProc, MyProcNumber);
+
 	/*
 	 * Arrange to clean up at backend exit.
 	 */
@@ -660,8 +665,7 @@ InitAuxiliaryProcess(void)
 	}
 
 	/* Mark auxiliary proc as in use by me */
-	/* use volatile pointer to prevent code rearrangement */
-	((volatile PGPROC *) auxproc)->pid = MyProcPid;
+	auxproc->pid = MyProcPid;
 
 	SpinLockRelease(&ProcGlobal->freeProcsLock);
 
@@ -724,6 +728,12 @@ InitAuxiliaryProcess(void)
 	 * necessary anymore, but seems like a good idea for cleanliness.)
 	 */
 	PGSemaphoreReset(MyProc->sem);
+
+	/* Some aux processes are also advertised in ProcGlobal */
+	if (MyBackendType == B_WAL_WRITER)
+		pg_atomic_write_u32(&ProcGlobal->walwriterProc, MyProcNumber);
+	if (MyBackendType == B_CHECKPOINTER)
+		pg_atomic_write_u32(&ProcGlobal->checkpointerProc, MyProcNumber);
 
 	/*
 	 * Arrange to clean up at process exit.
@@ -981,6 +991,12 @@ ProcKill(int code, Datum arg)
 	SwitchBackToLocalLatch();
 	DisownLatch(&MyProc->procLatch);
 
+	if (MyBackendType == B_AUTOVAC_LAUNCHER)
+	{
+		Assert(pg_atomic_read_u32(&ProcGlobal->avLauncherProc) == MyProcNumber);
+		pg_atomic_write_u32(&ProcGlobal->avLauncherProc, INVALID_PROC_NUMBER);
+	}
+
 	proc = MyProc;
 	procgloballist = proc->procgloballist;
 
@@ -1101,6 +1117,20 @@ AuxiliaryProcKill(int code, Datum arg)
 	/* look at the equivalent ProcKill() code for comments */
 	SwitchBackToLocalLatch();
 	pgstat_reset_wait_event_storage();
+
+	/*
+	 * If this was one of the aux processes advertised in ProcGlobal, clear it
+	 */
+	if (MyBackendType == B_WAL_WRITER)
+	{
+		Assert(pg_atomic_read_u32(&ProcGlobal->walwriterProc) == MyProcNumber);
+		pg_atomic_write_u32(&ProcGlobal->walwriterProc, INVALID_PROC_NUMBER);
+	}
+	if (MyBackendType == B_CHECKPOINTER)
+	{
+		Assert(pg_atomic_read_u32(&ProcGlobal->checkpointerProc) == MyProcNumber);
+		pg_atomic_write_u32(&ProcGlobal->checkpointerProc, INVALID_PROC_NUMBER);
+	}
 
 	proc = MyProc;
 	MyProc = NULL;
@@ -1608,12 +1638,13 @@ ProcSleep(LOCALLOCK *locallock)
 			TimestampDifference(get_timeout_start_time(DEADLOCK_TIMEOUT),
 								GetCurrentTimestamp(),
 								&secs, &usecs);
-			msecs = secs * 1000 + usecs / 1000;
-			usecs = usecs % 1000;
-
 			/* Increment the lock statistics counters if done waiting. */
 			if (myWaitStatus == PROC_WAIT_STATUS_OK)
-				pgstat_count_lock_waits(locallock->tag.lock.locktag_type, msecs);
+				pgstat_count_lock_waits(locallock->tag.lock.locktag_type,
+										(PgStat_Counter) secs * 1000000 + usecs);
+
+			msecs = secs * 1000 + usecs / 1000;
+			usecs = usecs % 1000;
 
 			if (log_lock_waits)
 			{

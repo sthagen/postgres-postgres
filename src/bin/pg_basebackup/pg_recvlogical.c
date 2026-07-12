@@ -223,7 +223,6 @@ StreamLogicalLog(void)
 	PGresult   *res;
 	char	   *copybuf = NULL;
 	TimestampTz last_status = -1;
-	int			i;
 	PQExpBuffer query;
 	XLogRecPtr	cur_record_lsn;
 
@@ -256,7 +255,7 @@ StreamLogicalLog(void)
 	if (noptions)
 		appendPQExpBufferStr(query, " (");
 
-	for (i = 0; i < noptions; i++)
+	for (size_t i = 0; i < noptions; i++)
 	{
 		/* separator */
 		if (i > 0)
@@ -1075,6 +1074,29 @@ static void
 prepareToTerminate(PGconn *conn, XLogRecPtr endpos, StreamStopReason reason,
 				   XLogRecPtr lsn)
 {
+	/*
+	 * If pg_recvlogical is terminated by a signal, we can reach here without
+	 * sending final feedback. In that case, send feedback once more before
+	 * sending CopyDone so the replication slot can advance far enough to
+	 * reduce the chance of resending duplicate data when pg_recvlogical is
+	 * restarted.
+	 *
+	 * This is still only a best-effort attempt. Depending on when the signal
+	 * arrives, the receiver may have written decoded output that the server
+	 * cannot yet safely treat as confirmed, so a later restart can still see
+	 * duplicate data.
+	 *
+	 * For other termination cases, such as STREAM_STOP_KEEPALIVE and
+	 * STREAM_STOP_END_OF_WAL, feedback has already been sent before reaching
+	 * here, so there is no need to call flushAndSendFeedback() again.
+	 */
+	if (reason == STREAM_STOP_SIGNAL)
+	{
+		TimestampTz now = feGetCurrentTimestamp();
+
+		(void) flushAndSendFeedback(conn, &now);
+	}
+
 	(void) PQputCopyEnd(conn, NULL);
 	(void) PQflush(conn);
 

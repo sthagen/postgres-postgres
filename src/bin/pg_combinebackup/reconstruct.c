@@ -105,7 +105,6 @@ reconstruct_from_incremental_file(char *input_filename,
 	rfile	  **sourcemap;
 	off_t	   *offsetmap;
 	unsigned	block_length;
-	unsigned	i;
 	unsigned	sidx = n_prior_backups;
 	bool		full_copy_possible = true;
 	int			copy_source_index = -1;
@@ -147,7 +146,7 @@ reconstruct_from_incremental_file(char *input_filename,
 	 * output but would not have needed to be found in an older backup if it
 	 * had not been present.
 	 */
-	for (i = 0; i < latest_source->num_blocks; ++i)
+	for (unsigned i = 0; i < latest_source->num_blocks; ++i)
 	{
 		BlockNumber b = latest_source->relative_block_numbers[i];
 
@@ -261,7 +260,7 @@ reconstruct_from_incremental_file(char *input_filename,
 		 * Since we found another incremental file, source all blocks from it
 		 * that we need but don't yet have.
 		 */
-		for (i = 0; i < s->num_blocks; ++i)
+		for (unsigned i = 0; i < s->num_blocks; ++i)
 		{
 			BlockNumber b = s->relative_block_numbers[i];
 
@@ -359,7 +358,7 @@ reconstruct_from_incremental_file(char *input_filename,
 	/*
 	 * Close files and release memory.
 	 */
-	for (i = 0; i <= n_prior_backups; ++i)
+	for (int i = 0; i <= n_prior_backups; ++i)
 	{
 		rfile	   *s = source[i];
 
@@ -372,9 +371,9 @@ reconstruct_from_incremental_file(char *input_filename,
 		pg_free(s->filename);
 		pg_free(s);
 	}
-	pfree(sourcemap);
-	pfree(offsetmap);
-	pfree(source);
+	pg_free(sourcemap);
+	pg_free(offsetmap);
+	pg_free(source);
 }
 
 /*
@@ -383,9 +382,7 @@ reconstruct_from_incremental_file(char *input_filename,
 static void
 debug_reconstruction(int n_source, rfile **sources, bool dry_run)
 {
-	unsigned	i;
-
-	for (i = 0; i < n_source; ++i)
+	for (int i = 0; i < n_source; ++i)
 	{
 		rfile	   *s = sources[i];
 
@@ -421,10 +418,10 @@ debug_reconstruction(int n_source, rfile **sources, bool dry_run)
 			if (fstat(s->fd, &sb) < 0)
 				pg_fatal("could not stat file \"%s\": %m", s->filename);
 			if (sb.st_size < s->highest_offset_read)
-				pg_fatal("file \"%s\" is too short: expected %llu, found %llu",
+				pg_fatal("file \"%s\" is too short: expected %lld, found %lld",
 						 s->filename,
-						 (unsigned long long) s->highest_offset_read,
-						 (unsigned long long) sb.st_size);
+						 (long long) s->highest_offset_read,
+						 (long long) sb.st_size);
 		}
 	}
 }
@@ -518,7 +515,7 @@ make_rfile(char *filename, bool missing_ok)
 	{
 		if (missing_ok && errno == ENOENT)
 		{
-			pg_free(rf->filename);
+			pfree(rf->filename);
 			pg_free(rf);
 			return NULL;
 		}
@@ -705,6 +702,9 @@ write_reconstructed_file(char *input_filename,
 				if (wb < 0)
 					pg_fatal("error while copying file range from \"%s\" to \"%s\": %m",
 							 input_filename, output_filename);
+				else if (wb == 0)
+					pg_fatal("unexpected end of file while copying file range from \"%s\" to \"%s\"",
+							 input_filename, output_filename);
 
 				nwritten += wb;
 
@@ -785,7 +785,7 @@ read_block(rfile *s, off_t off, uint8 *buffer)
 		if (rb < 0)
 			pg_fatal("could not read from file \"%s\": %m", s->filename);
 		else
-			pg_fatal("could not read from file \"%s\", offset %llu: read %d of %d",
-					 s->filename, (unsigned long long) off, rb, BLCKSZ);
+			pg_fatal("could not read from file \"%s\", offset %lld: read %d of %d",
+					 s->filename, (long long) off, rb, BLCKSZ);
 	}
 }

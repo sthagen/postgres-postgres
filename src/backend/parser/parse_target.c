@@ -1620,7 +1620,7 @@ expandRecordVariable(ParseState *pstate, Var *var, int levelsup)
 					ParseState	mypstate = {0};
 
 					/* this loop must work, since GetRTEByRangeTablePosn did */
-					for (Index level = 0; level < netlevelsup; level++)
+					for (int level = 0; level < netlevelsup; level++)
 						pstate = pstate->parentParseState;
 					mypstate.parentParseState = pstate;
 					mypstate.p_rtable = rte->subquery->rtable;
@@ -1725,22 +1725,6 @@ FigureColname(Node *node)
 		return name;
 	/* default result if we can't guess anything */
 	return "?column?";
-}
-
-/*
- * FigureIndexColname -
- *	  choose the name for an expression column in an index
- *
- * This is actually just like FigureColname, except we return NULL if
- * we can't pick a good name.
- */
-char *
-FigureIndexColname(Node *node)
-{
-	char	   *name = NULL;
-
-	(void) FigureColnameInternal(node, &name);
-	return name;
 }
 
 /*

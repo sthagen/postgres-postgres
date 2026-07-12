@@ -1521,8 +1521,8 @@ ReportTemporaryFileUsage(const char *path, pgoff_t size)
 	{
 		if ((size / 1024) >= log_temp_files)
 			ereport(LOG,
-					(errmsg("temporary file: path \"%s\", size %lu",
-							path, (unsigned long) size)));
+					(errmsg("temporary file: path \"%s\", size %lld",
+							path, (long long) size)));
 	}
 }
 
@@ -3181,9 +3181,7 @@ void
 AtEOSubXact_Files(bool isCommit, SubTransactionId mySubid,
 				  SubTransactionId parentSubid)
 {
-	Index		i;
-
-	for (i = 0; i < numAllocatedDescs; i++)
+	for (int i = 0; i < numAllocatedDescs; i++)
 	{
 		if (allocatedDescs[i].create_subid == mySubid)
 		{

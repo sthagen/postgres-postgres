@@ -975,12 +975,12 @@ tarPrintf(TAR_MEMBER *th, const char *fmt, ...)
 			break;				/* success */
 
 		/* Release buffer and loop around to try again with larger len. */
-		free(p);
+		pg_free(p);
 		len = cnt;
 	}
 
 	cnt = tarWrite(p, cnt, th);
-	free(p);
+	pg_free(p);
 	return (int) cnt;
 }
 
@@ -1076,7 +1076,7 @@ _tarPositionTo(ArchiveHandle *AH, const char *filename)
 			 * We're just scanning the archive for the next file, so return
 			 * null
 			 */
-			free(th);
+			pg_free(th);
 			return NULL;
 		}
 	}
@@ -1169,12 +1169,12 @@ _tarGetHeader(ArchiveHandle *AH, TAR_MEMBER *th)
 
 	len = read_tar_number(&h[TAR_OFFSET_SIZE], 12);
 
-	pg_log_debug("TOC Entry %s at %llu (length %llu, checksum %d)",
-				 tag, (unsigned long long) hPos, (unsigned long long) len, sum);
+	pg_log_debug("TOC Entry %s at %lld (length %lld, checksum %d)",
+				 tag, (long long) hPos, (long long) len, sum);
 
 	if (chk != sum)
-		pg_fatal("corrupt tar header found in %s (expected %d, computed %d) file position %llu",
-				 tag, sum, chk, (unsigned long long) ftello(ctx->tarFH));
+		pg_fatal("corrupt tar header found in %s (expected %d, computed %d) file position %lld",
+				 tag, sum, chk, (long long) ftello(ctx->tarFH));
 
 	th->targetFile = pg_strdup(tag);
 	th->fileLen = len;

@@ -343,8 +343,8 @@ buildACLCommands(const char *name, const char *subname, const char *nspname,
 
 	free(aclitems);
 	free(baseitems);
-	free(grantitems);
-	free(revokeitems);
+	pg_free(grantitems);
+	pg_free(revokeitems);
 
 	return ok;
 }
@@ -981,7 +981,7 @@ generate_restrict_key(void)
 	if (!pg_strong_random(buf, sizeof(buf)))
 		return NULL;
 
-	for (int i = 0; i < sizeof(buf) - 1; i++)
+	for (size_t i = 0; i < sizeof(buf) - 1; i++)
 	{
 		uint8		idx = buf[i] % strlen(restrict_chars);
 

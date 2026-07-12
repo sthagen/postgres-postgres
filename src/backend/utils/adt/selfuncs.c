@@ -247,6 +247,8 @@ static bool contain_placeholder_walker(Node *node, void *context);
 static Node *strip_all_phvs_mutator(Node *node, void *context);
 static void examine_simple_variable(PlannerInfo *root, Var *var,
 									VariableStatData *vardata);
+static void adjust_statstuple_for_grouping(PlannerInfo *subroot, Var *var,
+										   VariableStatData *vardata);
 static void examine_indexcol_variable(PlannerInfo *root, IndexOptInfo *index,
 									  int indexcol, VariableStatData *vardata);
 static bool get_variable_range(PlannerInfo *root, VariableStatData *vardata,
@@ -4685,7 +4687,6 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 	 */
 	if (stats)
 	{
-		int			i;
 		List	   *newlist = NIL;
 		MVNDistinctItem *item = NULL;
 		ListCell   *lc2;
@@ -4775,9 +4776,8 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 		}
 
 		/* Find the specific item that exactly matches the combination */
-		for (i = 0; i < stats->nitems; i++)
+		for (uint32 i = 0; i < stats->nitems; i++)
 		{
-			int			j;
 			MVNDistinctItem *tmpitem = &stats->items[i];
 
 			if (tmpitem->nattributes != bms_num_members(matched))
@@ -4787,7 +4787,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			item = tmpitem;
 
 			/* check that all item attributes/expressions fit the match */
-			for (j = 0; j < tmpitem->nattributes; j++)
+			for (int j = 0; j < tmpitem->nattributes; j++)
 			{
 				AttrNumber	attnum = tmpitem->attributes[j];
 
@@ -5294,6 +5294,14 @@ convert_string_datum(Datum value, Oid typid, Oid collid, bool *failure)
 			*failure = true;
 			return NULL;
 	}
+
+	/*
+	 * If we don't have a collation, act as though it's "C".  This would
+	 * normally happen only for the "char" type, but perhaps there are other
+	 * cases.
+	 */
+	if (!OidIsValid(collid))
+		return val;
 
 	mylocale = pg_newlocale_from_collation(collid);
 
@@ -6103,6 +6111,7 @@ examine_simple_variable(PlannerInfo *root, Var *var,
 		Query	   *subquery;
 		List	   *subtlist;
 		TargetEntry *ste;
+		bool		have_grouping = false;
 
 		/*
 		 * Punt if it's a whole-row var rather than a plain column reference.
@@ -6193,9 +6202,12 @@ examine_simple_variable(PlannerInfo *root, Var *var,
 		 * Punt if subquery uses set operations or grouping sets, as these
 		 * will mash underlying columns' stats beyond recognition.  (Set ops
 		 * are particularly nasty; if we forged ahead, we would return stats
-		 * relevant to only the leftmost subselect...)	DISTINCT is also
-		 * problematic, but we check that later because there is a possibility
-		 * of learning something even with it.
+		 * relevant to only the leftmost subselect...)	DISTINCT and GROUP BY
+		 * are also problematic, but we check those later because there is a
+		 * possibility of learning something even with them: we can detect
+		 * uniqueness for single-column cases, and for key columns that are
+		 * simple Vars, we can obtain a useful stadistinct from the underlying
+		 * base table.
 		 */
 		if (subquery->setOperations ||
 			subquery->groupingSets)
@@ -6213,28 +6225,43 @@ examine_simple_variable(PlannerInfo *root, Var *var,
 		var = (Var *) ste->expr;
 
 		/*
-		 * If subquery uses DISTINCT, we can't make use of any stats for the
+		 * If subquery uses DISTINCT, we can't make full use of stats for the
 		 * variable ... but, if it's the only DISTINCT column, we are entitled
 		 * to consider it unique.  We do the test this way so that it works
 		 * for cases involving DISTINCT ON.
+		 *
+		 * If the target is a DISTINCT key that is a simple Var, we can still
+		 * obtain a useful stadistinct from the base table, though the
+		 * frequency-dependent stats must be adjusted since DISTINCT changes
+		 * the frequency distribution.  We set have_grouping and fall through
+		 * to the simple-Var recursion below.  Non-key columns cannot go
+		 * further.
 		 */
 		if (subquery->distinctClause)
 		{
-			if (list_length(subquery->distinctClause) == 1 &&
-				targetIsInSortList(ste, InvalidOid, subquery->distinctClause))
-				vardata->isunique = true;
-			/* cannot go further */
-			return;
+			if (targetIsInSortList(ste, InvalidOid, subquery->distinctClause))
+			{
+				have_grouping = true;
+
+				if (list_length(subquery->distinctClause) == 1)
+					vardata->isunique = true;
+			}
+			else
+				return;
 		}
 
 		/* The same idea as with DISTINCT clause works for a GROUP-BY too */
 		if (subquery->groupClause)
 		{
-			if (list_length(subquery->groupClause) == 1 &&
-				targetIsInSortList(ste, InvalidOid, subquery->groupClause))
-				vardata->isunique = true;
-			/* cannot go further */
-			return;
+			if (targetIsInSortList(ste, InvalidOid, subquery->groupClause))
+			{
+				have_grouping = true;
+
+				if (list_length(subquery->groupClause) == 1)
+					vardata->isunique = true;
+			}
+			else if (!have_grouping)
+				return;
 		}
 
 		/*
@@ -6265,6 +6292,14 @@ examine_simple_variable(PlannerInfo *root, Var *var,
 			 * joined to other tables in a way that creates duplicates.
 			 */
 			examine_simple_variable(subroot, var, vardata);
+
+			/*
+			 * If the subquery uses DISTINCT or GROUP BY and we got here
+			 * because the target is a key column, adjust the recursively
+			 * obtained stats tuple for the grouped context.
+			 */
+			if (have_grouping)
+				adjust_statstuple_for_grouping(subroot, var, vardata);
 		}
 	}
 	else
@@ -6276,6 +6311,71 @@ examine_simple_variable(PlannerInfo *root, Var *var,
 		 * maybe someday try to be smarter about VALUES.
 		 */
 	}
+}
+
+/*
+ * adjust_statstuple_for_grouping
+ *		Adjust a stats tuple for use in a grouped or distinct context.
+ *
+ * This is used when the stats tuple was obtained by recursing into a subquery,
+ * but the subquery's output invalidates frequency-related statistics (e.g. due
+ * to GROUP BY or DISTINCT).  The set of distinct values is preserved by such
+ * operations, so stadistinct remains valid, but MCV frequencies, histograms,
+ * and correlation data are not.  Zeroing all stats slots causes callers (e.g.
+ * var_eq_const) to fall through to the 1/ndistinct estimate instead.
+ *
+ * stanullfrac must also be adjusted.  When this column is the only GROUP BY or
+ * DISTINCT column, its NULLs are collapsed into one group, so the null
+ * fraction is 1/(ndistinct+1) if the base column had NULLs.  With multiple
+ * grouping columns a NULL can pair with many combinations of the other keys,
+ * so the null fraction depends on their joint distribution, which we don't
+ * have.  We approximate it as zero: NULLs collapse far more aggressively than
+ * non-NULLs, so the output fraction is well below the base table's, and erring
+ * low keeps estimates on the hash-join-favoring side.
+ *
+ * If stadistinct is negative (a fraction of the base table's row count), we
+ * convert it to an absolute count, since it would otherwise be misinterpreted
+ * relative to the subquery output's row count.
+ */
+static void
+adjust_statstuple_for_grouping(PlannerInfo *subroot, Var *var,
+							   VariableStatData *vardata)
+{
+	HeapTuple	copy;
+	Form_pg_statistic stats;
+
+	if (!HeapTupleIsValid(vardata->statsTuple))
+		return;
+
+	copy = heap_copytuple(vardata->statsTuple);
+	stats = (Form_pg_statistic) GETSTRUCT(copy);
+
+	/* Convert negative stadistinct to absolute count */
+	if (stats->stadistinct < 0)
+	{
+		RelOptInfo *baserel = find_base_rel(subroot, var->varno);
+
+		if (baserel->tuples > 0)
+		{
+			stats->stadistinct = (float4)
+				clamp_row_est(-stats->stadistinct * baserel->tuples);
+		}
+	}
+
+	/* Zero out all stats slots */
+	for (int k = 0; k < STATISTIC_NUM_SLOTS; k++)
+		(&stats->stakind1)[k] = 0;
+
+	/* Adjust the null fraction (see comment above). */
+	if (vardata->isunique && stats->stanullfrac > 0.0 && stats->stadistinct > 0)
+		stats->stanullfrac = 1.0 / (stats->stadistinct + 1.0);
+	else
+		stats->stanullfrac = 0.0;
+
+	/* Replace original with our modified copy */
+	vardata->freefunc(vardata->statsTuple);
+	vardata->statsTuple = copy;
+	vardata->freefunc = heap_freetuple;
 }
 
 /*

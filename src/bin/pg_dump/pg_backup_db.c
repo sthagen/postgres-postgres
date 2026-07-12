@@ -143,7 +143,7 @@ ConnectDatabaseAhx(Archive *AHX,
 	 */
 	if (PQconnectionUsedPassword(AH->connection))
 	{
-		free(AH->savedPassword);
+		pg_free(AH->savedPassword);
 		AH->savedPassword = pg_strdup(PQpass(AH->connection));
 	}
 
@@ -207,10 +207,14 @@ notice_processor(void *arg, const char *message)
 static void
 die_on_query_failure(ArchiveHandle *AH, const char *query)
 {
-	pg_log_error("query failed: %s",
-				 PQerrorMessage(AH->connection));
-	pg_log_error_detail("Query was: %s", query);
-	exit(1);
+	if (!is_cancel_in_progress())
+	{
+		pg_log_error("query failed: %s",
+					 PQerrorMessage(AH->connection));
+		pg_log_error_detail("Query was: %s", query);
+	}
+
+	exit_nicely(1);
 }
 
 void
@@ -396,8 +400,13 @@ ExecuteSqlCommandBuf(Archive *AHX, const char *buf, size_t bufLen)
 		 */
 		if (AH->pgCopyIn &&
 			PQputCopyData(AH->connection, buf, bufLen) <= 0)
-			pg_fatal("error returned by PQputCopyData: %s",
-					 PQerrorMessage(AH->connection));
+		{
+			/* Stay quiet if this is a result of our own cancellation. */
+			if (!is_cancel_in_progress())
+				pg_log_error("error returned by PQputCopyData: %s",
+							 PQerrorMessage(AH->connection));
+			exit_nicely(1);
+		}
 	}
 	else if (AH->outputKind == OUTPUT_OTHERDATA)
 	{
@@ -425,7 +434,7 @@ ExecuteSqlCommandBuf(Archive *AHX, const char *buf, size_t bufLen)
 			memcpy(str, buf, bufLen);
 			str[bufLen] = '\0';
 			ExecuteSqlCommand(AH, str, "could not execute query");
-			free(str);
+			pg_free(str);
 		}
 	}
 
@@ -445,8 +454,13 @@ EndDBCopyMode(Archive *AHX, const char *tocEntryTag)
 		PGresult   *res;
 
 		if (PQputCopyEnd(AH->connection, NULL) <= 0)
-			pg_fatal("error returned by PQputCopyEnd: %s",
-					 PQerrorMessage(AH->connection));
+		{
+			/* Stay quiet if this is a result of our own cancellation. */
+			if (!is_cancel_in_progress())
+				pg_log_error("error returned by PQputCopyEnd: %s",
+							 PQerrorMessage(AH->connection));
+			exit_nicely(1);
+		}
 
 		/* Check command status and return to normal libpq state */
 		res = PQgetResult(AH->connection);

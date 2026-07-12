@@ -33,6 +33,7 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/rangetypes.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
@@ -555,7 +556,7 @@ statatt_get_elem_type(Oid atttypid, char atttyptype,
 }
 
 /*
- * Build an array with element type elemtypid from a text datum, used as
+ * Build an array with element type typid from a text datum, used as
  * value of an attribute in a tuple to-be-inserted into pg_statistic.
  *
  * The typid and typmod should be derived from a previous call to
@@ -569,7 +570,6 @@ Datum
 statatt_build_stavalues(const char *staname, FmgrInfo *array_in, Datum d, Oid typid,
 						int32 typmod, bool *ok)
 {
-	LOCAL_FCINFO(fcinfo, 8);
 	char	   *s;
 	Datum		result;
 	ErrorSaveContext escontext = {T_ErrorSaveContext};
@@ -578,27 +578,17 @@ statatt_build_stavalues(const char *staname, FmgrInfo *array_in, Datum d, Oid ty
 
 	s = TextDatumGetCString(d);
 
-	InitFunctionCallInfoData(*fcinfo, array_in, 3, InvalidOid,
-							 (Node *) &escontext, NULL);
-
-	fcinfo->args[0].value = CStringGetDatum(s);
-	fcinfo->args[0].isnull = false;
-	fcinfo->args[1].value = ObjectIdGetDatum(typid);
-	fcinfo->args[1].isnull = false;
-	fcinfo->args[2].value = Int32GetDatum(typmod);
-	fcinfo->args[2].isnull = false;
-
-	result = FunctionCallInvoke(fcinfo);
-
-	pfree(s);
-
-	if (escontext.error_occurred)
+	if (!InputFunctionCallSafe(array_in, s, typid, typmod,
+							   (Node *) &escontext, &result))
 	{
+		pfree(s);
 		escontext.error_data->elevel = WARNING;
 		ThrowErrorData(escontext.error_data);
 		*ok = false;
 		return (Datum) 0;
 	}
+
+	pfree(s);
 
 	if (ARR_NDIM(DatumGetArrayTypeP(result)) != 1)
 	{
@@ -752,4 +742,80 @@ statatt_init_empty_tuple(Oid reloid, int16 attnum, bool inherited,
 		values[Anum_pg_statistic_stacoll1 + slotnum - 1] = ObjectIdGetDatum(InvalidOid);
 		nulls[Anum_pg_statistic_stacoll1 + slotnum - 1] = false;
 	}
+}
+
+/*
+ * Check that an imported bounds histogram (STATISTIC_KIND_BOUNDS_HISTOGRAM)
+ * is shaped the same way ANALYZE builds it in compute_range_stats().
+ *
+ * For both range-typed and multirange-typed columns the histogram is an array
+ * of ranges, so we take the range type from the array's element type.
+ */
+bool
+statatt_check_bounds_histogram(Datum arrayval)
+{
+	ArrayType  *arr = DatumGetArrayTypeP(arrayval);
+	Oid			rngtypid = ARR_ELEMTYPE(arr);
+	TypeCacheEntry *typcache;
+	int16		elmlen;
+	bool		elmbyval;
+	char		elmalign;
+	Datum	   *elems;
+	bool	   *nulls;
+	int			nelems;
+	RangeBound	prev_lower = {0};
+	RangeBound	prev_upper = {0};
+
+	typcache = lookup_type_cache(rngtypid, TYPECACHE_RANGE_INFO);
+
+	/*
+	 * The element type should always be a range type here.  This is
+	 * defensive. If it isn't, the bounds histogram is never consulted by the
+	 * range estimator, and there is nothing to verify.
+	 */
+	if (typcache->rngelemtype == NULL)
+		return true;
+
+	get_typlenbyvalalign(rngtypid, &elmlen, &elmbyval, &elmalign);
+	deconstruct_array(arr, rngtypid, elmlen, elmbyval, elmalign,
+					  &elems, &nulls, &nelems);
+
+	for (int i = 0; i < nelems; i++)
+	{
+		RangeBound	lower,
+					upper;
+		bool		empty;
+
+		/*
+		 * NULL elements are already rejected by statatt_build_stavalues() and
+		 * array_in_safe().
+		 */
+		range_deserialize(typcache, DatumGetRangeTypeP(elems[i]),
+						  &lower, &upper, &empty);
+
+		if (empty)
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("\"%s\" must not contain empty ranges",
+							"range_bounds_histogram")));
+			return false;
+		}
+
+		if (i > 0 &&
+			(range_cmp_bounds(typcache, &lower, &prev_lower) < 0 ||
+			 range_cmp_bounds(typcache, &upper, &prev_upper) < 0))
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("\"%s\" must have its lower and upper bounds sorted in ascending order",
+							"range_bounds_histogram")));
+			return false;
+		}
+
+		prev_lower = lower;
+		prev_upper = upper;
+	}
+
+	return true;
 }

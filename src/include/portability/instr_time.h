@@ -95,7 +95,7 @@ typedef struct instr_time
  * PG_INSTR_TSC_CLOCK controls whether the TSC clock source is compiled in, and
  * potentially used based on timing_tsc_enabled.
  */
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__x86_64__)
 #define PG_INSTR_TICKS_TO_NS 1
 #define PG_INSTR_TSC_CLOCK 1
 #elif defined(WIN32)
@@ -376,7 +376,7 @@ pg_rdtscp(void)
  * only inlining the function partially.
  * See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=124795
  */
-static pg_attribute_always_inline instr_time
+static pg_always_inline instr_time
 pg_get_ticks(void)
 {
 	if (likely(timing_tsc_enabled))
@@ -390,7 +390,7 @@ pg_get_ticks(void)
 	return pg_get_ticks_system();
 }
 
-static pg_attribute_always_inline instr_time
+static pg_always_inline instr_time
 pg_get_ticks_fast(void)
 {
 	if (likely(timing_tsc_enabled))
@@ -406,13 +406,13 @@ pg_get_ticks_fast(void)
 
 #else
 
-static pg_attribute_always_inline instr_time
+static pg_always_inline instr_time
 pg_get_ticks(void)
 {
 	return pg_get_ticks_system();
 }
 
-static pg_attribute_always_inline instr_time
+static pg_always_inline instr_time
 pg_get_ticks_fast(void)
 {
 	return pg_get_ticks_system();

@@ -1005,6 +1005,10 @@ transformRangeGraphTable(ParseState *pstate, RangeGraphTable *rgt)
 		columns = lappend(columns, te);
 	}
 
+	/* resolve any still-unresolved output columns as being type text */
+	if (pstate->p_resolve_unknowns)
+		resolveTargetListUnknowns(pstate, columns);
+
 	/*
 	 * Assign collations to column expressions now since
 	 * assign_query_collations() does not process rangetable entries.
@@ -2813,9 +2817,7 @@ transformGroupClause(ParseState *pstate, List *grouplist, bool groupByAll,
 
 			/*
 			 * Likewise, TLEs containing window functions are not okay to add
-			 * to GROUP BY.  At this writing, the SQL standard is silent on
-			 * what to do with them, but by analogy to aggregates we'll just
-			 * skip them.
+			 * to GROUP BY, and the SQL standard directs us to skip them.
 			 */
 			if (pstate->p_hasWindowFuncs &&
 				contain_windowfuncs((Node *) tle->expr))

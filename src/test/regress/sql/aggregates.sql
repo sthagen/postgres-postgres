@@ -493,7 +493,7 @@ drop table minmaxtest cascade;
 
 -- DISTINCT can also trigger wrong answers with hash aggregation (bug #18465)
 begin;
-set local enable_sort = off;
+set local enable_groupagg = off;
 explain (costs off)
   select f1, (select distinct min(t1.f1) from int4_tbl t1 where t1.f1 = t0.f1)
   from int4_tbl t0;
@@ -588,27 +588,57 @@ alter table t2 alter column z drop not null;
 create unique index t2_z_uidx on t2(z) nulls not distinct;
 explain (costs off) select y,z from t2 group by y,z;
 
--- A unique index proves uniqueness only under its own opfamily.  When the
--- GROUP BY's eqop comes from a different opfamily with looser equality,
--- rows the index regards as distinct can collapse into one GROUP BY group,
--- so the index is not usable for removing redundant columns.
-create type t_rec as (x numeric);
-create temp table t_opf (a t_rec not null, b text);
-create unique index on t_opf (a record_image_ops);
--- (1.0) and (1.00) are bytewise distinct but logically equal as records;
--- the index admits both, but GROUP BY a (default record_ops) would merge
--- them, so b must be retained as a grouping key.
-insert into t_opf values (row(1.0)::t_rec, 'X'), (row(1.00)::t_rec, 'Y');
-explain (costs off)
-select a, b from t_opf group by a, b order by b;
-select a, b from t_opf group by a, b order by b;
-drop table t_opf;
-drop type t_rec;
-
 drop table t1 cascade;
 drop table t2;
 drop table t3;
 drop table p_t1;
+
+-- A composite type used by the tests below to exercise the asymmetry
+-- between record_ops (per-field equality, the default) and record_image_ops
+-- (bytewise equality): values like row(1.0) and row(1.00) are field-equal
+-- but byte-distinct.
+create type avg_rec as (x numeric);
+
+-- A unique index proves uniqueness only under its own opfamily.  When the
+-- GROUP BY's eqop comes from a different opfamily with looser equality,
+-- rows the index regards as distinct can collapse into one GROUP BY group,
+-- so the index is not usable for removing redundant columns.
+create temp table t_opf (a avg_rec not null, b text);
+create unique index on t_opf (a record_image_ops);
+-- (1.0) and (1.00) are bytewise distinct but logically equal as records;
+-- the index admits both, but GROUP BY a (default record_ops) would merge
+-- them, so b must be retained as a grouping key.
+insert into t_opf values (row(1.0)::avg_rec, 'X'), (row(1.00)::avg_rec, 'Y');
+explain (costs off)
+select a, b from t_opf group by a, b order by b;
+select a, b from t_opf group by a, b order by b;
+drop table t_opf;
+
+-- A HAVING clause that uses an equality operator from a different opfamily
+-- than the GROUP BY's eqop must NOT be pushed down to WHERE.
+create temp table t_having (id int, a avg_rec);
+insert into t_having values
+  (1, row(1.0)::avg_rec),
+  (2, row(1.00)::avg_rec),
+  (3, row(2)::avg_rec);
+
+-- the clause must stay in HAVING
+explain (costs off)
+select a, count(*) from t_having group by a having a *= row(1.0)::avg_rec;
+select a, count(*) from t_having group by a having a *= row(1.0)::avg_rec;
+
+-- the clause must stay in HAVING
+explain (costs off)
+select a, count(*) from t_having group by a having a *= any (array[row(1.0)::avg_rec]);
+select a, count(*) from t_having group by a having a *= any (array[row(1.0)::avg_rec]);
+
+-- the clause can be pushed down to WHERE
+explain (costs off)
+select a, count(*) from t_having group by a having a = row(1.0)::avg_rec;
+select a, count(*) from t_having group by a having a = row(1.0)::avg_rec;
+
+drop table t_having;
+drop type avg_rec;
 
 --
 -- Test GROUP BY ALL
@@ -1672,7 +1702,7 @@ select v||'a', case when v||'a' = 'aa' then 1 else 0 end, count(*)
 -- Hash Aggregation Spill tests
 --
 
-set enable_sort=false;
+set enable_groupagg=false;
 set work_mem='64kB';
 
 select unique1, count(*), sum(twothousand) from tenk1
@@ -1681,7 +1711,7 @@ having sum(fivethous) > 4975
 order by sum(twothousand);
 
 set work_mem to default;
-set enable_sort to default;
+set enable_groupagg to default;
 
 --
 -- Compare results between plans using sorting and plans using hash
@@ -1736,7 +1766,7 @@ select (g/2)::numeric as c1, array_agg(g::numeric) as c2, count(*) as c3
 -- Produce results with hash aggregation
 
 set enable_hashagg = true;
-set enable_sort = false;
+set enable_groupagg = false;
 
 set jit_above_cost = 0;
 
@@ -1769,7 +1799,7 @@ create table agg_hash_4 as
 select (g/2)::numeric as c1, array_agg(g::numeric) as c2, count(*) as c3
   from agg_data_2k group by g/2;
 
-set enable_sort = true;
+set enable_groupagg = true;
 set work_mem to default;
 
 -- Compare group aggregation results to hash aggregation results
