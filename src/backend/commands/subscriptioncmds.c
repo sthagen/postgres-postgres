@@ -50,6 +50,7 @@
 #include "replication/walsender.h"
 #include "replication/worker_internal.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
@@ -1362,6 +1363,7 @@ AlterSubscription_refresh_seq(Subscription *sub)
 	char	   *err = NULL;
 	WalReceiverConn *wrconn;
 	bool		must_use_password;
+	List	   *subrel_states;
 
 	/* Load the library providing us libpq calls. */
 	load_file("libpqwalreceiver", false);
@@ -1376,33 +1378,74 @@ AlterSubscription_refresh_seq(Subscription *sub)
 				errmsg("subscription \"%s\" could not connect to the publisher: %s",
 					   sub->name, err));
 
+	/* The publisher connection is only needed for the origin check. */
 	PG_TRY();
 	{
-		List	   *subrel_states;
+		/*
+		 * Sequence synchronization depends on publisher-side functionality
+		 * introduced in PostgreSQL 19, so it cannot work against an older
+		 * publisher.
+		 */
+		if (walrcv_server_version(wrconn) < 190000)
+			ereport(ERROR,
+					errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					errmsg("cannot synchronize sequences if the publisher is running a version earlier than PostgreSQL 19"));
 
 		check_publications_origin_sequences(wrconn, sub->publications, true,
 											sub->origin, NULL, 0, sub->name);
-
-		/* Get local sequence list. */
-		subrel_states = GetSubscriptionRelations(sub->oid, false, true, false);
-		foreach_ptr(SubscriptionRelState, subrel, subrel_states)
-		{
-			Oid			relid = subrel->relid;
-
-			UpdateSubscriptionRelState(sub->oid, relid, SUBREL_STATE_INIT,
-									   InvalidXLogRecPtr, false);
-			ereport(DEBUG1,
-					errmsg_internal("sequence \"%s.%s\" of subscription \"%s\" set to INIT state",
-									get_namespace_name(get_rel_namespace(relid)),
-									get_rel_name(relid),
-									sub->name));
-		}
 	}
 	PG_FINALLY();
 	{
 		walrcv_disconnect(wrconn);
 	}
 	PG_END_TRY();
+
+	/*
+	 * Reset the sequences to INIT so they get re-synchronized with the latest
+	 * publisher values.
+	 *
+	 * A sequence sync worker may already be running. If it has fetched a
+	 * sequence's value from the publisher but not yet marked it READY, it
+	 * must not be allowed to complete that update, as it would overwrite the
+	 * reset below with a stale value and silently lose this refresh request.
+	 * So we stop any running sequence sync worker before resetting the
+	 * states.
+	 *
+	 * This is race-free because AlterSubscription() already holds
+	 * AccessExclusiveLock on the subscription object. That lock blocks a
+	 * running worker's update of sequence state to READY, see
+	 * UpdateSubscriptionRelState() which takes AccessShareLock on the object.
+	 * It also blocks any worker the apply worker re-launches, because a new
+	 * worker takes AccessShareLock on the object before it reads
+	 * pg_subscription_rel, see InitializeLogRepWorker(). Such a worker cannot
+	 * act on the states until we commit, by which time they are reset to INIT
+	 * and it will sync the latest values.
+	 */
+#ifdef USE_ASSERT_CHECKING
+	{
+		LOCKTAG		tag;
+
+		SET_LOCKTAG_OBJECT(tag, InvalidOid, SubscriptionRelationId, sub->oid, 0);
+		Assert(LockHeldByMe(&tag, AccessExclusiveLock, true));
+	}
+#endif
+
+	logicalrep_worker_stop(WORKERTYPE_SEQUENCESYNC, sub->oid, InvalidOid);
+
+	/* Reset every local sequence of this subscription to INIT. */
+	subrel_states = GetSubscriptionRelations(sub->oid, false, true, false);
+	foreach_ptr(SubscriptionRelState, subrel, subrel_states)
+	{
+		Oid			relid = subrel->relid;
+
+		UpdateSubscriptionRelState(sub->oid, relid, SUBREL_STATE_INIT,
+								   InvalidXLogRecPtr, false);
+		ereport(DEBUG1,
+				errmsg_internal("sequence \"%s.%s\" of subscription \"%s\" set to INIT state",
+								get_namespace_name(get_rel_namespace(relid)),
+								get_rel_name(relid),
+								sub->name));
+	}
 }
 
 /*
@@ -2868,6 +2911,9 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 
 	form = (Form_pg_subscription) GETSTRUCT(tup);
 
+	/* Must only alter subscriptions belonging to the current database. */
+	Assert(form->subdbid == MyDatabaseId);
+
 	if (form->subowner == newOwnerId)
 		return;
 
@@ -2903,11 +2949,12 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 
 	/*
 	 * If the subscription uses a server, check that the new owner has USAGE
-	 * privileges on the server and that a user mapping exists. Note: does not
-	 * re-check the resulting connection string.
+	 * privileges on the server, that a user mapping exists, and that the
+	 * resulting connection string is valid for the new owner.
 	 */
 	if (OidIsValid(form->subserver))
 	{
+		char	   *conninfo;
 		ForeignServer *server = GetForeignServer(form->subserver);
 
 		aclresult = object_aclcheck(ForeignServerRelationId, server->serverid, newOwnerId, ACL_USAGE);
@@ -2920,6 +2967,15 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 
 		/* make sure a user mapping exists */
 		GetUserMapping(newOwnerId, server->serverid);
+
+		conninfo = ForeignServerConnectionString(newOwnerId, server);
+
+		/* Load the library providing us libpq calls. */
+		load_file("libpqwalreceiver", false);
+		/* Check the connection info string. */
+		walrcv_check_conninfo(conninfo,
+							  form->subpasswordrequired &&
+							  !superuser_arg(newOwnerId));
 	}
 
 	form->subowner = newOwnerId;
@@ -2987,6 +3043,7 @@ AlterSubscriptionOwner_oid(Oid subid, Oid newOwnerId)
 {
 	HeapTuple	tup;
 	Relation	rel;
+	Form_pg_subscription form;
 
 	rel = table_open(SubscriptionRelationId, RowExclusiveLock);
 
@@ -2997,7 +3054,15 @@ AlterSubscriptionOwner_oid(Oid subid, Oid newOwnerId)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("subscription with OID %u does not exist", subid)));
 
-	AlterSubscriptionOwner_internal(rel, tup, newOwnerId);
+	form = (Form_pg_subscription) GETSTRUCT(tup);
+
+	/*
+	 * Don't process subscriptions belonging to other databases. While
+	 * pg_subscription is a shared catalog, subscriptions refer to db-local
+	 * objects which exist only in the database identified by subdbid.
+	 */
+	if (form->subdbid == MyDatabaseId)
+		AlterSubscriptionOwner_internal(rel, tup, newOwnerId);
 
 	heap_freetuple(tup);
 

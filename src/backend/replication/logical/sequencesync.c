@@ -290,17 +290,42 @@ get_and_validate_seq_info(TupleTableSlot *slot, Relation *sequence_rel,
 		(LogicalRepSequenceInfo *) list_nth(seqinfos, *seqidx);
 
 	/*
+	 * has_sequence_privilege() itself returns NULL, rather than false, when
+	 * the sequence has been dropped concurrently after it was identified in
+	 * the catalog snapshot (see has_sequence_privilege_id()). Treat that as a
+	 * missing sequence on the publisher.
+	 */
+	datum = slot_getattr(slot, ++col, &isnull);
+	if (isnull)
+		return COPYSEQ_SKIPPED;
+
+	remote_has_select_priv = DatumGetBool(datum);
+
+	/*
 	 * The remote sequence state can be NULL if the publisher lacks the
 	 * required privileges or if the sequence was dropped concurrently after
 	 * it was identified in the catalog snapshot (see pg_get_sequence_data()).
 	 */
-	remote_has_select_priv = DatumGetBool(slot_getattr(slot, ++col, &isnull));
-	Assert(!isnull);
-
 	datum = slot_getattr(slot, ++col, &isnull);
 	if (isnull)
-		return remote_has_select_priv ? COPYSEQ_SKIPPED :
-			COPYSEQ_PUBLISHER_INSUFFICIENT_PERM;
+	{
+		/*
+		 * The sequence was dropped concurrently after it was identified in
+		 * the catalog snapshot. Treat it as skipped (and, since it no longer
+		 * exists on the publisher, ultimately missing).
+		 */
+		if (remote_has_select_priv)
+			return COPYSEQ_SKIPPED;
+
+		/*
+		 * The publisher lacks the SELECT privilege required by
+		 * pg_get_sequence_data(). Since has_sequence_privilege() returned
+		 * false, not NULL, do not classify this sequence as missing on the
+		 * publisher.
+		 */
+		seqinfo_local->found_on_pub = true;
+		return COPYSEQ_PUBLISHER_INSUFFICIENT_PERM;
+	}
 
 	seqinfo_local->last_value = DatumGetInt64(datum);
 
@@ -434,6 +459,16 @@ copy_sequences(WalReceiverConn *conn)
 	StringInfoData seqstr;
 	StringInfoData cmd;
 	MemoryContext oldctx;
+
+	/*
+	 * Sequence synchronization depends on publisher-side functionality
+	 * introduced in PostgreSQL 19, so it cannot work against an older
+	 * publisher.
+	 */
+	if (walrcv_server_version(conn) < 190000)
+		ereport(ERROR,
+				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg("cannot synchronize sequences if the publisher is running a version earlier than PostgreSQL 19"));
 
 	initStringInfo(&seqstr);
 	initStringInfo(&cmd);

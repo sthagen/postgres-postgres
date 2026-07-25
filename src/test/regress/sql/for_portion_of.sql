@@ -1215,6 +1215,53 @@ SELECT * FROM for_portion_of_test ORDER BY valid_at;
 DROP FUNCTION fpo_append_name_suffix CASCADE;
 DROP TABLE for_portion_of_test;
 
+-- A BEFORE UPDATE trigger that changes the application-time column is allowed,
+-- even if the results are senseless.
+-- Note this is likely to cause a primary key violation.
+
+CREATE TABLE for_portion_of_test (
+  id int4range,
+  valid_at daterange,
+  name text
+);
+
+CREATE FUNCTION trg_fpo_change_valid_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS
+$$
+BEGIN
+  NEW.valid_at = daterange('2018-01-01', '2019-01-01');
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER fpo_before_update_row
+  BEFORE UPDATE ON for_portion_of_test
+  FOR EACH ROW EXECUTE PROCEDURE trg_fpo_change_valid_at();
+
+INSERT INTO for_portion_of_test VALUES ('[1,2)', '[2010-01-01,2020-01-01)', 'foo');
+
+UPDATE for_portion_of_test
+  FOR PORTION OF valid_at FROM '2018-05-01' TO '2018-06-01'
+  SET name = CONCAT(name, '!')
+  WHERE id = '[1,2)';
+
+SELECT * FROM for_portion_of_test ORDER BY id, valid_at;
+
+-- A primary key should reject anything invalid:
+TRUNCATE for_portion_of_test;
+ALTER TABLE for_portion_of_test
+  ADD CONSTRAINT for_portion_of_test_key
+  PRIMARY KEY (id, valid_at WITHOUT OVERLAPS);
+INSERT INTO for_portion_of_test VALUES ('[1,2)', '[2010-01-01,2020-01-01)', 'foo');
+UPDATE for_portion_of_test
+  FOR PORTION OF valid_at FROM '2018-05-01' TO '2018-06-01'
+  SET name = CONCAT(name, '!')
+  WHERE id = '[1,2)';
+
+DROP TRIGGER fpo_before_update_row ON for_portion_of_test;
+DROP FUNCTION trg_fpo_change_valid_at();
+DROP TABLE for_portion_of_test;
+
 -- Test with multiranges
 
 CREATE TABLE for_portion_of_test2 (
@@ -1675,5 +1722,63 @@ DELETE FROM fpo_cursed
 ROLLBACK;
 SELECT * FROM fpo_cursed;
 DROP TABLE fpo_cursed;
+
+-- UPDATE/DELETE FOR PORTION OF leftover rows must satisfy RLS INSERT checks.
+CREATE ROLE regress_fpo_rls;
+CREATE TABLE fpo_rls (
+  id int,
+  valid_at int4range
+);
+ALTER TABLE fpo_rls ENABLE ROW LEVEL SECURITY;
+CREATE POLICY fpo_rls_select ON fpo_rls
+  FOR SELECT TO regress_fpo_rls
+  USING (true);
+CREATE POLICY fpo_rls_update ON fpo_rls
+  FOR UPDATE TO regress_fpo_rls
+  USING (lower(valid_at) < 50)
+  WITH CHECK (lower(valid_at) < 50);
+CREATE POLICY fpo_rls_delete ON fpo_rls
+  FOR DELETE TO regress_fpo_rls
+  USING (lower(valid_at) < 50);
+CREATE POLICY fpo_rls_insert ON fpo_rls
+  FOR INSERT TO regress_fpo_rls
+  WITH CHECK (lower(valid_at) < 50);
+GRANT SELECT, UPDATE, DELETE ON fpo_rls TO regress_fpo_rls;
+
+INSERT INTO fpo_rls VALUES (1, '[10,100)');
+SET ROLE regress_fpo_rls;
+UPDATE fpo_rls
+  FOR PORTION OF valid_at FROM 30 TO 100
+  SET id = 2;
+RESET ROLE;
+SELECT * FROM fpo_rls ORDER BY valid_at;
+
+TRUNCATE fpo_rls;
+INSERT INTO fpo_rls VALUES (1, '[10,100)');
+SET ROLE regress_fpo_rls;
+DELETE FROM fpo_rls
+  FOR PORTION OF valid_at FROM 30 TO 100;
+RESET ROLE;
+SELECT * FROM fpo_rls ORDER BY valid_at;
+
+TRUNCATE fpo_rls;
+INSERT INTO fpo_rls VALUES (1, '[10,100)');
+SET ROLE regress_fpo_rls;
+UPDATE fpo_rls
+  FOR PORTION OF valid_at FROM 30 TO 70
+  SET id = 2;
+RESET ROLE;
+SELECT * FROM fpo_rls ORDER BY valid_at;
+
+TRUNCATE fpo_rls;
+INSERT INTO fpo_rls VALUES (1, '[10,100)');
+SET ROLE regress_fpo_rls;
+DELETE FROM fpo_rls
+  FOR PORTION OF valid_at FROM 30 TO 70;
+RESET ROLE;
+SELECT * FROM fpo_rls ORDER BY valid_at;
+
+DROP TABLE fpo_rls;
+DROP ROLE regress_fpo_rls;
 
 RESET datestyle;

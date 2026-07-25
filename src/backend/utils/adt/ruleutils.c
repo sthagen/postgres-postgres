@@ -6555,9 +6555,7 @@ get_basic_select_query(Query *query, deparse_context *context)
 		save_ingroupby = context->inGroupBy;
 		context->inGroupBy = true;
 
-		if (query->groupByAll)
-			appendStringInfoString(buf, "ALL");
-		else if (query->groupingSets == NIL)
+		if (query->groupingSets == NIL)
 		{
 			sep = "";
 			foreach(l, query->groupClause)
@@ -12768,7 +12766,8 @@ get_json_table_plan(TableFunc *tf, JsonTablePlan *plan, deparse_context *context
 			appendStringInfoString(context->buf,
 								   s->outerJoin ? " OUTER " : " INNER ");
 			get_json_table_plan(tf, s->child, context,
-								IsA(s->child, JsonTableSiblingJoin));
+								IsA(s->child, JsonTableSiblingJoin) ||
+								castNode(JsonTablePathScan, s->child)->child);
 		}
 	}
 	else if (IsA(plan, JsonTableSiblingJoin))
@@ -12799,7 +12798,6 @@ get_json_table_columns(TableFunc *tf, JsonTablePathScan *scan,
 					   bool showimplicit)
 {
 	StringInfo	buf = context->buf;
-	JsonExpr   *jexpr = castNode(JsonExpr, tf->docexpr);
 	ListCell   *lc_colname;
 	ListCell   *lc_coltype;
 	ListCell   *lc_coltypmod;
@@ -12878,9 +12876,6 @@ get_json_table_columns(TableFunc *tf, JsonTablePathScan *scan,
 
 			default_behavior = JSON_BEHAVIOR_NULL;
 		}
-
-		if (jexpr->on_error->btype == JSON_BEHAVIOR_ERROR)
-			default_behavior = JSON_BEHAVIOR_ERROR;
 
 		appendStringInfoString(buf, " PATH ");
 

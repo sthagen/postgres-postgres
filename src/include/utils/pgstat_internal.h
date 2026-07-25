@@ -322,7 +322,8 @@ typedef struct PgStat_KindInfo
 	 * an entry, in the stats file or optionally in a different file.
 	 * Optional.
 	 *
-	 * to_serialized_data: write auxiliary data for an entry.
+	 * to_serialized_data: write auxiliary data for an entry.  Returns true on
+	 * success, false on write error.
 	 *
 	 * from_serialized_data: read auxiliary data for an entry.  Returns true
 	 * on success, false on read error.
@@ -332,7 +333,7 @@ typedef struct PgStat_KindInfo
 	 * just written or read.  "header" is a pointer to the stats data; it may
 	 * be modified only in from_serialized_data to reconstruct an entry.
 	 */
-	void		(*to_serialized_data) (const PgStat_HashKey *key,
+	bool		(*to_serialized_data) (const PgStat_HashKey *key,
 									   const PgStatShared_Common *header,
 									   FILE *statfile);
 	bool		(*from_serialized_data) (const PgStat_HashKey *key,
@@ -679,6 +680,7 @@ extern void pgstat_assert_is_up(void);
 #endif
 
 extern void pgstat_delete_pending_entry(PgStat_EntryRef *entry_ref);
+extern void pgstat_prep_pending_from_entry_ref(PgStat_EntryRef *entry_ref);
 extern PgStat_EntryRef *pgstat_prep_pending_entry(PgStat_Kind kind, Oid dboid,
 												  uint64 objid,
 												  bool *created_entry);
@@ -886,11 +888,6 @@ extern PGDLLIMPORT bool pgstat_report_fixed;
 /* Backend-local stats state */
 extern PGDLLIMPORT PgStat_LocalState pgStatLocal;
 
-/* Helper functions for reading and writing of on-disk stats file */
-extern void pgstat_write_chunk(FILE *fpout, void *ptr, size_t len);
-extern bool pgstat_read_chunk(FILE *fpin, void *ptr, size_t len);
-#define pgstat_read_chunk_s(fpin, ptr) pgstat_read_chunk(fpin, ptr, sizeof(*ptr))
-#define pgstat_write_chunk_s(fpout, ptr) pgstat_write_chunk(fpout, ptr, sizeof(*ptr))
 
 /*
  * Implementation of inline functions declared above.

@@ -742,6 +742,15 @@ test_fdw_connection(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text("dbname=regress_doesnotexist user=doesnotexist password=secret"));
 }
 
+PG_FUNCTION_INFO_V1(test_fdw_connection_no_password);
+Datum
+test_fdw_connection_no_password(PG_FUNCTION_ARGS)
+{
+	/* Ensure the test fails if no valid user mapping exists. */
+	GetUserMapping(PG_GETARG_OID(0), PG_GETARG_OID(1));
+	PG_RETURN_TEXT_P(cstring_to_text("dbname=regress_doesnotexist user=doesnotexist"));
+}
+
 PG_FUNCTION_INFO_V1(is_catalog_text_unique_index_oid);
 Datum
 is_catalog_text_unique_index_oid(PG_FUNCTION_ARGS)
@@ -1335,9 +1344,15 @@ test_translation(PG_FUNCTION_ARGS)
 		 * Apparently the customary workaround is for users to set the
 		 * LANGUAGE environment variable to provide a mapping.  Do so here to
 		 * ensure that the nls.sql regression test will work.
+		 *
+		 * With glibc and perhaps other implementations, LANGUAGE overrides
+		 * LC_MESSAGES, which we don't want either; so let's unset it if we're
+		 * not on Solaris.
 		 */
 #if defined(__sun__)
 		setenv("LANGUAGE", "es_ES.UTF-8:es", 1);
+#else
+		unsetenv("LANGUAGE");
 #endif
 		pg_bindtextdomain(TEXTDOMAIN);
 		inited = true;

@@ -986,7 +986,8 @@ listAllDbs(const char *pattern, bool verbose)
 	printACLColumn(&buf, "d.datacl");
 	if (verbose)
 		appendPQExpBuffer(&buf,
-						  ",\n  CASE WHEN pg_catalog.has_database_privilege(d.datname, 'CONNECT')\n"
+						  ",\n  CASE WHEN pg_catalog.has_database_privilege(d.datname, 'CONNECT') OR\n"
+						  "               pg_catalog.pg_has_role('pg_read_all_stats', 'USAGE')\n"
 						  "       THEN pg_catalog.pg_size_pretty(pg_catalog.pg_database_size(d.datname))\n"
 						  "       ELSE 'No Access'\n"
 						  "  END as \"%s\""
@@ -3048,7 +3049,17 @@ describeOneTableDetails(const char *schemaname,
 							  "FROM pg_catalog.pg_publication p\n"
 							  "     JOIN pg_catalog.pg_publication_rel pr ON p.oid = pr.prpubid\n"
 							  "     JOIN pg_catalog.pg_class c ON c.oid = pr.prrelid\n"
-							  "WHERE pr.prrelid = '%s'\n",
+							  "WHERE pr.prrelid = '%s'\n"
+
+			/*
+			 * Don't print the same publication multiple times when the
+			 * published table is also covered by a published schema.
+			 */
+							  "  AND NOT EXISTS (\n"
+							  "     SELECT 1\n"
+							  "     FROM pg_catalog.pg_publication_namespace pn\n"
+							  "     WHERE pn.pnpubid = p.oid\n"
+							  "       AND pn.pnnspid = c.relnamespace)\n",
 							  oid, oid, oid);
 
 			if (pset.sversion >= 190000)
@@ -6793,6 +6804,19 @@ describePublications(const char *pattern)
 							  "WHERE c.relnamespace = n.oid\n"
 							  "  AND c.oid = pr.prrelid\n"
 							  "  AND pr.prpubid = '%s'\n", pubid);
+			if (pset.sversion >= 150000)
+			{
+				/*
+				 * Don't list tables that are also covered by a published
+				 * schema.
+				 */
+				appendPQExpBuffer(&buf,
+								  "  AND NOT EXISTS (\n"
+								  "     SELECT 1\n"
+								  "     FROM pg_catalog.pg_publication_namespace pn\n"
+								  "     WHERE pn.pnpubid = pr.prpubid\n"
+								  "       AND pn.pnnspid = c.relnamespace)\n");
+			}
 
 			if (pset.sversion >= 190000)
 				appendPQExpBufferStr(&buf, "  AND NOT pr.prexcept\n");

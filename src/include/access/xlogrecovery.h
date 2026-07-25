@@ -112,8 +112,8 @@ typedef struct XLogRecoveryCtlData
 	TimestampTz recoveryLastXTime;
 
 	/*
-	 * timestamp of when we started replaying the current chunk of WAL data,
-	 * only relevant for replication or archive recovery
+	 * timestamp of when we caught up with the latest WAL chunk received from
+	 * streaming replication
 	 */
 	TimestampTz currentChunkStartTime;
 	/* Recovery pause state */
@@ -139,7 +139,7 @@ extern PGDLLIMPORT char *archiveCleanupCommand;
 extern PGDLLIMPORT TransactionId recoveryTargetXid;
 extern PGDLLIMPORT char *recovery_target_time_string;
 extern PGDLLIMPORT TimestampTz recoveryTargetTime;
-extern PGDLLIMPORT const char *recoveryTargetName;
+extern PGDLLIMPORT char *recoveryTargetName;
 extern PGDLLIMPORT XLogRecPtr recoveryTargetLSN;
 extern PGDLLIMPORT RecoveryTargetType recoveryTarget;
 extern PGDLLIMPORT bool wal_receiver_create_temp_slot;
