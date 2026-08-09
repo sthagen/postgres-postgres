@@ -1335,8 +1335,18 @@ ExecInsert(ModifyTableContext *context,
 	if (resultRelInfo->ri_WithCheckOptions != NIL)
 		ExecWithCheckOptions(WCO_VIEW_CHECK, resultRelInfo, slot, estate);
 
-	/* Process RETURNING if present */
-	if (resultRelInfo->ri_projectReturning)
+	/*
+	 * Process RETURNING if present.
+	 *
+	 * If this is an UPDATE/DELETE ... FOR PORTION OF, we do not return the
+	 * leftover rows inserted by ExecForPortionOfLeftovers().  Note that we
+	 * must check mtstate->operation here, because we *do* want to process the
+	 * newly inserted row of a cross-partition UPDATE with a FOR PORTION OF
+	 * clause (ExecCrossPartitionUpdate() leaves mtstate->operation set to
+	 * CMD_UPDATE, whereas ExecForPortionOfLeftovers() sets it to CMD_INSERT).
+	 */
+	if (resultRelInfo->ri_projectReturning &&
+		!(node->forPortionOf && mtstate->operation == CMD_INSERT))
 	{
 		TupleTableSlot *oldSlot = NULL;
 
@@ -5641,7 +5651,6 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		/* Create state for FOR PORTION OF operation */
 
 		fpoState = makeNode(ForPortionOfState);
-		fpoState->fp_rangeName = forPortionOf->range_name;
 		fpoState->fp_rangeType = forPortionOf->rangeType;
 		fpoState->fp_rangeAttno = forPortionOf->rangeVar->varattno;
 		fpoState->fp_targetRange = targetRange;
@@ -5928,7 +5937,6 @@ ExecInitForPortionOf(ModifyTableState *mtstate, EState *estate,
 
 	leafState = makeNode(ForPortionOfState);
 
-	leafState->fp_rangeName = fpoState->fp_rangeName;
 	leafState->fp_rangeType = fpoState->fp_rangeType;
 	leafState->fp_targetRange = fpoState->fp_targetRange;
 	map = ExecGetChildToRootMap(resultRelInfo);

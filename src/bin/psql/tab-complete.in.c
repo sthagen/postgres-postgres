@@ -2354,6 +2354,9 @@ match_previous_words(int pattern_id,
 	/* ALTER SUBSCRIPTION <name> REFRESH */
 	else if (Matches("ALTER", "SUBSCRIPTION", MatchAny, MatchAnyN, "REFRESH"))
 		COMPLETE_WITH("PUBLICATION", "SEQUENCES");
+	/* ALTER SUBSCRIPTION <name> REFRESH PUBLICATION */
+	else if (Matches("ALTER", "SUBSCRIPTION", MatchAny, MatchAnyN, "REFRESH", "PUBLICATION"))
+		COMPLETE_WITH("WITH (");
 	/* ALTER SUBSCRIPTION <name> REFRESH PUBLICATION WITH ( */
 	else if (Matches("ALTER", "SUBSCRIPTION", MatchAny, MatchAnyN, "REFRESH", "PUBLICATION", "WITH", "("))
 		COMPLETE_WITH("copy_data");
@@ -4479,6 +4482,8 @@ match_previous_words(int pattern_id,
 		COMPLETE_WITH("GRAPH");
 	else if (Matches("DROP", "PROPERTY", "GRAPH"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_propgraphs);
+	else if (Matches("DROP", "PROPERTY", "GRAPH", MatchAny))
+		COMPLETE_WITH("CASCADE", "RESTRICT");
 
 	/* DROP RULE */
 	else if (Matches("DROP", "RULE", MatchAny))

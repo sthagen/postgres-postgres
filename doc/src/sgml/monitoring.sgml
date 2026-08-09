@@ -2473,8 +2473,8 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        Process ID of the leader apply worker if this process is a parallel
-       apply worker; NULL if this process is a leader apply worker or a table
-       synchronization worker
+       apply worker; NULL if this process is a leader apply worker, a table
+       synchronization worker or a sequence synchronization worker
       </para></entry>
      </row>
 
@@ -2484,7 +2484,8 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        OID of the relation that the worker is synchronizing; NULL for the
-       leader apply worker and parallel apply workers
+       leader apply worker, parallel apply workers and the sequence
+       synchronization worker
       </para></entry>
      </row>
 
@@ -2494,7 +2495,8 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        Last write-ahead log location received, the initial value of
-       this field being 0; NULL for parallel apply workers
+       this field being 0; NULL for parallel apply workers and the sequence
+       synchronization worker
       </para></entry>
      </row>
 
@@ -2504,7 +2506,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        Send time of last message received from origin WAL sender; NULL for
-       parallel apply workers
+       parallel apply workers and the sequence synchronization worker
       </para></entry>
      </row>
 
@@ -2514,7 +2516,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        Receipt time of last message received from origin WAL sender; NULL for
-       parallel apply workers
+       parallel apply workers and the sequence synchronization worker
       </para></entry>
      </row>
 
@@ -2524,7 +2526,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        Last write-ahead log location reported to origin WAL sender; NULL for
-       parallel apply workers
+       parallel apply workers and the sequence synchronization worker
       </para></entry>
      </row>
 
@@ -2534,7 +2536,8 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        Time of last write-ahead log location reported to origin WAL
-       sender; NULL for parallel apply workers
+       sender; NULL for parallel apply workers and the sequence synchronization
+       worker
       </para></entry>
      </row>
     </tbody>
@@ -3202,7 +3205,9 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <varname>object</varname> is not <literal>wal</literal>,
         or if <xref linkend="guc-track-wal-io-timing"/> is enabled
         and <varname>object</varname> is <literal>wal</literal>,
-        otherwise zero)
+        otherwise zero). This may include time spent waiting for a
+        read started by another backend. In that case
+        <structfield>reads</structfield> may still be zero.
        </para>
       </entry>
      </row>
@@ -8742,7 +8747,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
     </row>
     <row>
      <entry><literal>smgr-md-read-done</literal></entry>
-     <entry><literal>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, int, int)</literal></entry>
+     <entry><literal>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, ssize_t, size_t)</literal></entry>
      <entry>Probe that fires when a block read is complete.
       arg0 and arg1 contain the fork and block numbers of the page.
       arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs
@@ -8764,7 +8769,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
     </row>
     <row>
      <entry><literal>smgr-md-write-done</literal></entry>
-     <entry><literal>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, int, int)</literal></entry>
+     <entry><literal>(ForkNumber, BlockNumber, Oid, Oid, Oid, int, ssize_t, size_t)</literal></entry>
      <entry>Probe that fires when a block write is complete.
       arg0 and arg1 contain the fork and block numbers of the page.
       arg2, arg3, and arg4 contain the tablespace, database, and relation OIDs

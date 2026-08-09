@@ -547,7 +547,7 @@ static void add_column_collation_dependency(Oid relid, int32 attnum, Oid collid)
 static ObjectAddress ATExecDropNotNull(Relation rel, const char *colName, bool recurse,
 									   LOCKMODE lockmode);
 static void set_attnotnull(List **wqueue, Relation rel, AttrNumber attnum,
-						   bool is_valid, bool queue_validation);
+						   bool queue_validation);
 static ObjectAddress ATExecSetNotNull(List **wqueue, Relation rel,
 									  char *conName, char *colName,
 									  bool recurse, bool recursing,
@@ -1411,7 +1411,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	nncols = AddRelationNotNullConstraints(rel, stmt->nnconstraints,
 										   old_notnulls, connames);
 	foreach_int(attrnum, nncols)
-		set_attnotnull(NULL, rel, attrnum, true, false);
+		set_attnotnull(NULL, rel, attrnum, false);
 
 	ObjectAddressSet(address, RelationRelationId, relationId);
 
@@ -7979,10 +7979,9 @@ ATExecDropNotNull(Relation rel, const char *colName, bool recurse,
  */
 static void
 set_attnotnull(List **wqueue, Relation rel, AttrNumber attnum,
-			   bool is_valid, bool queue_validation)
+			   bool queue_validation)
 {
 	Form_pg_attribute attr;
-	CompactAttribute *thisatt;
 
 	Assert(!queue_validation || wqueue);
 
@@ -8007,9 +8006,6 @@ set_attnotnull(List **wqueue, Relation rel, AttrNumber attnum,
 		if (!HeapTupleIsValid(tuple))
 			elog(ERROR, "cache lookup failed for attribute %d of relation %u",
 				 attnum, RelationGetRelid(rel));
-
-		thisatt = TupleDescCompactAttr(RelationGetDescr(rel), attnum - 1);
-		thisatt->attnullability = ATTNULLABLE_VALID;
 
 		attr = (Form_pg_attribute) GETSTRUCT(tuple);
 
@@ -8192,7 +8188,7 @@ ATExecSetNotNull(List **wqueue, Relation rel, char *conName, char *colName,
 	ObjectAddressSet(address, ConstraintRelationId, ccon->conoid);
 
 	/* Mark pg_attribute.attnotnull for the column and queue validation */
-	set_attnotnull(wqueue, rel, attnum, true, true);
+	set_attnotnull(wqueue, rel, attnum, true);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel), attnum);
@@ -8891,17 +8887,12 @@ static void
 ATPrepDropExpression(Relation rel, AlterTableCmd *cmd, bool recurse, bool recursing, LOCKMODE lockmode)
 {
 	/*
-	 * Reject ONLY if there are child tables.  We could implement this, but it
-	 * is a bit complicated.  GENERATED clauses must be attached to the column
-	 * definition and cannot be added later like DEFAULT, so if a child table
-	 * has a generation expression that the parent does not have, the child
-	 * column will necessarily be an attislocal column.  So to implement ONLY
-	 * here, we'd need extra code to update attislocal of the direct child
-	 * tables, somewhat similar to how DROP COLUMN does it, so that the
-	 * resulting state can be properly dumped and restored.
+	 * Reject ONLY if there are child tables -- but only, of course, at the
+	 * top of the tree, otherwise it'd be impossible to run this command with
+	 * trees deeper than two levels.  Caller already got lock.
 	 */
-	if (!recurse &&
-		find_inheritance_children(RelationGetRelid(rel), lockmode))
+	if (!recurse && !recursing &&
+		find_inheritance_children(RelationGetRelid(rel), NoLock))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("ALTER TABLE / DROP EXPRESSION must be applied to child tables too")));
@@ -10113,7 +10104,6 @@ ATAddCheckNNConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		 */
 		if (constr->contype == CONSTR_NOTNULL)
 			set_attnotnull(wqueue, rel, ccon->attnum,
-						   !constr->skip_validation,
 						   !constr->skip_validation);
 
 		ObjectAddressSet(address, ConstraintRelationId, ccon->conoid);
@@ -13826,7 +13816,7 @@ QueueNNConstraintValidation(List **wqueue, Relation conrel, Relation rel,
 	}
 
 	/* Set attnotnull appropriately without queueing another validation */
-	set_attnotnull(NULL, rel, attnum, true, false);
+	set_attnotnull(NULL, rel, attnum, false);
 
 	tab = ATGetQueueEntry(wqueue, rel);
 	tab->verify_new_notnull = true;

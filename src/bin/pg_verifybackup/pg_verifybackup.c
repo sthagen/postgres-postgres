@@ -961,7 +961,7 @@ precheck_tar_backup_file(verifier_context *context, char *relpath,
 		 * Report an error if we didn't consume at least one character, if the
 		 * result is 0, or if the value is too large to be a valid OID.
 		 */
-		if (suffix == NULL || num <= 0 || num > OID_MAX)
+		if (suffix == relpath || num <= 0 || num > OID_MAX)
 		{
 			report_backup_error(context,
 								"file \"%s\" is not expected in a tar format backup",
@@ -971,8 +971,12 @@ precheck_tar_backup_file(verifier_context *context, char *relpath,
 		tblspc_oid = (Oid) num;
 	}
 
-	/* Now, check the compression type of the tar */
-	if (!parse_tar_compress_algorithm(suffix, &compress_algorithm))
+	/*
+	 * If parse_tar_compress_algorithm returns exactly 0, there are no
+	 * characters between the prefix we already checked and the detected
+	 * suffix. Any other case is unexpected.
+	 */
+	if (parse_tar_compress_algorithm(suffix, &compress_algorithm) != 0)
 	{
 		report_backup_error(context,
 							"file \"%s\" is not expected in a tar format backup",
