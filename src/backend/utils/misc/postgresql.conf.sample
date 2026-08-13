@@ -262,7 +262,8 @@
 #wal_log_hints = off                    # also do full page writes of non-critical updates
                                         # (change requires restart)
 #wal_compression = off                  # enables compression of full-page writes;
-                                        # off, pglz (or "on"), lz4, or zstd
+                                        # off, on, zstd, lz4, or pglz (on means the first
+                                        # of zstd, lz4 and pglz, supported by the build)
 #wal_init_zero = on                     # zero-fill new WAL files
 #wal_recycle = on                       # recycle WAL files
 #wal_buffers = -1                       # min 32kB, -1 sets based on shared_buffers
@@ -867,6 +868,7 @@
 #dynamic_library_path = '$libdir'
 #extension_control_path = '$system'
 #gin_fuzzy_search_limit = 0
+#output_plugin_libraries = 'pgoutput, test_decoding'  # approved plugins for logical decoding
 
 
 #------------------------------------------------------------------------------
