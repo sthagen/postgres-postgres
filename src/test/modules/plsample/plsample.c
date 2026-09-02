@@ -142,7 +142,7 @@ plsample_func_handler(PG_FUNCTION_ARGS)
 									 "PL/Sample function",
 									 ALLOCSET_SMALL_SIZES);
 
-	arg_out_func = (FmgrInfo *) palloc0(fcinfo->nargs * sizeof(FmgrInfo));
+	arg_out_func = palloc0_array(FmgrInfo, fcinfo->nargs);
 	numargs = get_func_arg_info(pl_tuple, &argtypes, &argnames, &argmodes);
 
 	/*
@@ -337,7 +337,7 @@ plsample_trigger_handler(PG_FUNCTION_ARGS)
 		 */
 		for (int i = 0; i < trigdata->tg_trigger->tgnargs; i++)
 			ereport(NOTICE,
-					(errmsg("trigger arg[%i]: %s", i,
+					(errmsg("trigger arg[%d]: %s", i,
 							trigdata->tg_trigger->tgargs[i])));
 	}
 	PG_CATCH();

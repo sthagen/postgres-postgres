@@ -585,7 +585,7 @@ CREATE TABLE FKTABLE (
   FOREIGN KEY (tid, fk_id_del_set_default) REFERENCES PKTABLE ON DELETE SET DEFAULT (fk_id_del_set_default, fk_id_del_set_default)
 );
 
-SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'fktable'::regclass::oid ORDER BY oid;
+SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'fktable'::regclass::oid ORDER BY conname COLLATE "C";
 
 INSERT INTO PKTABLE VALUES (1, 0), (1, 1), (1, 2);
 INSERT INTO FKTABLE VALUES
@@ -1449,14 +1449,14 @@ ALTER TABLE fk_partitioned_fk ATTACH PARTITION fk_partitioned_fk_1 FOR VALUES FR
 
 -- Child constraint will remain valid.
 SELECT conname, convalidated, conrelid::regclass FROM pg_constraint
-WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY oid::regclass::text;
+WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY conname COLLATE "C";
 
 -- Validate the constraint
 ALTER TABLE fk_partitioned_fk VALIDATE CONSTRAINT fk_partitioned_fk_a_b_fkey;
 
 -- All constraints are now valid.
 SELECT conname, convalidated, conrelid::regclass FROM pg_constraint
-WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY oid::regclass::text;
+WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY conname COLLATE "C";
 
 -- Attaching a child with a NOT VALID constraint.
 CREATE TABLE fk_partitioned_fk_2 (a int, b int);
@@ -1472,7 +1472,7 @@ ALTER TABLE fk_partitioned_fk ATTACH PARTITION fk_partitioned_fk_2 FOR VALUES FR
 
 -- The child constraint will also be valid.
 SELECT conname, convalidated FROM pg_constraint
-WHERE conrelid = 'fk_partitioned_fk_2'::regclass ORDER BY oid::regclass::text;
+WHERE conrelid = 'fk_partitioned_fk_2'::regclass ORDER BY conname COLLATE "C";
 
 -- Test case where the child constraint is invalid, the grandchild constraint
 -- is valid, and the validation for the grandchild should be skipped when a
@@ -1486,7 +1486,7 @@ ALTER TABLE fk_partitioned_fk ATTACH PARTITION fk_partitioned_fk_3 FOR VALUES FR
 
 -- All constraints are now valid.
 SELECT conname, convalidated, conrelid::regclass FROM pg_constraint
-WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY oid::regclass::text;
+WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY conname COLLATE "C";
 
 DROP TABLE fk_partitioned_fk, fk_notpartitioned_pk;
 
@@ -1505,14 +1505,14 @@ ALTER TABLE fk_notpartitioned_fk ADD CONSTRAINT fk_notpartitioned_fk_a_b_fkey2
 
 -- All constraints will be invalid, and _fkey2 constraints will not be enforced.
 SELECT conname, conenforced, convalidated FROM pg_constraint
-WHERE conrelid = 'fk_notpartitioned_fk'::regclass ORDER BY oid::regclass::text;
+WHERE conrelid = 'fk_notpartitioned_fk'::regclass ORDER BY conname COLLATE "C";
 
 ALTER TABLE fk_notpartitioned_fk VALIDATE CONSTRAINT fk_notpartitioned_fk_a_b_fkey;
 ALTER TABLE fk_notpartitioned_fk ALTER CONSTRAINT fk_notpartitioned_fk_a_b_fkey2 ENFORCED;
 
 -- All constraints are now valid and enforced.
 SELECT conname, conenforced, convalidated FROM pg_constraint
-WHERE conrelid = 'fk_notpartitioned_fk'::regclass ORDER BY oid::regclass::text;
+WHERE conrelid = 'fk_notpartitioned_fk'::regclass ORDER BY conname COLLATE "C";
 
 -- test a self-referential FK
 ALTER TABLE fk_partitioned_pk ADD CONSTRAINT selffk FOREIGN KEY (a, b) REFERENCES fk_partitioned_pk NOT VALID;
@@ -1521,12 +1521,12 @@ CREATE TABLE fk_partitioned_pk_3 PARTITION OF fk_partitioned_pk FOR VALUES FROM 
 CREATE TABLE fk_partitioned_pk_3_1 PARTITION OF fk_partitioned_pk_3 FOR VALUES FROM (2000) TO (2100);
 SELECT conname, conenforced, convalidated FROM pg_constraint
 WHERE conrelid = 'fk_partitioned_pk'::regclass AND contype = 'f'
-ORDER BY oid::regclass::text;
+ORDER BY conname COLLATE "C";
 ALTER TABLE fk_partitioned_pk_2 VALIDATE CONSTRAINT selffk;
 ALTER TABLE fk_partitioned_pk VALIDATE CONSTRAINT selffk;
 SELECT conname, conenforced, convalidated FROM pg_constraint
 WHERE conrelid = 'fk_partitioned_pk'::regclass AND contype = 'f'
-ORDER BY oid::regclass::text;
+ORDER BY conname COLLATE "C";
 
 DROP TABLE fk_notpartitioned_fk, fk_partitioned_pk;
 
@@ -2801,3 +2801,234 @@ INSERT INTO fp_subxact_fk VALUES (999, 'bad'), (0, 'boom'), (1, 'ok');
 DROP TRIGGER fp_subxact_trg ON fp_subxact_fk;
 DROP FUNCTION fp_abort_subxact();
 DROP TABLE fp_subxact_fk, fp_subxact_pk;
+
+--
+-- Cache invalidation arriving in the middle of a fast-path batch flush.
+--
+-- A cross-type foreign key runs the user's cast function once per key per
+-- buffered row, inside ri_FastPathFlushLoop().  A cast that performs DDL
+-- raises an invalidation there, which detaches the constraint's fast-path
+-- metadata while the flush is still using it.
+--
+CREATE TYPE fkint;
+CREATE FUNCTION fkint_in(cstring) RETURNS fkint
+  AS 'int4in' LANGUAGE internal IMMUTABLE STRICT;
+CREATE FUNCTION fkint_out(fkint) RETURNS cstring
+  AS 'int4out' LANGUAGE internal IMMUTABLE STRICT;
+CREATE TYPE fkint (INPUT = fkint_in, OUTPUT = fkint_out, LIKE = int4);
+
+-- Renames the constraint the first time it is called, and so raises an
+-- invalidation partway through the flush.  Guarded on the catalog so the
+-- second and later calls are no-ops.
+CREATE FUNCTION fkint_to_int4(fkint) RETURNS int4 AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'fktable_inval'::regclass
+                  AND conname = 'fktable_inval_fk') THEN
+        EXECUTE 'ALTER TABLE fktable_inval'
+                ' RENAME CONSTRAINT fktable_inval_fk TO fktable_inval_fk2';
+    END IF;
+    RETURN format('%s', $1)::int4;
+END $$ LANGUAGE plpgsql;
+
+CREATE CAST (fkint AS int4) WITH FUNCTION fkint_to_int4(fkint) AS IMPLICIT;
+
+CREATE TABLE pktable_inval (a int4, b int4, PRIMARY KEY (a, b));
+INSERT INTO pktable_inval VALUES (1, 1), (2, 2);
+
+-- Multi-column FK, so the flush takes the per-row loop rather than the
+-- array path; cross-type on column a, so the cast above is invoked.
+CREATE TABLE fktable_inval (a fkint, b int4,
+  CONSTRAINT fktable_inval_fk FOREIGN KEY (a, b)
+    REFERENCES pktable_inval (a, b));
+
+-- More than one row, so the flush is still running after the invalidation.
+INSERT INTO fktable_inval VALUES ('1', 1), ('2', 2);
+
+-- Confirms the cast actually ran and raised the invalidation.  Without this
+-- the insert above could pass merely by not exercising the path at all.
+SELECT conname FROM pg_constraint
+  WHERE conrelid = 'fktable_inval'::regclass AND contype = 'f';
+
+SELECT count(*) FROM fktable_inval;
+
+DROP TABLE fktable_inval;
+DROP TABLE pktable_inval;
+DROP CAST (fkint AS int4);
+DROP FUNCTION fkint_to_int4(fkint);
+DROP TYPE fkint CASCADE;
+
+-- Stranded firing state must not misroute ALTER TABLE ... ADD FOREIGN KEY
+-- validation into the batched fast path.  A caught FK-check error inside a
+-- subtransaction leaves firing_depth set (its decrement is skipped); a
+-- following ALTER whose validation runs per-row (forced here by RLS on the
+-- referenced table, so RI_Initial_Check() bails) would then be wrongly treated
+-- as running inside trigger firing, batched, and never flushed (a utility
+-- command has no AfterTriggerEndQuery), silently validating a violating row.
+CREATE ROLE regress_fpav_role;
+CREATE TABLE fpav_pk (id int PRIMARY KEY);
+INSERT INTO fpav_pk VALUES (1);
+ALTER TABLE fpav_pk ENABLE ROW LEVEL SECURITY;
+CREATE POLICY fpav_pk_all ON fpav_pk FOR ALL USING (true) WITH CHECK (true);
+GRANT REFERENCES, SELECT ON fpav_pk TO regress_fpav_role;
+CREATE TABLE fpav_fk (a int);
+INSERT INTO fpav_fk VALUES (1), (99);
+ALTER TABLE fpav_fk OWNER TO regress_fpav_role;
+CREATE TABLE fpav_cv_pk (id int PRIMARY KEY);
+INSERT INTO fpav_cv_pk VALUES (1);
+CREATE TABLE fpav_cv_fk (a int REFERENCES fpav_cv_pk(id));
+GRANT INSERT ON fpav_cv_fk TO regress_fpav_role;
+GRANT SELECT, INSERT ON fpav_cv_pk TO regress_fpav_role;
+SET ROLE regress_fpav_role;
+BEGIN;
+-- Caught FK violation: leaves firing_depth set if it is not restored.
+DO $$
+BEGIN
+    BEGIN
+        INSERT INTO fpav_cv_fk VALUES (999);
+    EXCEPTION WHEN foreign_key_violation THEN
+        NULL;
+    END;
+END$$;
+-- Must ERROR on the violating row (99), not silently validate it.
+ALTER TABLE fpav_fk ADD CONSTRAINT fpav_fk_fkey
+    FOREIGN KEY (a) REFERENCES fpav_pk (id);
+ROLLBACK;
+RESET ROLE;
+DROP TABLE fpav_fk, fpav_pk, fpav_cv_fk, fpav_cv_pk;
+DROP ROLE regress_fpav_role;
+
+-- Re-entrant fast-path check inside a committing subtransaction.  An AFTER
+-- trigger on one FK table runs FK DML on a second FK table inside a PL/pgSQL
+-- BEGIN ... EXCEPTION block, so the inner check batches in its own
+-- trigger-firing cycle nested in the outer check's.  The inner cycle must
+-- register its own end-of-batch callback and flush -- otherwise its FK check
+-- is skipped (an orphan commits) and its relations leak.
+CREATE TABLE fp_inner_pk (id int PRIMARY KEY);
+INSERT INTO fp_inner_pk VALUES (1);
+CREATE TABLE fp_inner_fk (a int REFERENCES fp_inner_pk (id));
+CREATE TABLE fp_outer_pk (id int PRIMARY KEY);
+INSERT INTO fp_outer_pk SELECT g FROM generate_series(1, 64) g;
+CREATE FUNCTION fp_reentry_subxact() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.a = 32 THEN
+        BEGIN
+            INSERT INTO fp_inner_fk VALUES (999);  -- violates; must be caught
+        EXCEPTION WHEN foreign_key_violation THEN
+            NULL;
+        END;
+    END IF;
+    RETURN NEW;
+END$$;
+CREATE TABLE fp_outer_fk (a int REFERENCES fp_outer_pk (id));
+CREATE TRIGGER fp_reentry_subxact_trg AFTER INSERT ON fp_outer_fk
+    FOR EACH ROW EXECUTE FUNCTION fp_reentry_subxact();
+INSERT INTO fp_outer_fk SELECT g FROM generate_series(1, 64) g;
+SELECT count(*) AS outer_rows FROM fp_outer_fk;   -- 64, outer batch intact
+SELECT count(*) AS inner_rows FROM fp_inner_fk;   -- 0, inner check caught
+DROP TRIGGER fp_reentry_subxact_trg ON fp_outer_fk;
+DROP FUNCTION fp_reentry_subxact();
+DROP TABLE fp_outer_fk, fp_outer_pk, fp_inner_fk, fp_inner_pk;
+
+-- A nested trigger-firing cycle that checks the same constraint must use a
+-- separate cache entry.  The inner violation is caught by its subtransaction,
+-- while the valid outer row remains buffered and is checked normally.
+CREATE TABLE fp_same_pk (id int PRIMARY KEY);
+INSERT INTO fp_same_pk VALUES (1);
+CREATE TABLE fp_same_fk (a int REFERENCES fp_same_pk (id));
+CREATE FUNCTION fp_reentry_same_constraint() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.a = 1 THEN
+        BEGIN
+            INSERT INTO fp_same_fk VALUES (999);
+        EXCEPTION WHEN foreign_key_violation THEN
+            NULL;
+        END;
+    END IF;
+    RETURN NEW;
+END$$;
+CREATE TRIGGER fp_reentry_same_constraint_trg AFTER INSERT ON fp_same_fk
+    FOR EACH ROW EXECUTE FUNCTION fp_reentry_same_constraint();
+INSERT INTO fp_same_fk VALUES (1);
+SELECT * FROM fp_same_fk;
+DROP TRIGGER fp_reentry_same_constraint_trg ON fp_same_fk;
+DROP FUNCTION fp_reentry_same_constraint();
+DROP TABLE fp_same_fk, fp_same_pk;
+
+-- An AFTER trigger runs a query of its own, and that query inserts into a
+-- second table with a fast-path foreign key.  The entry the nested INSERT
+-- creates belongs to the cursor's portal, which is gone by the time the
+-- entry is torn down at the end of the outer statement.  Every key stored
+-- below is present in its referenced table, so the INSERT must just succeed.
+CREATE TABLE fp_customer (id int PRIMARY KEY);
+INSERT INTO fp_customer VALUES (1);
+CREATE TABLE fp_product (id int PRIMARY KEY);
+INSERT INTO fp_product SELECT generate_series(1, 4);
+CREATE TABLE fp_kit_component (kit_product_id int, component_product_id int);
+INSERT INTO fp_kit_component VALUES (1, 2), (1, 3), (1, 4);
+CREATE TABLE fp_order (id int, customer_id int REFERENCES fp_customer,
+    product_id int);
+CREATE TABLE fp_order_item (order_id int, product_id int
+    REFERENCES fp_product);
+CREATE FUNCTION fp_add_order_item(order_id int, product_id int) RETURNS int
+    LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO fp_order_item VALUES (order_id, product_id);
+    RETURN product_id;
+END$$;
+CREATE FUNCTION fp_expand_kit() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    component_id int;
+    ncomponents int := 0;
+BEGIN
+    FOR component_id IN
+        SELECT fp_add_order_item(NEW.id, component_product_id)
+            FROM fp_kit_component WHERE kit_product_id = NEW.product_id
+    LOOP
+        ncomponents := ncomponents + 1;
+    END LOOP;
+    RAISE NOTICE 'order % expanded into % order items', NEW.id, ncomponents;
+    RETURN NULL;
+END$$;
+CREATE TRIGGER fp_expand_kit_trg AFTER INSERT ON fp_order
+    FOR EACH ROW EXECUTE FUNCTION fp_expand_kit();
+INSERT INTO fp_order VALUES (1, 1, 1);
+SELECT count(*) FROM fp_order_item;
+DROP TABLE fp_order, fp_order_item, fp_kit_component, fp_product, fp_customer;
+DROP FUNCTION fp_expand_kit(), fp_add_order_item(int, int);
+
+-- Nested firing of the same constraint must use an entry for its own query
+-- depth.  The RAISE is reached if the nested violation remains buffered for
+-- the outer cycle's callback.
+CREATE TABLE fp_depth_pk (id int PRIMARY KEY);
+INSERT INTO fp_depth_pk VALUES (1);
+CREATE TABLE fp_depth_fk (a int REFERENCES fp_depth_pk);
+CREATE FUNCTION fp_depth_reentry() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.a = 1 THEN
+        INSERT INTO fp_depth_fk VALUES (999);
+        RAISE EXCEPTION 'nested FK check was not flushed';
+    END IF;
+    RETURN NEW;
+END$$;
+-- Sort after the RI trigger, so the outer row has already been batched.
+CREATE TRIGGER zz_fp_depth_reentry AFTER INSERT ON fp_depth_fk
+    FOR EACH ROW EXECUTE FUNCTION fp_depth_reentry();
+
+INSERT INTO fp_depth_fk VALUES (1);
+SELECT * FROM fp_depth_fk;
+
+DROP TABLE fp_depth_fk, fp_depth_pk;
+DROP FUNCTION fp_depth_reentry();
+
+-- Deferred FK check fires at commit (query depth -1); its batch must still get
+-- a callback registered and flushed.
+CREATE TABLE fp_deferred_pk (id int PRIMARY KEY);
+CREATE TABLE fp_deferred_fk (a int REFERENCES fp_deferred_pk (id)
+    DEFERRABLE INITIALLY DEFERRED);
+BEGIN;
+INSERT INTO fp_deferred_fk VALUES (1);
+INSERT INTO fp_deferred_pk VALUES (1);
+COMMIT;
+SELECT count(*) AS deferred_rows FROM fp_deferred_fk;  -- 1, check passed at commit
+DROP TABLE fp_deferred_fk, fp_deferred_pk;

@@ -114,8 +114,6 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 			data += sizeof(OffsetNumber) * xldata->ntodelete;
 
 			PageIndexMultiDelete(page, todelete, xldata->ntodelete);
-			if (GistPageIsLeaf(page))
-				GistMarkTuplesDeleted(page);
 		}
 
 		/* Add new tuples if any */
@@ -204,7 +202,6 @@ gistRedoDeleteRecord(XLogReaderState *record)
 		PageIndexMultiDelete(page, toDelete, xldata->ntodelete);
 
 		GistClearPageHasGarbage(page);
-		GistMarkTuplesDeleted(page);
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -228,7 +225,7 @@ decodePageSplitRecord(char *begin, int len, int *n)
 	memcpy(n, begin, sizeof(int));
 	ptr = begin + sizeof(int);
 
-	tuples = palloc(*n * sizeof(IndexTuple));
+	tuples = palloc_array(IndexTuple, *n);
 
 	for (i = 0; i < *n; i++)
 	{

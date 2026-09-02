@@ -600,7 +600,7 @@ TABLE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
        <para>
         <replaceable class="parameter">graph_name</replaceable> is the name
         (optionally schema-qualified) of an existing property graph (defined
-        with <xref linkend="sql-create-property-graph"/>).
+        with <xref linkend="sql-createpropertygraph"/>).
        </para>
 
        <para>
@@ -1751,7 +1751,7 @@ ROLLBACK TO s;
     on one or more of the rows.  Once the <literal>SELECT</literal> unblocks, some
     of the ordering column values might have been modified, leading to those
     rows appearing to be out of order (though they are in order in terms
-    of the original column values).  This can be worked around at need by
+    of the original column values).  This can be worked around as needed by
     placing the <literal>FOR UPDATE/SHARE</literal> clause in a sub-query,
     for example
 <programlisting>

@@ -60,7 +60,7 @@ xslt_process(PG_FUNCTION_ARGS)
 	volatile xsltSecurityPrefsPtr xslt_sec_prefs = NULL;
 	volatile xsltTransformContextPtr xslt_ctxt = NULL;
 	volatile int resstat = -1;
-	xmlChar    *volatile resstr = NULL;
+	xmlChar    *volatile resstrv = NULL;
 
 	if (fcinfo->nargs == 3)
 	{
@@ -80,6 +80,7 @@ xslt_process(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		bool		xslt_sec_prefs_error;
+		xmlChar    *resstr = NULL;
 		int			reslen = 0;
 
 		/* Parse document */
@@ -147,8 +148,8 @@ xslt_process(PG_FUNCTION_ARGS)
 			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INVALID_ARGUMENT_FOR_XQUERY,
 						"failed to apply stylesheet");
 
-		resstat = xsltSaveResultToString((xmlChar **) &resstr, &reslen,
-										 restree, stylesheet);
+		resstat = xsltSaveResultToString(&resstr, &reslen, restree, stylesheet);
+		resstrv = resstr;
 
 		if (resstat >= 0)
 		{
@@ -176,8 +177,8 @@ xslt_process(PG_FUNCTION_ARGS)
 			xmlFreeDoc(ssdoc);
 		if (doctree != NULL)
 			xmlFreeDoc(doctree);
-		if (resstr != NULL)
-			xmlFree(resstr);
+		if (resstrv != NULL)
+			xmlFree(resstrv);
 		xsltCleanupGlobals();
 
 		pg_xml_done(xmlerrcxt, true);
@@ -193,8 +194,8 @@ xslt_process(PG_FUNCTION_ARGS)
 	xmlFreeDoc(doctree);
 	xsltCleanupGlobals();
 
-	if (resstr)
-		xmlFree(resstr);
+	if (resstrv)
+		xmlFree(resstrv);
 
 	pg_xml_done(xmlerrcxt, false);
 
@@ -228,7 +229,7 @@ parse_params(text *paramstr)
 	pstr = text_to_cstring(paramstr);
 
 	max_params = 20;			/* must be even! */
-	params = (const char **) palloc((max_params + 1) * sizeof(char *));
+	params = palloc_array(const char *, max_params + 1);
 	nparams = 0;
 
 	pos = pstr;
@@ -238,8 +239,7 @@ parse_params(text *paramstr)
 		if (nparams >= max_params)
 		{
 			max_params *= 2;
-			params = (const char **) repalloc(params,
-											  (max_params + 1) * sizeof(char *));
+			params = repalloc_array(params, const char *, max_params + 1);
 		}
 		params[nparams++] = pos;
 		pos = strstr(pos, nvsep);

@@ -485,7 +485,7 @@ ExecInitGenerated(ResultRelInfo *resultRelInfo,
 	 */
 	oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
 
-	ri_GeneratedExprs = (ExprState **) palloc0(natts * sizeof(ExprState *));
+	ri_GeneratedExprs = palloc0_array(ExprState *, natts);
 	ri_NumGeneratedNeeded = 0;
 
 	for (int i = 0; i < natts; i++)
@@ -5645,8 +5645,9 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		 */
 		if (isNull)
 			ereport(ERROR,
-					(errmsg("FOR PORTION OF target was null")),
-					executor_errposition(estate, forPortionOf->targetLocation));
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+					 errmsg("FOR PORTION OF target must not be null"),
+					 executor_errposition(estate, forPortionOf->targetLocation)));
 
 		/* Create state for FOR PORTION OF operation */
 

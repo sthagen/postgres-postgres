@@ -780,6 +780,48 @@ and t1.fivethous < 5;
 rollback;
 
 --
+-- Check that for hash right semi and right anti joins we charge cpu_tuple_cost
+-- and qual costs on the rows from the inner side, except that a right anti
+-- join charges the non-hashed joinquals on the candidate pairs passing the
+-- hash clauses.
+--
+
+begin;
+
+create temp table hj_small(id int primary key);
+create temp table hj_large(v int);
+insert into hj_small select i from generate_series(1,200)i;
+insert into hj_large select (i % 500) + 11 from generate_series(1,1000)i;
+analyze hj_small, hj_large;
+
+-- ensure we hash the small side and scan the large one, not the reverse
+explain (costs off)
+select count(*) from hj_small s where exists
+  (select 1 from hj_large r where r.v = s.id);
+
+-- and check we get the expected results
+select count(*) from hj_small s where exists
+  (select 1 from hj_large r where r.v = s.id);
+
+-- likewise for a right anti join
+explain (costs off)
+select count(*) from hj_small s where not exists
+  (select 1 from hj_large r where r.v = s.id);
+
+select count(*) from hj_small s where not exists
+  (select 1 from hj_large r where r.v = s.id);
+
+-- also check the case with a non-hashed joinqual
+explain (costs off)
+select count(*) from hj_small s where not exists
+  (select 1 from hj_large r where r.v = s.id and r.v > s.id - 1);
+
+select count(*) from hj_small s where not exists
+  (select 1 from hj_large r where r.v = s.id and r.v > s.id - 1);
+
+rollback;
+
+--
 -- regression test for bug #13908 (hash join with skew tuples & nbatch increase)
 --
 
@@ -886,7 +928,8 @@ where (hundred, thousand) in (select twothousand, twothousand from onek);
 reset enable_memoize;
 
 --
--- more antijoin recognition tests using NOT NULL constraints
+-- more antijoin recognition tests using various non-null proofs (NOT NULL
+-- constraints, strict join clauses within the RHS subtree)
 --
 
 begin;
@@ -909,6 +952,270 @@ explain (costs off)
 select * from tenk1 t1 left join
   (tbl_anti t2 left join tbl_anti t3 on t2.c = t3.c) on t1.unique1 = t2.b
 where t3.a is null;
+
+-- this is an antijoin: the strict join clause t2.c = t3.c guarantees t3.c is
+-- non-null
+explain (costs off)
+select * from tenk1 t1 left join
+  (tbl_anti t2 inner join tbl_anti t3 on t2.c = t3.c) on t1.unique1 = t2.b
+where t3.c is null;
+
+-- this is an antijoin: the strict join clause t2.c = t3.c guarantees t2.c is
+-- non-null
+explain (costs off)
+select * from tenk1 t1 left join
+  (tbl_anti t2 inner join tbl_anti t3 on t2.c = t3.c
+   left join tbl_anti t4 on t3.c = t4.c) on t1.unique1 = t2.b
+where t2.c is null;
+
+-- this is an antijoin: the strict join clause t2.c = t3.c guarantees t3.c is
+-- non-null
+explain (costs off)
+select * from tenk1 t1 left join
+  (select t2.b, t3.c from tbl_anti t2, tbl_anti t3
+   where t2.c = t3.c) ss on t1.unique1 = ss.b
+where ss.c is null;
+
+-- this is an antijoin: the strict join clause t2.c = t3.c guarantees t2.c is
+-- non-null
+explain (costs off)
+select * from tenk1 t1 left join
+  (select t2.c from tbl_anti t2
+   where exists (select 1 from tbl_anti t3 where t2.c = t3.c)) ss on true
+where ss.c is null;
+
+-- this is not an antijoin: the join clause t2.c = t3.c cannot guarantee t3.c
+-- is non-null
+explain (costs off)
+select * from tenk1 t1 left join
+  (tbl_anti t2 left join tbl_anti t3 on t2.c = t3.c) on t1.unique1 = t2.b
+where t3.c is null;
+
+-- likewise with right join
+explain (costs off)
+select * from tenk1 t1 left join
+  (tbl_anti t2 right join tbl_anti t3 on t2.c = t3.c) on t1.unique1 = t2.b
+where t3.c is null;
+
+-- likewise with full join
+explain (costs off)
+select * from tenk1 t1 left join
+  (tbl_anti t2 full join tbl_anti t3 on t2.c = t3.c) on t1.unique1 = t2.b
+where t3.c is null;
+
+-- this is not an antijoin, even though the inner-join clause in the lateral
+-- subquery proves t1.b non-null
+explain (costs off)
+select * from tbl_anti t1
+  left join lateral (select t2.b from tbl_anti t2, tbl_anti t3
+                     where t2.c = t3.c and t3.b = t1.b) ss on true
+where t1.b is null;
+
+-- a full join can also reduce to an antijoin: the forced-null Var is defined
+-- not null
+explain (costs off)
+select * from tbl_anti t1 full join tbl_anti t2 on t1.b = t2.b
+where t2.a is null;
+
+-- the symmetric case, with the forced-null Var on the left side
+explain (costs off)
+select * from tbl_anti t1 full join tbl_anti t2 on t1.b = t2.b
+where t1.a is null;
+
+-- this is an antijoin: the forced-null Var is proven not null by the strict
+-- clause within its subtree
+explain (costs off)
+select * from tbl_anti t1 full join
+  (tbl_anti t2 join tbl_anti t3 on t2.c = t3.c) on t1.b = t2.b
+where t3.c is null;
+
+-- the symmetric case, with the forced-null Var on the left side
+explain (costs off)
+select * from (tbl_anti t1 join tbl_anti t4 on t1.c = t4.c)
+  full join tbl_anti t2 on t1.b = t2.b
+where t1.c is null;
+
+-- this is not an antijoin: the join clause cannot prove t2.b non-null in the
+-- full join's right-only rows
+explain (costs off)
+select * from tbl_anti t1 full join tbl_anti t2 on t1.b = t2.b
+where t2.b is null;
+
+-- the symmetric case: the join clause cannot prove t1.b non-null in the full
+-- join's left-only rows
+explain (costs off)
+select * from tbl_anti t1 full join tbl_anti t2 on t1.b = t2.b
+where t1.b is null;
+
+-- this is an antijoin: t2 is not nullable within the full join's right input,
+-- so its NOT NULL column still proves it
+explain (costs off)
+select * from tbl_anti t1 full join
+  (tbl_anti t2 left join tbl_anti t3 on t2.c = t3.c) on t1.b = t2.b
+where t2.a is null;
+
+-- this is not an antijoin: t3 can be nulled by the t2/t3 join, so its NOT NULL
+-- constraint proves nothing here
+explain (costs off)
+select * from tbl_anti t1 full join
+  (tbl_anti t2 left join tbl_anti t3 on t2.c = t3.c) on t1.b = t2.b
+where t3.a is null;
+
+-- once the full join is reduced to an antijoin, its own quals can be passed
+-- down to its inputs, which a full join never allows; here that reduces the
+-- t2/t3 join to an inner join
+explain (costs off)
+select * from tbl_anti t1 full join
+  (tbl_anti t2 left join tbl_anti t3 on t2.c = t3.c) on t1.b = t2.b and t3.c > 0
+where t2.a is null;
+
+-- A USING join column becomes a merged (COALESCE) output, so reducing the
+-- full join also has to fix up its nulling rels.
+create temp table ma (x int not null, y int);
+create temp table mb (x int not null, y int);
+insert into ma values (1, 10), (2, 20);
+insert into mb values (3, 10), (4, 40);
+
+explain (verbose, costs off)
+select y, ma.x as ax, mb.x as bx
+from ma full join mb using (y) where mb.x is null order by y;
+select y, ma.x as ax, mb.x as bx
+from ma full join mb using (y) where mb.x is null order by y;
+
+explain (verbose, costs off)
+select y, ma.x as ax, mb.x as bx
+from ma full join mb using (y) where ma.x is null order by y;
+select y, ma.x as ax, mb.x as bx
+from ma full join mb using (y) where ma.x is null order by y;
+
+-- A whole-row Var IS NULL is true only when every column is NULL, so it
+-- works as an antijoin test whenever any column is provably non-null in
+-- matching rows.
+create temp table tbl_wr (b int, c int);
+
+-- this is an antijoin: t2.a is defined NOT NULL
+explain (costs off)
+select * from tenk1 t1 left join tbl_anti t2 on true
+where t2 is null;
+
+-- this is an antijoin: the strict join clause proves t2.b non-null
+explain (costs off)
+select * from tenk1 t1 left join tbl_wr t2 on t1.unique1 = t2.b
+where t2 is null;
+
+-- this is an antijoin: the strict join clause within the RHS subtree proves
+-- t2.c non-null
+explain (costs off)
+select * from tenk1 t1 left join
+  (tbl_wr t2 join tbl_anti t3 on t2.c = t3.c) on true
+where t2 is null;
+
+-- this is not an antijoin: nothing proves any column of t2 non-null
+explain (costs off)
+select * from tenk1 t1 left join tbl_wr t2 on true
+where t2 is null;
+
+-- nor is this: the strict record comparison proves only that the whole-row
+-- datum is non-null, but record_eq treats NULL fields as equal, so a
+-- matching row can still have all columns NULL and pass the row-format test
+explain (costs off)
+select * from tenk1 t1 left join
+  (tbl_wr t2 join tbl_wr t3 on t2 = t3) on true
+where t2 is null;
+
+-- nor is this: the join clause is strict only for t2's ctid, which is not
+-- part of the row value, so a matching row can still have all columns NULL
+explain (costs off)
+select * from tbl_wr t1 left join tbl_wr t2 on t2.ctid = t1.ctid
+where t2 is null;
+
+-- this is not an antijoin: t3 can be nulled by the lower outer join, so its
+-- NOT NULL constraint proves nothing here
+explain (costs off)
+select * from tenk1 t1 left join
+  (tbl_anti t2 left join tbl_anti t3 on t2.c = t3.c) on t1.unique1 = t2.b
+where t3 is null;
+
+-- whole-row tests work for full joins too: t2.a's NOT NULL constraint
+-- reduces this one ...
+explain (costs off)
+select * from tbl_wr t1 full join tbl_anti t2 on t1.b = t2.b
+where t2 is null;
+
+-- ... but nothing proves a column of t1 non-null, since the join clause
+-- cannot serve as the proof here
+explain (costs off)
+select * from tbl_wr t1 full join tbl_anti t2 on t1.b = t2.b
+where t1 is null;
+
+-- The IS NOT NULL counterpart: a row-format IS NOT NULL test is false both
+-- for a null-extended row and when any column is NULL, so it reduces join
+-- strength like any strict qual.
+
+-- reduced to an inner join
+explain (costs off)
+select * from tenk1 t1 left join tbl_wr t2 on t1.unique1 = t2.b
+where t2 is not null;
+
+-- reduced to a left join
+explain (costs off)
+select * from tbl_wr t1 full join tbl_wr t2 on t1.b = t2.b
+where t1 is not null;
+
+-- composite-type columns: reduced to an inner join
+create temp table tbl_comp (a int, w tbl_wr);
+explain (costs off)
+select * from tenk1 t1 left join tbl_comp t2 on t1.unique1 = t2.a
+where t2.w is not null;
+
+-- composite-type columns: reduced to an antijoin
+explain (costs off)
+select * from tenk1 t1 left join tbl_comp t2 on t2.w is not null
+where t2 is null;
+
+-- For a zero-field row, IS NULL and IS NOT NULL are both true, so the join
+-- clause here proves only that t2's datum is non-null, which must not refute
+-- the whole-row IS NULL above: matched rows pass both tests.
+create temp table tbl_zero ();
+insert into tbl_zero default values;
+
+-- should not be reduced
+explain (costs off)
+select * from (values (1), (2)) v(x) left join tbl_zero t2 on t2 is not null
+where t2 is null;
+-- should return 2 rows
+select * from (values (1), (2)) v(x) left join tbl_zero t2 on t2 is not null
+where t2 is null;
+
+-- Test that quals made redundant by reducing an outer join to an antijoin are
+-- removed from the jointree
+-- (fallout from the fix for bug #19560)
+create temp table tbl_anti_pk (a int primary key, b int);
+
+-- t3.a IS NULL is redundant, and the t2/t3 join can be removed
+explain (costs off)
+select 1 from tbl_anti_pk t1 left join
+  (tbl_anti_pk t2 left join tbl_anti_pk t3 on t3.a = t2.a) on t2.a = t1.a
+where t2.a is null and t3.a is null;
+
+-- the redundant qual can also be a degenerate ON clause of an upper join
+explain (costs off)
+select 1 from tbl_anti_pk t1 left join
+  (tbl_anti_pk t2 left join
+   (tbl_anti_pk t3 left join tbl_anti_pk t5 on t5.a = t3.a) on t3.a = t2.a)
+  on t3.a is null and t5.a is null;
+
+-- the same happens when the antijoin is reduced from a full join
+explain (costs off)
+select 1 from tbl_anti_pk t1 full join
+  (tbl_anti_pk t2 left join tbl_anti_pk t3 on t3.a = t2.a) on true
+where t2.a is null and t3.a is null;
+
+-- but a qual on the surviving side of the reduced full join is not redundant
+explain (costs off)
+select 1 from tbl_anti_pk t1 full join
+  (tbl_anti_pk t2 left join tbl_anti_pk t3 on t3.a = t2.a) on true
+where t2.a is null and t1.b is null;
 
 rollback;
 
@@ -2385,6 +2692,18 @@ explain (costs off)
 select d.* from d left join (select distinct * from b) s
   on d.a = s.id;
 
+-- join removal is not possible when the subquery has DISTINCT ON and a
+-- set-returning function that is not a DISTINCT ON column
+explain (costs off)
+select d.* from d left join
+  (select distinct on (id) id, generate_series(1, 2) as g from b order by id) s
+  on d.a = s.id
+  order by 1, 2;
+select d.* from d left join
+  (select distinct on (id) id, generate_series(1, 2) as g from b order by id) s
+  on d.a = s.id
+  order by 1, 2;
+
 -- join removal is not possible here
 explain (costs off)
 select 1 from a t1
@@ -2606,6 +2925,31 @@ from t t1
              from t t2 left join t t3 on t2.a = t3.a) s
     on true
 where t1.a = s.c;
+
+rollback;
+
+-- join removal bug #19560: removing a join can leave an EquivalenceClass that
+-- now yields a base restriction clause, so we must redo equivalence
+-- processing from scratch
+begin;
+
+create temp table items (id text, owner text);
+create temp table follows (item_id text, user_id text,
+                           unique (user_id, item_id));
+insert into items values ('item1', 'alice');
+
+explain (costs off)
+with viewer as (select 'bob' as id)
+select count(*) from items
+  left join follows on follows.item_id = items.id and follows.user_id = 'bob'
+  left join viewer on true
+where items.owner = viewer.id;
+
+with viewer as (select 'bob' as id)
+select count(*) from items
+  left join follows on follows.item_id = items.id and follows.user_id = 'bob'
+  left join viewer on true
+where items.owner = viewer.id;
 
 rollback;
 
@@ -2875,6 +3219,24 @@ explain (verbose, costs off)
 select t1.a from sj t1 where t1.b in (
   select t2.b from sj t2 join sj t3 on t2.c=t3.c);
 
+-- Check that quals get hoisted to the appropriate join level after SJE removal
+explain (verbose, costs off)
+select a2.a
+from sj b1
+  join sj a1 on b1.b = a1.a
+  join sj a2 on a2.a = a1.a and a2.b = a1.b;
+
+-- Same, when a semijoin removal happens first
+explain (verbose, costs off)
+select a1.a from sj b1 join sj a1 on a1.a = b1.b
+  where exists (select 1 from sj s where s.a = a1.a);
+
+-- A different case, where modified qual is on a lower join level
+explain (verbose, costs off)
+select a2.a
+from ((sj b1 join sj a1 on true) join sj c1 on c1.b = a1.a)
+  join sj a2 on a2.a = a1.a and a2.b = a1.b;
+
 --
 -- SJE corner case: uniqueness of an inner is [partially] derived from
 -- baserestrictinfo clauses.
@@ -3023,8 +3385,7 @@ select 1 from (select y.* from sj x, sj y where x.a = y.a) q,
 explain (costs off) select * from sj p join sj q on p.a = q.a
   left join sj r on p.a + q.a = r.a;
 
--- FIXME this constant false filter doesn't look good. Should we merge
--- equivalence classes?
+-- Check that we detect constant-false condition after merging ECs.
 explain (costs off)
 select * from sj p, sj q where p.a = q.a and p.b = 1 and q.b = 2;
 
@@ -3221,6 +3582,18 @@ ALTER TABLE sl ADD COLUMN bool_col boolean;
 EXPLAIN (COSTS OFF)
 SELECT 1 AS c1 FROM sl sl1 LEFT JOIN (sl AS sl2 NATURAL JOIN sl AS sl3)
   ON sl2.bool_col LEFT JOIN sl AS sl4 ON sl2.bool_col;
+
+-- Check that quals of a jointree node that becomes empty when the self-join
+-- is removed are not lost, and that they don't migrate above an outer join
+EXPLAIN (COSTS OFF)
+SELECT s.a FROM (SELECT * FROM sl WHERE c IS NOT NULL) s, sl t
+WHERE t.a = s.a AND t.b = s.b;
+
+EXPLAIN (COSTS OFF)
+SELECT t1.a, ss.a FROM sl t1
+  LEFT JOIN (SELECT s.a FROM (SELECT * FROM sl WHERE c IS NOT NULL) s
+                             JOIN sl t ON t.a = s.a AND t.b = s.b) ss
+    ON ss.a = t1.a;
 
 -- Check optimization disabling if it will violate special join conditions.
 -- Two identical joined relations satisfies self join removal conditions but

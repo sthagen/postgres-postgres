@@ -49,6 +49,7 @@
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
+#include "utils/injection_point.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -159,6 +160,21 @@ typedef struct FastPathMeta
 	Oid			subtypes[RI_MAX_NUMKEYS];
 	int			strats[RI_MAX_NUMKEYS];
 	AttrNumber	index_attnos[RI_MAX_NUMKEYS];	/* index column positions */
+
+	/*
+	 * fn_mcxt for the cached FmgrInfos above.  Cast and equality functions
+	 * (e.g. record_eq()) use fn_mcxt as scratch space, caching state there
+	 * and keeping a pointer to it in FmgrInfo.fn_extra.  Give them a context
+	 * of their own, created with this struct and destroyed with it in
+	 * AtEOXact_RI().
+	 *
+	 * Note this context must not be reset while the FmgrInfos remain in use,
+	 * since that would free the state fn_extra still points at.
+	 */
+	MemoryContext scratch_cxt;
+
+	/* Link in ri_fpmeta_dead_list while awaiting deferred release */
+	struct FastPathMeta *next_dead;
 } FastPathMeta;
 
 /*
@@ -216,12 +232,26 @@ typedef struct RI_CompareHashEntry
 #define RI_FASTPATH_BATCH_SIZE	64
 
 /*
- * RI_FastPathEntry
- *		Per-constraint cache of resources needed by ri_FastPathBatchFlush().
+ * RI_FastPathKey
+ *		Hash key for an RI_FastPathEntry.
  *
- * One entry per constraint, keyed by pg_constraint OID.  Created lazily
- * by ri_FastPathGetEntry() on first use within a trigger-firing batch
- * and torn down by ri_FastPathTeardown() at batch end.
+ * A constraint can be checked in nested trigger-firing cycles.  Each cycle
+ * must have a separate entry so that its rows are checked with that cycle's
+ * snapshot and its resources are released by that cycle's callback.
+ */
+typedef struct RI_FastPathKey
+{
+	Oid			conoid;			/* pg_constraint OID */
+	int			query_depth;	/* after-trigger query depth */
+} RI_FastPathKey;
+
+/*
+ * RI_FastPathEntry
+ *		Per-constraint, per-firing-cycle cache of resources needed by
+ *		ri_FastPathBatchFlush().
+ *
+ * Created lazily by ri_FastPathGetEntry() on first use within a
+ * trigger-firing batch and torn down by ri_FastPathTeardown() at batch end.
  *
  * FK tuples are buffered in batch[] across trigger invocations and
  * flushed when the buffer fills or the batch ends.
@@ -235,7 +265,7 @@ typedef struct RI_CompareHashEntry
  */
 typedef struct RI_FastPathEntry
 {
-	Oid			conoid;			/* hash key: pg_constraint OID */
+	RI_FastPathKey key;			/* hash key */
 	Oid			fk_relid;		/* for ri_FastPathEndBatch() */
 	Relation	pk_rel;
 	Relation	idx_rel;
@@ -257,6 +287,14 @@ typedef struct RI_FastPathEntry
 	 * re-entrant ri_FastPathBatchAdd from user code run during the flush.
 	 */
 	bool		flushing;
+
+	/*
+	 * Subtransaction whose resource owner opened this entry's relations.
+	 * AtEOSubXact_RI() drops only entries matching an aborting subxact, so a
+	 * subxact abort during outer-level trigger firing leaves the outer batch
+	 * intact.
+	 */
+	SubTransactionId subid;
 } RI_FastPathEntry;
 
 /*
@@ -268,8 +306,15 @@ static HTAB *ri_compare_cache = NULL;
 static dclist_head ri_constraint_cache_valid_list;
 
 static HTAB *ri_fastpath_cache = NULL;
-static bool ri_fastpath_callback_registered = false;
 static bool ri_fastpath_flushing = false;
+
+/*
+ * FastPathMeta objects detached from their cache entry by invalidation, but
+ * possibly still referenced by an RI check further up the stack.  Released
+ * by AtEOXact_RI(), where no such reference can exist.  See
+ * InvalidateConstraintCacheCallBack().
+ */
+static FastPathMeta *ri_fpmeta_dead_list = NULL;
 
 /*
  * Local function prototypes
@@ -325,10 +370,12 @@ static void ri_FastPathBatchAdd(RI_ConstraintInfo *riinfo,
 static void ri_FastPathBatchFlush(RI_FastPathEntry *fpentry, Relation fk_rel,
 								  RI_ConstraintInfo *riinfo);
 static int	ri_FastPathFlushArray(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
-								  const RI_ConstraintInfo *riinfo, Relation fk_rel,
+								  const RI_ConstraintInfo *riinfo,
+								  FastPathMeta *fpmeta, Relation fk_rel,
 								  Snapshot snapshot, IndexScanDesc scandesc);
 static int	ri_FastPathFlushLoop(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
-								 const RI_ConstraintInfo *riinfo, Relation fk_rel,
+								 const RI_ConstraintInfo *riinfo,
+								 FastPathMeta *fpmeta, Relation fk_rel,
 								 Snapshot snapshot, IndexScanDesc scandesc);
 static bool ri_FastPathProbeOne(Relation pk_rel, Relation idx_rel,
 								IndexScanDesc scandesc, TupleTableSlot *slot,
@@ -341,6 +388,7 @@ static void ri_CheckPermissions(Relation query_rel);
 static bool recheck_matched_pk_tuple(Relation idxrel, ScanKeyData *skeys,
 									 int nkeys, TupleTableSlot *new_slot);
 static void build_index_scankeys(const RI_ConstraintInfo *riinfo,
+								 FastPathMeta *fpmeta,
 								 Relation idx_rel, Datum *pk_vals,
 								 char *pk_nulls, ScanKey skeys);
 static void ri_populate_fastpath_metadata(RI_ConstraintInfo *riinfo,
@@ -355,7 +403,7 @@ pg_noreturn static void ri_ReportViolation(const RI_ConstraintInfo *riinfo,
 static RI_FastPathEntry *ri_FastPathGetEntry(const RI_ConstraintInfo *riinfo,
 											 Relation fk_rel);
 static void ri_FastPathEndBatch(void *arg);
-static void ri_FastPathTeardown(void);
+static void ri_FastPathTeardown(int depth);
 
 
 /*
@@ -472,9 +520,7 @@ RI_FKey_check(TriggerData *trigdata)
 	 */
 	if (ri_fastpath_is_applicable(riinfo))
 	{
-		if (AfterTriggerIsActive() &&
-			GetCurrentTransactionNestLevel() == 1 &&
-			!ri_fastpath_flushing)
+		if (AfterTriggerIsActive() && !ri_fastpath_flushing)
 		{
 			/* Batched path: buffer and probe in groups */
 			ri_FastPathBatchAdd(riinfo, fk_rel, newslot);
@@ -482,14 +528,10 @@ RI_FKey_check(TriggerData *trigdata)
 		else
 		{
 			/*
-			 * Per-row path, used when batching is not safe or not applicable:
+			 * Per-row path, used when batching is not applicable:
 			 *
 			 * - ALTER TABLE validation, where no after-trigger firing is
 			 * active;
-			 *
-			 * - any FK check inside a subtransaction, since the batch cache
-			 * is confined to the top transaction level (it cannot be cleanly
-			 * unwound on subxact abort);
 			 *
 			 * - a re-entrant check from user cast/operator code running
 			 * during a batch flush, since adding a cache entry while
@@ -2560,6 +2602,10 @@ get_ri_constraint_root(Oid constrOid)
  * from the cache, but only mark them invalid, which is harmless to active
  * uses.  (Any query using an entry should hold a lock sufficient to keep that
  * data from changing under it --- but we may get cache flushes anyway.)
+ *
+ * The fast-path metadata hanging off an entry is subject to the same rule.
+ * We unlink it so that the next check rebuilds it, but the object itself is
+ * only queued here and is actually released by AtEOXact_RI().
  */
 static void
 InvalidateConstraintCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
@@ -2593,11 +2639,25 @@ InvalidateConstraintCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
 			riinfo->rootHashValue == hashvalue)
 		{
 			riinfo->valid = false;
+
+			/*
+			 * Detach any fast-path metadata so that the next check
+			 * repopulates it, but do not free it here.  ri_FastPathCheck()
+			 * and the flush routines copy riinfo->fpmeta into a local (and
+			 * take FmgrInfo pointers into it) and then run index scans, tuple
+			 * locking, and user-supplied cast and equality functions, all of
+			 * which can accept invalidation messages and reach this callback.
+			 * Freeing now would leave those callers reading freed memory.
+			 * Queue it instead; AtEOXact_RI() releases it once no RI check
+			 * can be running.
+			 */
 			if (riinfo->fpmeta)
 			{
-				pfree(riinfo->fpmeta);
+				riinfo->fpmeta->next_dead = ri_fpmeta_dead_list;
+				ri_fpmeta_dead_list = riinfo->fpmeta;
 				riinfo->fpmeta = NULL;
 			}
+
 			/* Remove invalidated entries from the list, too */
 			dclist_delete_from(&ri_constraint_cache_valid_list, iter.cur);
 		}
@@ -2824,7 +2884,13 @@ ri_FastPathCheck(RI_ConstraintInfo *riinfo,
 	CommandCounterIncrement();
 	snapshot = RegisterSnapshot(GetTransactionSnapshot());
 
+	INJECTION_POINT("ri-before-pk-lock", NULL);
+
 	pk_rel = table_open(riinfo->pk_relid, RowShareLock);
+
+	/* Re-read the constraint under that lock; see ri_FastPathGetEntry(). */
+	riinfo = ri_LoadConstraintInfo(riinfo->constraint_id);
+
 	idx_rel = index_open(riinfo->conindid, AccessShareLock);
 
 	slot = table_slot_create(pk_rel, NULL);
@@ -2855,7 +2921,8 @@ ri_FastPathCheck(RI_ConstraintInfo *riinfo,
 	}
 	Assert(riinfo->fpmeta);
 	ri_ExtractValues(fk_rel, newslot, riinfo, false, pk_vals, pk_nulls);
-	build_index_scankeys(riinfo, idx_rel, pk_vals, pk_nulls, skey);
+	build_index_scankeys(riinfo, riinfo->fpmeta, idx_rel, pk_vals, pk_nulls,
+						 skey);
 	found = ri_FastPathProbeOne(pk_rel, idx_rel, scandesc, slot,
 								snapshot, riinfo, skey, riinfo->nkeys);
 	SetUserIdAndSecContext(saved_userid, saved_sec_context);
@@ -2905,6 +2972,14 @@ ri_FastPathBatchAdd(RI_ConstraintInfo *riinfo,
 	}
 
 	/*
+	 * A batch is filled and flushed within a single trigger-firing cycle, so
+	 * every row added to an entry comes from the subtransaction that created
+	 * it.  AtEOSubXact_RI() relies on this to identify an aborting
+	 * subtransaction's entries by the subid stamped at entry creation.
+	 */
+	Assert(fpentry->subid == GetCurrentSubTransactionId());
+
+	/*
 	 * Buffer the row.  A full batch is flushed below and re-entry is handled
 	 * above, so there is always room here; the bounds check just guards the
 	 * array write.
@@ -2947,6 +3022,7 @@ ri_FastPathBatchFlush(RI_FastPathEntry *fpentry, Relation fk_rel,
 	Oid			saved_userid;
 	int			saved_sec_context;
 	MemoryContext oldcxt;
+	FastPathMeta *fpmeta;
 	int			violation_index;
 
 	if (fpentry->batch_count == 0)
@@ -3005,6 +3081,15 @@ ri_FastPathBatchFlush(RI_FastPathEntry *fpentry, Relation fk_rel,
 	Assert(riinfo->fpmeta);
 
 	/*
+	 * Take our own reference to the metadata for the duration of the flush.
+	 * The probe below runs user-defined cast and equality functions, which
+	 * can accept invalidation messages; InvalidateConstraintCacheCallBack()
+	 * then clears riinfo->fpmeta, so re-reading it partway through the batch
+	 * would find NULL.  The object itself stays valid until AtEOXact_RI().
+	 */
+	fpmeta = riinfo->fpmeta;
+
+	/*
 	 * The probe runs user-defined cast and equality functions.  Set the
 	 * flushing flag around it so a re-entrant ri_FastPathBatchAdd on this
 	 * entry takes the per-row path, and clear it even on error so the entry
@@ -3017,10 +3102,12 @@ ri_FastPathBatchFlush(RI_FastPathEntry *fpentry, Relation fk_rel,
 		/* Skip array overhead for single-row batches. */
 		if (riinfo->nkeys == 1 && fpentry->batch_count > 1)
 			violation_index = ri_FastPathFlushArray(fpentry, fk_slot, riinfo,
-													fk_rel, snapshot, scandesc);
+													fpmeta, fk_rel, snapshot,
+													scandesc);
 		else
 			violation_index = ri_FastPathFlushLoop(fpentry, fk_slot, riinfo,
-												   fk_rel, snapshot, scandesc);
+												   fpmeta, fk_rel, snapshot,
+												   scandesc);
 	}
 	PG_FINALLY();
 	{
@@ -3058,8 +3145,9 @@ ri_FastPathBatchFlush(RI_FastPathEntry *fpentry, Relation fk_rel,
  */
 static int
 ri_FastPathFlushLoop(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
-					 const RI_ConstraintInfo *riinfo, Relation fk_rel,
-					 Snapshot snapshot, IndexScanDesc scandesc)
+					 const RI_ConstraintInfo *riinfo, FastPathMeta *fpmeta,
+					 Relation fk_rel, Snapshot snapshot,
+					 IndexScanDesc scandesc)
 {
 	Relation	pk_rel = fpentry->pk_rel;
 	Relation	idx_rel = fpentry->idx_rel;
@@ -3073,7 +3161,7 @@ ri_FastPathFlushLoop(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
 	{
 		ExecStoreHeapTuple(fpentry->batch[i], fk_slot, false);
 		ri_ExtractValues(fk_rel, fk_slot, riinfo, false, pk_vals, pk_nulls);
-		build_index_scankeys(riinfo, idx_rel, pk_vals, pk_nulls, skey);
+		build_index_scankeys(riinfo, fpmeta, idx_rel, pk_vals, pk_nulls, skey);
 
 		found = ri_FastPathProbeOne(pk_rel, idx_rel, scandesc, pk_slot,
 									snapshot, riinfo, skey, riinfo->nkeys);
@@ -3102,10 +3190,10 @@ ri_FastPathFlushLoop(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
  */
 static int
 ri_FastPathFlushArray(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
-					  const RI_ConstraintInfo *riinfo, Relation fk_rel,
-					  Snapshot snapshot, IndexScanDesc scandesc)
+					  const RI_ConstraintInfo *riinfo, FastPathMeta *fpmeta,
+					  Relation fk_rel, Snapshot snapshot,
+					  IndexScanDesc scandesc)
 {
-	FastPathMeta *fpmeta = riinfo->fpmeta;
 	Relation	pk_rel = fpentry->pk_rel;
 	Relation	idx_rel = fpentry->idx_rel;
 	TupleTableSlot *pk_slot = fpentry->pk_slot;
@@ -3193,10 +3281,18 @@ ri_FastPathFlushArray(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
 	{
 		Datum		found_val;
 		bool		found_null;
-		bool		concurrently_updated;
-		ScanKeyData recheck_skey[1];
 
-		if (!ri_LockPKTuple(pk_rel, pk_slot, snapshot, &concurrently_updated))
+		/*
+		 * No key recheck is needed here, so we have no use for
+		 * concurrently_updated.  Unlike ri_FastPathProbeOne(), which takes
+		 * the index scan's word for it that the tuple matches, this path
+		 * compares the key against every buffered FK value below, and it does
+		 * so using found_val, which is read out of the version we actually
+		 * locked.  A concurrent key update is therefore caught by that
+		 * comparison: the batch item that led us to this tuple is left
+		 * unmatched and reported as a violation.
+		 */
+		if (!ri_LockPKTuple(pk_rel, pk_slot, snapshot, NULL))
 			continue;
 
 		/*
@@ -3212,22 +3308,6 @@ ri_FastPathFlushArray(RI_FastPathEntry *fpentry, TupleTableSlot *fk_slot,
 		found_val = slot_getattr(pk_slot, riinfo->pk_attnums[0], &found_null);
 		if (found_null)
 			continue;
-
-		if (concurrently_updated)
-		{
-			/*
-			 * Build a single-key scankey for recheck.  We need the actual PK
-			 * value that was found, not the FK search value.
-			 */
-			ScanKeyEntryInitialize(&recheck_skey[0], 0, 1,
-								   fpmeta->strats[0],
-								   fpmeta->subtypes[0],
-								   idx_rel->rd_indcollation[0],
-								   fpmeta->regops[0],
-								   found_val);
-			if (!recheck_matched_pk_tuple(idx_rel, recheck_skey, 1, pk_slot))
-				continue;
-		}
 
 		/*
 		 * Linear scan to mark all batch items matching this PK value.
@@ -3296,9 +3376,11 @@ ri_FastPathProbeOne(Relation pk_rel, Relation idx_rel,
  * Calls table_tuple_lock() directly with handling specific to RI checks.
  * Returns true if the tuple was successfully locked.
  *
- * Sets *concurrently_updated to true if the locked tuple was reached
- * by following an update chain (tmfd.traversed), indicating the caller
- * should recheck the key.
+ * If concurrently_updated is not NULL, sets *concurrently_updated to true
+ * if the locked tuple was reached by following an update chain
+ * (tmfd.traversed), indicating the caller should recheck the key.  Callers
+ * that compare the locked tuple's key against the value they were looking
+ * for anyway can pass NULL.
  */
 static bool
 ri_LockPKTuple(Relation pk_rel, TupleTableSlot *slot, Snapshot snap,
@@ -3308,7 +3390,8 @@ ri_LockPKTuple(Relation pk_rel, TupleTableSlot *slot, Snapshot snap,
 	TM_Result	result;
 	int			lockflags = TUPLE_LOCK_FLAG_LOCK_UPDATE_IN_PROGRESS;
 
-	*concurrently_updated = false;
+	if (concurrently_updated)
+		*concurrently_updated = false;
 
 	if (!IsolationUsesXactSnapshot())
 		lockflags |= TUPLE_LOCK_FLAG_FIND_LAST_VERSION;
@@ -3321,7 +3404,7 @@ ri_LockPKTuple(Relation pk_rel, TupleTableSlot *slot, Snapshot snap,
 	switch (result)
 	{
 		case TM_Ok:
-			if (tmfd.traversed)
+			if (tmfd.traversed && concurrently_updated)
 				*concurrently_updated = true;
 			return true;
 
@@ -3494,11 +3577,10 @@ recheck_matched_pk_tuple(Relation idxrel, ScanKeyData *skeys, int nkeys,
  */
 static void
 build_index_scankeys(const RI_ConstraintInfo *riinfo,
+					 FastPathMeta *fpmeta,
 					 Relation idx_rel, Datum *pk_vals,
 					 char *pk_nulls, ScanKey skeys)
 {
-	FastPathMeta *fpmeta = riinfo->fpmeta;
-
 	Assert(fpmeta);
 
 	/*
@@ -3551,8 +3633,15 @@ ri_populate_fastpath_metadata(RI_ConstraintInfo *riinfo,
 	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
 	Assert(riinfo != NULL && riinfo->valid);
+	Assert(riinfo->fpmeta == NULL);
 
 	fpmeta = palloc_object(FastPathMeta);
+	fpmeta->next_dead = NULL;
+
+	/* Scratch context for the cached FmgrInfos' fn_mcxt; see FastPathMeta. */
+	fpmeta->scratch_cxt = AllocSetContextCreate(TopMemoryContext,
+												"RI fast-path finfo scratch",
+												ALLOCSET_SMALL_SIZES);
 	for (int i = 0; i < riinfo->nkeys; i++)
 	{
 		Oid			eq_opr = riinfo->pf_eq_oprs[i];
@@ -3578,9 +3667,9 @@ ri_populate_fastpath_metadata(RI_ConstraintInfo *riinfo,
 		fpmeta->index_attnos[i] = idx_col + 1;
 
 		fmgr_info_copy(&fpmeta->cast_func_finfo[i], &entry->cast_func_finfo,
-					   CurrentMemoryContext);
+					   fpmeta->scratch_cxt);
 		fmgr_info_copy(&fpmeta->eq_opr_finfo[i], &entry->eq_opr_finfo,
-					   CurrentMemoryContext);
+					   fpmeta->scratch_cxt);
 		fpmeta->regops[i] = get_opcode(eq_opr);
 
 		get_op_opfamily_properties(eq_opr,
@@ -4236,6 +4325,7 @@ ri_FastPathEndBatch(void *arg)
 {
 	HASH_SEQ_STATUS status;
 	RI_FastPathEntry *entry;
+	int			my_depth = (int) (intptr_t) arg;
 
 	if (ri_fastpath_cache == NULL)
 		return;
@@ -4260,10 +4350,13 @@ ri_FastPathEndBatch(void *arg)
 		hash_seq_init(&status, ri_fastpath_cache);
 		while ((entry = hash_seq_search(&status)) != NULL)
 		{
-			if (entry->batch_count > 0)
+			/* Flush only entries created in the cycle now ending. */
+			if (entry->key.query_depth == my_depth && entry->batch_count > 0)
 			{
 				Relation	fk_rel = table_open(entry->fk_relid, AccessShareLock);
-				RI_ConstraintInfo *riinfo = ri_LoadConstraintInfo(entry->conoid);
+				RI_ConstraintInfo *riinfo;
+
+				riinfo = ri_LoadConstraintInfo(entry->key.conoid);
 
 				ri_FastPathBatchFlush(entry, fk_rel, riinfo);
 				table_close(fk_rel, NoLock);
@@ -4276,17 +4369,26 @@ ri_FastPathEndBatch(void *arg)
 	}
 	PG_END_TRY();
 
-	ri_FastPathTeardown();
+	/*
+	 * Release this cycle's entries and remove them from the cache; leave
+	 * outer cycles' entries for their own callbacks.  Destroy the cache once
+	 * empty.
+	 */
+	ri_FastPathTeardown(my_depth);
 }
 
 /*
  * ri_FastPathTeardown
- *		Tear down all cached fast-path state.
+ *		Release and remove the cached entries of one firing cycle, and drop
+ *		the cache once it holds no more entries.
  *
- * Called from ri_FastPathEndBatch() after flushing any remaining rows.
+ * Called from ri_FastPathEndBatch() with the depth of the cycle that is
+ * ending: it releases only that cycle's entries, leaving an outer cycle's
+ * still-live entries for their own callbacks.  The cache (and its static
+ * pointer) go away once the last entry is removed.
  */
 static void
-ri_FastPathTeardown(void)
+ri_FastPathTeardown(int depth)
 {
 	HASH_SEQ_STATUS status;
 	RI_FastPathEntry *entry;
@@ -4297,6 +4399,8 @@ ri_FastPathTeardown(void)
 	hash_seq_init(&status, ri_fastpath_cache);
 	while ((entry = hash_seq_search(&status)) != NULL)
 	{
+		if (entry->key.query_depth != depth)
+			continue;
 		if (entry->idx_rel)
 			index_close(entry->idx_rel, NoLock);
 		if (entry->pk_rel)
@@ -4307,11 +4411,15 @@ ri_FastPathTeardown(void)
 			ExecDropSingleTupleTableSlot(entry->fk_slot);
 		if (entry->flush_cxt)
 			MemoryContextDelete(entry->flush_cxt);
+		hash_search(ri_fastpath_cache, &entry->key, HASH_REMOVE, NULL);
 	}
 
-	hash_destroy(ri_fastpath_cache);
-	ri_fastpath_cache = NULL;
-	ri_fastpath_callback_registered = false;
+	if (hash_get_num_entries(ri_fastpath_cache) == 0)
+	{
+		hash_destroy(ri_fastpath_cache);
+		ri_fastpath_cache = NULL;
+		ri_fastpath_flushing = false;
+	}
 }
 
 /*
@@ -4357,7 +4465,6 @@ AtEOXact_RI(bool isCommit)
 	 * memory-context reset; here we only drop the references to it.
 	 */
 	ri_fastpath_cache = NULL;
-	ri_fastpath_callback_registered = false;
 
 	/*
 	 * Also clear the in-flush flag.  ri_FastPathEndBatch() already clears it
@@ -4366,6 +4473,88 @@ AtEOXact_RI(bool isCommit)
 	 * set.
 	 */
 	ri_fastpath_flushing = false;
+
+	/*
+	 * Release fast-path metadata detached during this transaction by
+	 * InvalidateConstraintCacheCallBack().  We are past every RI check that
+	 * could still hold a pointer into one of these, so freeing here is safe
+	 * on both the commit and the abort path.
+	 */
+	while (ri_fpmeta_dead_list != NULL)
+	{
+		FastPathMeta *dead = ri_fpmeta_dead_list;
+
+		ri_fpmeta_dead_list = dead->next_dead;
+		MemoryContextDelete(dead->scratch_cxt);
+		pfree(dead);
+	}
+}
+
+/*
+ * AtEOSubXact_RI
+ *		Reset fast-path batching state at subtransaction end.
+ *
+ * Called from CommitSubTransaction() with isCommit true and from
+ * AbortSubTransaction() with isCommit false, in both cases after the
+ * subtransaction's ResourceOwnerRelease().
+ *
+ * Fast-path cache entries are normally flushed and removed at the end of
+ * their trigger-firing cycle, and the cache is destroyed when its last entry
+ * is removed.  Thus, at a normal subtransaction boundary this is a no-op.
+ *
+ * The exception is a batch flush that errors out partway and is caught by this
+ * subtransaction (e.g. a PL/pgSQL EXCEPTION block): ri_FastPathEndBatch()'s
+ * teardown was skipped, so the cache still contains entries whose relations
+ * were opened under this subtransaction's resource owner.  That owner has
+ * just released those relations, making the entries stale.  Remove those
+ * entries so a later firing cycle cannot reuse them.  Entries belonging to
+ * outer subtransactions remain valid and are preserved.
+ *
+ * The remaining slot storage and per-entry flush contexts are reclaimed when
+ * TopTransactionContext is reset at top-level transaction end.
+ */
+void
+AtEOSubXact_RI(bool isCommit, SubTransactionId mySubid,
+			   SubTransactionId parentSubid)
+{
+	HASH_SEQ_STATUS status;
+	RI_FastPathEntry *entry;
+	long		remaining;
+
+	if (ri_fastpath_cache == NULL)
+		return;
+
+	/* Process only entries belonging to the ending subtransaction. */
+	hash_seq_init(&status, ri_fastpath_cache);
+	while ((entry = hash_seq_search(&status)) != NULL)
+	{
+		if (entry->subid != mySubid)
+			continue;
+
+		if (isCommit)
+		{
+			/*
+			 * A committing subxact's entry should already have been flushed
+			 * and torn down at its statement's end (ri_FastPathEndBatch()),
+			 * so we don't expect to find one here.  If we do, reassign it to
+			 * the parent so it's still cleaned up rather than left under a
+			 * subxact id that no longer exists.
+			 */
+			Assert(false);
+			entry->subid = parentSubid;
+		}
+		else
+			hash_search(ri_fastpath_cache, &entry->key, HASH_REMOVE, NULL);
+	}
+
+	/* If that emptied the cache, drop it so the next batch starts clean. */
+	remaining = hash_get_num_entries(ri_fastpath_cache);
+	if (remaining == 0)
+	{
+		hash_destroy(ri_fastpath_cache);
+		ri_fastpath_cache = NULL;
+		ri_fastpath_flushing = false;
+	}
 }
 
 /*
@@ -4381,15 +4570,20 @@ AtEOXact_RI(bool isCommit)
 static RI_FastPathEntry *
 ri_FastPathGetEntry(const RI_ConstraintInfo *riinfo, Relation fk_rel)
 {
+	RI_FastPathKey key;
 	RI_FastPathEntry *entry;
 	bool		found;
+	int			cur_depth = AfterTriggerCurrentQueryDepth();
+
+	key.conoid = riinfo->constraint_id;
+	key.query_depth = cur_depth;
 
 	/* Create hash table on first use in this batch */
 	if (ri_fastpath_cache == NULL)
 	{
 		HASHCTL		ctl;
 
-		ctl.keysize = sizeof(Oid);
+		ctl.keysize = sizeof(RI_FastPathKey);
 		ctl.entrysize = sizeof(RI_FastPathEntry);
 		ctl.hcxt = TopTransactionContext;
 		ri_fastpath_cache = hash_create("RI fast-path cache",
@@ -4398,7 +4592,7 @@ ri_FastPathGetEntry(const RI_ConstraintInfo *riinfo, Relation fk_rel)
 										HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
-	entry = hash_search(ri_fastpath_cache, &riinfo->constraint_id,
+	entry = hash_search(ri_fastpath_cache, &key,
 						HASH_ENTER, &found);
 
 	if (!found)
@@ -4426,7 +4620,20 @@ ri_FastPathGetEntry(const RI_ConstraintInfo *riinfo, Relation fk_rel)
 		 * We don't release these locks until end of transaction, matching SPI
 		 * behavior.
 		 */
+
+		INJECTION_POINT("ri-before-pk-lock", NULL);
+
 		entry->pk_rel = table_open(riinfo->pk_relid, RowShareLock);
+
+		/*
+		 * conindid may have been read before we took that lock, and REINDEX
+		 * CONCURRENTLY moves a constraint to a new index.  Re-read it now:
+		 * LockRelationOid() processes invalidation messages after acquiring
+		 * the lock, so we either see the new index, or an old one that cannot
+		 * be marked dead or dropped until this transaction ends.
+		 */
+		riinfo = ri_LoadConstraintInfo(riinfo->constraint_id);
+
 		entry->idx_rel = index_open(riinfo->conindid, AccessShareLock);
 		entry->pk_slot = table_slot_create(entry->pk_rel, NULL);
 
@@ -4442,15 +4649,40 @@ ri_FastPathGetEntry(const RI_ConstraintInfo *riinfo, Relation fk_rel)
 												 ALLOCSET_SMALL_SIZES);
 		MemoryContextSwitchTo(oldcxt);
 
-		/* Ensure cleanup at end of this trigger-firing batch */
-		if (!ri_fastpath_callback_registered)
+		/*
+		 * Register an end-of-batch callback once per firing cycle, passing
+		 * the query depth so the callback flushes only entries belonging to
+		 * that cycle.
+		 */
 		{
-			RegisterAfterTriggerBatchCallback(ri_FastPathEndBatch, NULL);
-			ri_fastpath_callback_registered = true;
+			bool		depth_registered = false;
+			HASH_SEQ_STATUS reg_status;
+			RI_FastPathEntry *other;
+
+			/*
+			 * An existing entry at this depth means its callback is already
+			 * registered.  Ignore the just-created entry, which is already in
+			 * the hash.
+			 */
+			hash_seq_init(&reg_status, ri_fastpath_cache);
+			while ((other = hash_seq_search(&reg_status)) != NULL)
+			{
+				if (other != entry && other->key.query_depth == cur_depth)
+				{
+					depth_registered = true;
+					hash_seq_term(&reg_status);
+					break;
+				}
+			}
+
+			if (!depth_registered)
+				RegisterAfterTriggerBatchCallback(ri_FastPathEndBatch,
+												  (void *) (intptr_t) cur_depth);
 		}
 
 		entry->flushing = false;
 		entry->batch_count = 0;
+		entry->subid = GetCurrentSubTransactionId();
 	}
 
 	return entry;

@@ -167,6 +167,8 @@ ginDeletePostingPage(GinVacuumState *gvs, Buffer dBuffer, Buffer lBuffer,
 	page = BufferGetPage(dBuffer);
 	rightlink = GinPageGetOpaque(page)->rightlink;
 
+	Assert(GinPageGetOpaque(BufferGetPage(lBuffer))->rightlink == deleteBlkno);
+
 	/*
 	 * Any insert which would have gone on the leaf block will now go to its
 	 * right sibling.
@@ -334,10 +336,20 @@ ginScanPostingTreeToDelete(GinVacuumState *gvs, DataPageDeleteStack *myStackItem
 	if (isempty)
 	{
 		/*
-		 * Proceed to the ginDeletePostingPage() if that's not the leftmost or
-		 * the rightmost page.
+		 * Proceed to the ginDeletePostingPage() if target page is not the
+		 * leftmost or the rightmost page.
+		 *
+		 * leftBuffer is the target's left sibling according to the parent
+		 * level, which is not necessarily its left sibling in the sibling
+		 * link chain (the rightlinks stored on pages): the new right half of
+		 * an incompletely split page is in the sibling chain, but has no
+		 * downlink yet.  ginDeletePostingPage isn't prepared to deal with
+		 * that, so we must refuse to delete when either the target or its
+		 * left sibling page is marked incompletely split.
 		 */
-		if (BufferIsValid(myStackItem->leftBuffer) && !GinPageRightMost(page))
+		if (BufferIsValid(myStackItem->leftBuffer) && !GinPageRightMost(page) &&
+			!GinPageIsIncompleteSplit(page) &&
+			!GinPageIsIncompleteSplit(BufferGetPage(myStackItem->leftBuffer)))
 		{
 			Assert(!myStackItem->isRoot);
 			ginDeletePostingPage(gvs, buffer, myStackItem->leftBuffer,
@@ -399,6 +411,16 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno)
 		{
 			LockBuffer(buffer, GIN_UNLOCK);
 			LockBuffer(buffer, GIN_EXCLUSIVE);
+
+			if (!GinPageIsLeaf(page))
+			{
+				/*
+				 * The root page was a leaf page, but became an internal page
+				 * while no lock was held.  Unlock and reacquire a share lock.
+				 */
+				UnlockReleaseBuffer(buffer);
+				continue;
+			}
 			break;
 		}
 
@@ -630,13 +652,19 @@ ginbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	{
 		/* Yes, so initialize stats to zeroes */
 		stats = palloc0_object(IndexBulkDeleteResult);
-
-		/*
-		 * and cleanup any pending inserts
-		 */
-		ginInsertCleanup(&gvs.ginstate, !AmAutoVacuumWorkerProcess(),
-						 false, true, stats);
 	}
+
+	/*
+	 * The pending list might have already-dead TIDs that VACUUM now requires
+	 * us to remove from the index.  We must force cleanup of the pending list
+	 * now, before vacuuming proper begins, to make sure nothing is missed.
+	 *
+	 * When running in an autovacuum worker, we won't necessarily _fully_
+	 * empty the pending list.  This is still safe; concurrent inserters
+	 * cannot insert new tuples whose TIDs VACUUM needs us to remove.
+	 */
+	ginInsertCleanup(&gvs.ginstate, !AmAutoVacuumWorkerProcess(),
+					 false, true, stats);
 
 	/* we'll re-count the tuples each time */
 	stats->num_index_tuples = 0;

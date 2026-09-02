@@ -591,7 +591,8 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 	/*
 	 * Verify result relation is a valid target for an INSERT.  An UPDATE of a
 	 * partition-key becomes a DELETE+INSERT operation, so this check is still
-	 * required when the operation is CMD_UPDATE.
+	 * required when the operation is CMD_UPDATE.  It is also required for
+	 * CMD_DELETE, because DELETE ... FOR PORTION OF inserts leftover rows.
 	 */
 	CheckValidResultRel(leaf_part_rri, CMD_INSERT,
 						node ? node->onConflictAction : ONCONFLICT_NONE, NIL, node);
@@ -612,8 +613,9 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 	 * Build WITH CHECK OPTION constraints for the partition.  Note that we
 	 * didn't build the withCheckOptionList for partitions within the planner,
 	 * but simple translation of varattnos will suffice.  This only occurs for
-	 * the INSERT case or in the case of UPDATE/MERGE tuple routing where we
-	 * didn't find a result rel to reuse.
+	 * the INSERT case or in the case of UPDATE/DELETE/MERGE tuple routing
+	 * where we didn't find a result rel to reuse.  We reach here with DELETE
+	 * only when inserting temporal leftovers.
 	 */
 	if (node && node->withCheckOptionLists != NIL)
 	{
@@ -624,12 +626,16 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		/*
 		 * In the case of INSERT on a partitioned table, there is only one
 		 * plan.  Likewise, there is only one WCO list, not one per partition.
-		 * For UPDATE/MERGE, there are as many WCO lists as there are plans.
+		 * For UPDATE/DELETE/MERGE, there are as many WCO lists as there are
+		 * plans.
 		 */
 		Assert((node->operation == CMD_INSERT &&
 				list_length(node->withCheckOptionLists) == 1 &&
 				list_length(node->resultRelations) == 1) ||
 			   (node->operation == CMD_UPDATE &&
+				list_length(node->withCheckOptionLists) ==
+				list_length(node->resultRelations)) ||
+			   (node->operation == CMD_DELETE &&
 				list_length(node->withCheckOptionLists) ==
 				list_length(node->resultRelations)) ||
 			   (node->operation == CMD_MERGE &&
@@ -679,8 +685,9 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 	 * Build the RETURNING projection for the partition.  Note that we didn't
 	 * build the returningList for partitions within the planner, but simple
 	 * translation of varattnos will suffice.  This only occurs for the INSERT
-	 * case or in the case of UPDATE/MERGE tuple routing where we didn't find
-	 * a result rel to reuse.
+	 * case or in the case of UPDATE/DELETE/MERGE tuple routing where we
+	 * didn't find a result rel to reuse.  We reach here with DELETE only when
+	 * inserting temporal leftovers.
 	 */
 	if (node && node->returningLists != NIL)
 	{
@@ -693,6 +700,9 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 				list_length(node->returningLists) == 1 &&
 				list_length(node->resultRelations) == 1) ||
 			   (node->operation == CMD_UPDATE &&
+				list_length(node->returningLists) ==
+				list_length(node->resultRelations)) ||
+			   (node->operation == CMD_DELETE &&
 				list_length(node->returningLists) ==
 				list_length(node->resultRelations)) ||
 			   (node->operation == CMD_MERGE &&
@@ -1246,12 +1256,10 @@ ExecInitRoutingInfo(ModifyTableState *mtstate,
 		else
 		{
 			proute->max_partitions *= 2;
-			proute->partitions = (ResultRelInfo **)
-				repalloc(proute->partitions, sizeof(ResultRelInfo *) *
-						 proute->max_partitions);
-			proute->is_borrowed_rel = (bool *)
-				repalloc(proute->is_borrowed_rel, sizeof(bool) *
-						 proute->max_partitions);
+			proute->partitions = repalloc_array(proute->partitions,
+												ResultRelInfo *, proute->max_partitions);
+			proute->is_borrowed_rel = repalloc_array(proute->is_borrowed_rel,
+													 bool, proute->max_partitions);
 		}
 	}
 
@@ -1362,12 +1370,12 @@ ExecInitPartitionDispatchInfo(EState *estate,
 		else
 		{
 			proute->max_dispatch *= 2;
-			proute->partition_dispatch_info = (PartitionDispatch *)
-				repalloc(proute->partition_dispatch_info,
-						 sizeof(PartitionDispatch) * proute->max_dispatch);
-			proute->nonleaf_partitions = (ResultRelInfo **)
-				repalloc(proute->nonleaf_partitions,
-						 sizeof(ResultRelInfo *) * proute->max_dispatch);
+			proute->partition_dispatch_info = repalloc_array(proute->partition_dispatch_info,
+															 PartitionDispatch,
+															 proute->max_dispatch);
+			proute->nonleaf_partitions = repalloc_array(proute->nonleaf_partitions,
+														ResultRelInfo *,
+														proute->max_dispatch);
 		}
 	}
 	proute->partition_dispatch_info[dispatchidx] = pd;

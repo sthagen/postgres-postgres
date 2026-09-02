@@ -54,6 +54,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
@@ -371,7 +372,7 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 			if (opts->maxretention < 0)
 				ereport(ERROR,
 						errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg("max_retention_duration cannot be negative"));
+						errmsg("option \"%s\" cannot be negative", "max_retention_duration"));
 		}
 		else if (IsSet(supported_opts, SUBOPT_ORIGIN) &&
 				 strcmp(defel->defname, "origin") == 0)
@@ -871,11 +872,17 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 	values[Anum_pg_subscription_subretentionactive - 1] =
 		BoolGetDatum(opts.retaindeadtuples);
 	values[Anum_pg_subscription_subserver - 1] = ObjectIdGetDatum(serverid);
-	if (!OidIsValid(serverid))
+	if (stmt->conninfo)
+	{
+		Assert(stmt->conninfo == conninfo && !OidIsValid(serverid));
 		values[Anum_pg_subscription_subconninfo - 1] =
-			CStringGetTextDatum(conninfo);
+			CStringGetTextDatum(stmt->conninfo);
+	}
 	else
+	{
+		Assert(OidIsValid(serverid));
 		nulls[Anum_pg_subscription_subconninfo - 1] = true;
+	}
 	if (opts.slot_name)
 		values[Anum_pg_subscription_subslotname - 1] =
 			DirectFunctionCall1(namein, CStringGetDatum(opts.slot_name));
@@ -1160,6 +1167,9 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
 		subrel_states = GetSubscriptionRelations(sub->oid, true, true, false);
 		subrel_count = list_length(subrel_states);
 
+		/* Allow a test to drop a subscribed relation before the origin check. */
+		INJECTION_POINT("subscription-refresh-before-origin-check", NULL);
+
 		/*
 		 * Build qsorted arrays of local table oids and sequence oids for
 		 * faster lookup. This can potentially contain all tables and
@@ -1169,8 +1179,8 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
 		 * allocate separate arrays for table OIDs and sequence OIDs based on
 		 * the total number of relations (subrel_count).
 		 */
-		subrel_local_oids = palloc(subrel_count * sizeof(Oid));
-		subseq_local_oids = palloc(subrel_count * sizeof(Oid));
+		subrel_local_oids = palloc_array(Oid, subrel_count);
+		subseq_local_oids = palloc_array(Oid, subrel_count);
 		foreach(lc, subrel_states)
 		{
 			SubscriptionRelState *relstate = (SubscriptionRelState *) lfirst(lc);
@@ -1202,7 +1212,7 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
 		 * step.
 		 */
 		off = 0;
-		pubrel_local_oids = palloc(list_length(pubrels) * sizeof(Oid));
+		pubrel_local_oids = palloc_array(Oid, list_length(pubrels));
 
 		foreach_ptr(PublicationRelKind, pubrelinfo, pubrels)
 		{
@@ -2014,7 +2024,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					if (logicalrep_workers_find(subid, true, true))
 						ereport(ERROR,
 								(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-								 errmsg("cannot alter retain_dead_tuples when logical replication worker is still running"),
+								 errmsg("cannot alter option \"%s\" when logical replication worker is still running",
+										"retain_dead_tuples"),
 								 errhint("Try again after some time.")));
 
 					/*
@@ -3181,10 +3192,22 @@ check_publications_origin_tables(WalReceiverConn *wrconn, List *publications,
 		for (i = 0; i < subrel_count; i++)
 		{
 			Oid			relid = subrel_local_oids[i];
-			char	   *schemaname = get_namespace_name(get_rel_namespace(relid));
-			char	   *tablename = get_rel_name(relid);
-			char	   *schemaname_lit = quote_literal_cstr(schemaname);
-			char	   *tablename_lit = quote_literal_cstr(tablename);
+			char	   *schemaname;
+			char	   *tablename;
+			char	   *schemaname_lit;
+			char	   *tablename_lit;
+
+			/* The table may have been dropped concurrently; skip if gone. */
+			tablename = get_rel_name(relid);
+			if (tablename == NULL)
+				continue;
+
+			schemaname = get_namespace_name(get_rel_namespace(relid));
+			if (schemaname == NULL)
+				continue;
+
+			schemaname_lit = quote_literal_cstr(schemaname);
+			tablename_lit = quote_literal_cstr(tablename);
 
 			appendStringInfo(&cmd, "AND NOT (N.nspname = %s AND C.relname = %s)\n",
 							 schemaname_lit, tablename_lit);
@@ -3308,10 +3331,22 @@ check_publications_origin_sequences(WalReceiverConn *wrconn, List *publications,
 	for (int i = 0; i < subrel_count; i++)
 	{
 		Oid			relid = subrel_local_oids[i];
-		char	   *schemaname = get_namespace_name(get_rel_namespace(relid));
-		char	   *seqname = get_rel_name(relid);
-		char	   *schemaname_lit = quote_literal_cstr(schemaname);
-		char	   *seqname_lit = quote_literal_cstr(seqname);
+		char	   *schemaname;
+		char	   *seqname;
+		char	   *schemaname_lit;
+		char	   *seqname_lit;
+
+		/* The sequence may have been dropped concurrently; skip if gone. */
+		seqname = get_rel_name(relid);
+		if (seqname == NULL)
+			continue;
+
+		schemaname = get_namespace_name(get_rel_namespace(relid));
+		if (schemaname == NULL)
+			continue;
+
+		schemaname_lit = quote_literal_cstr(schemaname);
+		seqname_lit = quote_literal_cstr(seqname);
 
 		appendStringInfo(&cmd,
 						 "AND NOT (N.nspname = %s AND C.relname = %s)\n",

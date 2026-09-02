@@ -109,15 +109,6 @@ static relopt_bool boolRelOpts[] =
 	},
 	{
 		{
-			"autovacuum_enabled",
-			"Enables autovacuum in this relation",
-			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
-			ShareUpdateExclusiveLock
-		},
-		true
-	},
-	{
-		{
 			"user_catalog_table",
 			"Declare a table as an additional catalog table, e.g. for the purpose of logical replication",
 			RELOPT_KIND_HEAP,
@@ -168,6 +159,14 @@ static relopt_bool boolRelOpts[] =
 
 static relopt_ternary ternaryRelOpts[] =
 {
+	{
+		{
+			"autovacuum_enabled",
+			"Enables autovacuum in this relation",
+			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
+			ShareUpdateExclusiveLock
+		}
+	},
 	{
 		{
 			"vacuum_truncate",
@@ -349,7 +348,7 @@ static relopt_int intRelOpts[] =
 			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
 			ShareUpdateExclusiveLock
 		},
-		-1, -1, INT_MAX
+		-2, -1, INT_MAX
 	},
 	{
 		{
@@ -518,6 +517,7 @@ static relopt_real realRelOpts[] =
 /* values from StdRdOptIndexCleanup */
 static relopt_enum_elt_def StdRdOptIndexCleanupValues[] =
 {
+	/* no value for NOT_SET */
 	{"auto", STDRD_OPTION_VACUUM_INDEX_CLEANUP_AUTO},
 	{"on", STDRD_OPTION_VACUUM_INDEX_CLEANUP_ON},
 	{"off", STDRD_OPTION_VACUUM_INDEX_CLEANUP_OFF},
@@ -558,7 +558,7 @@ static relopt_enum enumRelOpts[] =
 			ShareUpdateExclusiveLock
 		},
 		StdRdOptIndexCleanupValues,
-		STDRD_OPTION_VACUUM_INDEX_CLEANUP_AUTO,
+		STDRD_OPTION_VACUUM_INDEX_CLEANUP_NOT_SET,
 		gettext_noop("Valid values are \"on\", \"off\", and \"auto\".")
 	},
 	{
@@ -612,6 +612,76 @@ static void parse_one_reloption(relopt_value *option, char *text_str,
 #define GET_STRING_RELOPTION_LEN(option) \
 	((option).isset ? strlen((option).string_val) : \
 	 ((relopt_string *) (option).gen)->default_len)
+
+#ifdef USE_ASSERT_CHECKING
+/*
+ * Verify that every option a TOAST table accepts defaults to a value the user
+ * cannot set.  That way, we can tell whether a reloption is set on the TOAST
+ * table or if we should pull the value from its main table.
+ */
+static void
+assert_toast_defaults_unsettable(void)
+{
+	for (int i = 0; relOpts[i]; i++)
+	{
+		relopt_gen *gen = relOpts[i];
+
+		if ((gen->kinds & RELOPT_KIND_TOAST) == 0)
+			continue;
+
+		/*
+		 * A TOAST table's value is filled in from its main table's at the
+		 * same offset in the same struct, so the option must be settable on a
+		 * heap too.
+		 */
+		Assert((gen->kinds & RELOPT_KIND_HEAP) != 0);
+
+		switch (gen->type)
+		{
+			case RELOPT_TYPE_TERNARY:
+
+				/*
+				 * Ternaries carry no default, and parse_one_reloption() can
+				 * only produce true or false, so PG_TERNARY_UNSET is already
+				 * beyond a user's reach.
+				 */
+				break;
+
+			case RELOPT_TYPE_INT:
+				{
+					relopt_int *optint = (relopt_int *) gen;
+
+					Assert(optint->default_val < optint->min ||
+						   optint->default_val > optint->max);
+					break;
+				}
+
+			case RELOPT_TYPE_REAL:
+				{
+					relopt_real *optreal = (relopt_real *) gen;
+
+					Assert(optreal->default_val < optreal->min ||
+						   optreal->default_val > optreal->max);
+					break;
+				}
+
+			case RELOPT_TYPE_ENUM:
+				{
+					relopt_enum *optenum = (relopt_enum *) gen;
+
+					for (relopt_enum_elt_def *elt = optenum->members;
+						 elt->string_val; elt++)
+						Assert(elt->symbol_val != optenum->default_val);
+					break;
+				}
+
+			default:
+				/* Neither bools nor strings can express "unset". */
+				Assert(false);
+		}
+	}
+}
+#endif							/* USE_ASSERT_CHECKING */
 
 /*
  * initialize_reloptions
@@ -730,6 +800,10 @@ initialize_reloptions(void)
 
 	/* flag the work is complete */
 	need_initialization = false;
+
+#ifdef USE_ASSERT_CHECKING
+	assert_toast_defaults_unsettable();
+#endif
 }
 
 /*
@@ -768,13 +842,12 @@ add_reloption(relopt_gen *newoption)
 		if (max_custom_options == 0)
 		{
 			max_custom_options = 8;
-			custom_options = palloc(max_custom_options * sizeof(relopt_gen *));
+			custom_options = palloc_array(relopt_gen *, max_custom_options);
 		}
 		else
 		{
 			max_custom_options *= 2;
-			custom_options = repalloc(custom_options,
-									  max_custom_options * sizeof(relopt_gen *));
+			custom_options = repalloc_array(custom_options, relopt_gen *, max_custom_options);
 		}
 		MemoryContextSwitchTo(oldcxt);
 	}
@@ -1634,7 +1707,7 @@ parseRelOptions(Datum options, bool validate, relopt_kind kind,
 
 	if (numoptions > 0)
 	{
-		reloptions = palloc(numoptions * sizeof(relopt_value));
+		reloptions = palloc_array(relopt_value, numoptions);
 
 		for (i = 0, j = 0; relOpts[i]; i++)
 		{
@@ -1969,68 +2042,176 @@ fillRelOptions(void *rdopts, Size basesize,
 
 
 /*
+ * Parse table for StdRdOptions.
+ */
+static const relopt_parse_elt stdRdOptionsTab[] = {
+	{"fillfactor", RELOPT_TYPE_INT, offsetof(StdRdOptions, fillfactor)},
+	{"autovacuum_enabled", RELOPT_TYPE_TERNARY,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, enabled)},
+	{"autovacuum_parallel_workers", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, autovacuum_parallel_workers)},
+	{"autovacuum_vacuum_threshold", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_threshold)},
+	{"autovacuum_vacuum_max_threshold", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_max_threshold)},
+	{"autovacuum_vacuum_insert_threshold", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_ins_threshold)},
+	{"autovacuum_analyze_threshold", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, analyze_threshold)},
+	{"autovacuum_vacuum_cost_limit", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_cost_limit)},
+	{"autovacuum_freeze_min_age", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, freeze_min_age)},
+	{"autovacuum_freeze_max_age", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, freeze_max_age)},
+	{"autovacuum_freeze_table_age", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, freeze_table_age)},
+	{"autovacuum_multixact_freeze_min_age", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, multixact_freeze_min_age)},
+	{"autovacuum_multixact_freeze_max_age", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, multixact_freeze_max_age)},
+	{"autovacuum_multixact_freeze_table_age", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, multixact_freeze_table_age)},
+	{"log_autovacuum_min_duration", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, log_vacuum_min_duration)},
+	{"log_autoanalyze_min_duration", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, log_analyze_min_duration)},
+	{"toast_tuple_target", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, toast_tuple_target)},
+	{"autovacuum_vacuum_cost_delay", RELOPT_TYPE_REAL,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_cost_delay)},
+	{"autovacuum_vacuum_scale_factor", RELOPT_TYPE_REAL,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_scale_factor)},
+	{"autovacuum_vacuum_insert_scale_factor", RELOPT_TYPE_REAL,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_ins_scale_factor)},
+	{"autovacuum_analyze_scale_factor", RELOPT_TYPE_REAL,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, analyze_scale_factor)},
+	{"user_catalog_table", RELOPT_TYPE_BOOL,
+	offsetof(StdRdOptions, user_catalog_table)},
+	{"parallel_workers", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, parallel_workers)},
+	{"vacuum_index_cleanup", RELOPT_TYPE_ENUM,
+	offsetof(StdRdOptions, vacuum_index_cleanup)},
+	{"vacuum_truncate", RELOPT_TYPE_TERNARY,
+	offsetof(StdRdOptions, vacuum_truncate)},
+	{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
+	offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)}
+};
+
+/*
  * Option parser for anything that uses StdRdOptions.
  */
 bytea *
 default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 {
-	static const relopt_parse_elt tab[] = {
-		{"fillfactor", RELOPT_TYPE_INT, offsetof(StdRdOptions, fillfactor)},
-		{"autovacuum_enabled", RELOPT_TYPE_BOOL,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, enabled)},
-		{"autovacuum_parallel_workers", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, autovacuum_parallel_workers)},
-		{"autovacuum_vacuum_threshold", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_threshold)},
-		{"autovacuum_vacuum_max_threshold", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_max_threshold)},
-		{"autovacuum_vacuum_insert_threshold", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_ins_threshold)},
-		{"autovacuum_analyze_threshold", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, analyze_threshold)},
-		{"autovacuum_vacuum_cost_limit", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_cost_limit)},
-		{"autovacuum_freeze_min_age", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, freeze_min_age)},
-		{"autovacuum_freeze_max_age", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, freeze_max_age)},
-		{"autovacuum_freeze_table_age", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, freeze_table_age)},
-		{"autovacuum_multixact_freeze_min_age", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, multixact_freeze_min_age)},
-		{"autovacuum_multixact_freeze_max_age", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, multixact_freeze_max_age)},
-		{"autovacuum_multixact_freeze_table_age", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, multixact_freeze_table_age)},
-		{"log_autovacuum_min_duration", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, log_vacuum_min_duration)},
-		{"log_autoanalyze_min_duration", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, log_analyze_min_duration)},
-		{"toast_tuple_target", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, toast_tuple_target)},
-		{"autovacuum_vacuum_cost_delay", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_cost_delay)},
-		{"autovacuum_vacuum_scale_factor", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_scale_factor)},
-		{"autovacuum_vacuum_insert_scale_factor", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_ins_scale_factor)},
-		{"autovacuum_analyze_scale_factor", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, analyze_scale_factor)},
-		{"user_catalog_table", RELOPT_TYPE_BOOL,
-		offsetof(StdRdOptions, user_catalog_table)},
-		{"parallel_workers", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, parallel_workers)},
-		{"vacuum_index_cleanup", RELOPT_TYPE_ENUM,
-		offsetof(StdRdOptions, vacuum_index_cleanup)},
-		{"vacuum_truncate", RELOPT_TYPE_TERNARY,
-		offsetof(StdRdOptions, vacuum_truncate)},
-		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)}
-	};
-
 	return (bytea *) build_reloptions(reloptions, validate, kind,
 									  sizeof(StdRdOptions),
-									  tab, lengthof(tab));
+									  stdRdOptionsTab,
+									  lengthof(stdRdOptionsTab));
+}
+
+/*
+ * find_reloption
+ *		Look up a reloption of the given kind by name.
+ *
+ * Returns NULL if no such option can be set on relations of that kind.  Note
+ * that names are unique only within a kind; "fillfactor", for example, is
+ * declared separately for heaps and for several index access methods.
+ */
+static relopt_gen *
+find_reloption(const char *name, relopt_kind kind)
+{
+	if (need_initialization)
+		initialize_reloptions();
+
+	for (int i = 0; relOpts[i]; i++)
+	{
+		if ((relOpts[i]->kinds & kind) != 0 &&
+			strcmp(relOpts[i]->name, name) == 0)
+			return relOpts[i];
+	}
+
+	return NULL;
+}
+
+/*
+ * merge_toast_reloptions
+ *		Fill in a TOAST table's unset options from its main table's.
+ *
+ * Any option that may be set on a TOAST table but was not is taken from
+ * main_opts.  Either argument may be NULL; if both are, NULL is returned.
+ * Otherwise, the options to use are returned.
+ *
+ * An option counts as unset while it still holds the default declared for it
+ * above, which works because nothing a TOAST table accepts has a default the
+ * user could also set (see assert_toast_defaults_unsettable()).
+ *
+ * If the return value is not NULL, it is palloc'd.
+ */
+StdRdOptions *
+merge_toast_reloptions(const StdRdOptions *toast_opts,
+					   const StdRdOptions *main_opts)
+{
+	StdRdOptions *ret;
+
+	/* if both arguments are NULL, return NULL */
+	if (toast_opts == NULL && main_opts == NULL)
+		return NULL;
+
+	/* if one argument is NULL, return the non-NULL one */
+	ret = palloc_object(StdRdOptions);
+	if (toast_opts == NULL || main_opts == NULL)
+	{
+		memcpy(ret, main_opts ? main_opts : toast_opts, sizeof(StdRdOptions));
+		return ret;
+	}
+
+	/* replace unset TOAST relopts with the main table's */
+	memcpy(ret, toast_opts, sizeof(StdRdOptions));
+	for (int i = 0; i < lengthof(stdRdOptionsTab); i++)
+	{
+		const relopt_parse_elt *elem = &stdRdOptionsTab[i];
+		relopt_gen *gen;
+		char	   *toast_val;
+		const char *main_val;
+
+		/* skip anything that cannot be set on a TOAST table */
+		gen = find_reloption(elem->optname, RELOPT_KIND_TOAST);
+		if (gen == NULL)
+			continue;
+
+		toast_val = (char *) ret + elem->offset;
+		main_val = (const char *) main_opts + elem->offset;
+
+		switch (gen->type)
+		{
+			case RELOPT_TYPE_TERNARY:
+				if (*(pg_ternary *) toast_val == PG_TERNARY_UNSET)
+					*(pg_ternary *) toast_val = *(const pg_ternary *) main_val;
+				break;
+
+			case RELOPT_TYPE_INT:
+				if (*(int *) toast_val == ((relopt_int *) gen)->default_val)
+					*(int *) toast_val = *(const int *) main_val;
+				break;
+
+			case RELOPT_TYPE_REAL:
+				if (*(double *) toast_val == ((relopt_real *) gen)->default_val)
+					*(double *) toast_val = *(const double *) main_val;
+				break;
+
+			case RELOPT_TYPE_ENUM:
+				if (*(int *) toast_val == ((relopt_enum *) gen)->default_val)
+					*(int *) toast_val = *(const int *) main_val;
+				break;
+
+			default:
+				elog(ERROR, "reloption \"%s\" has a type a TOAST table cannot inherit",
+					 elem->optname);
+		}
+	}
+
+	return ret;
 }
 
 /*

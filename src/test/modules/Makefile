@@ -30,6 +30,7 @@ SUBDIRS = \
 		  test_dsa \
 		  test_dsm_registry \
 		  test_escape \
+		  test_extensible \
 		  test_extensions \
 		  test_ginpostinglist \
 		  test_int128 \
@@ -53,6 +54,7 @@ SUBDIRS = \
 		  test_shm_mq \
 		  test_slru \
 		  test_tidstore \
+		  test_wait_lsn \
 		  unsafe_tests \
 		  worker_spi \
 		  xid_wraparound

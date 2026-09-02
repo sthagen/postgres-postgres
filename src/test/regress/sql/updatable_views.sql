@@ -1914,6 +1914,68 @@ update uv_fpo_view_nonupd for portion of valid_at from 1 to 10 set b = 2;
 delete from uv_fpo_view_nonupd for portion of valid_at from 1 to 10;
 drop view uv_fpo_view_nonupd;
 
+-- WITH CHECK OPTION must be enforced on temporal leftovers, i.e. the rows
+-- FOR PORTION OF inserts to preserve the untouched parts of the target row.
+-- This applies to DELETE as well as UPDATE.
+create table uv_fpo_wco_tab (id int4range, valid_at daterange, b int);
+insert into uv_fpo_wco_tab values ('[1,1]', '[2020-01-01,2030-01-01)', 0);
+create view uv_fpo_wco_view as
+  select * from uv_fpo_wco_tab
+  where valid_at && daterange('2024-01-01', '2025-01-01')
+  with check option;
+-- The leftovers fall outside the view, so both commands fail:
+update uv_fpo_wco_view for portion of valid_at from '2024-01-01' to '2025-01-01' set b = 1;
+delete from uv_fpo_wco_view for portion of valid_at from '2024-01-01' to '2025-01-01';
+-- The base table is unchanged:
+select * from uv_fpo_wco_tab order by valid_at;
+-- Leftovers that still satisfy the view are allowed:
+delete from uv_fpo_wco_view for portion of valid_at from '2024-03-01' to '2024-06-01';
+update uv_fpo_wco_view for portion of valid_at from '2024-07-01' to '2024-08-01' set b = 1;
+select * from uv_fpo_wco_tab order by valid_at;
+-- Without WITH CHECK OPTION the leftovers may leave the view:
+create view uv_fpo_nowco_view as
+  select * from uv_fpo_wco_tab
+  where valid_at && daterange('2024-01-01', '2025-01-01');
+delete from uv_fpo_nowco_view for portion of valid_at from '2024-01-01' to '2024-02-01';
+update uv_fpo_nowco_view for portion of valid_at from '2024-09-01' to '2026-01-01' set b = 2;
+select * from uv_fpo_wco_tab order by valid_at;
+drop view uv_fpo_wco_view;
+drop view uv_fpo_nowco_view;
+drop table uv_fpo_wco_tab;
+
+-- On a partitioned table a leftover can be routed to a partition that is not
+-- one of the plan's result relations.  WITH CHECK OPTION must be enforced
+-- there too.
+create table uv_fpo_wco_part (id int4range, valid_at daterange, b int)
+  partition by range (lower(valid_at));
+create table uv_fpo_wco_part1 partition of uv_fpo_wco_part
+  for values from (minvalue) to ('2000-06-01');
+create table uv_fpo_wco_part2 partition of uv_fpo_wco_part
+  for values from ('2000-06-01') to (maxvalue);
+insert into uv_fpo_wco_part values ('[1,1]', '[2000-01-01,2004-01-01)', 0);
+-- This view accepts both leftovers.  The where clause prunes away part2, but
+-- the second leftover is routed there anyway:
+create view uv_fpo_wco_part_view as
+  select * from uv_fpo_wco_part where b = 0 with check option;
+delete from uv_fpo_wco_part_view
+  for portion of valid_at from '2000-03-01' to '2000-07-01'
+  where lower(valid_at) < '2000-06-01';
+select tableoid::regclass, * from uv_fpo_wco_part order by valid_at;
+-- This view rejects the leftover that lands in part2:
+delete from uv_fpo_wco_part;
+insert into uv_fpo_wco_part values ('[1,1]', '[2000-01-01,2004-01-01)', 0);
+create view uv_fpo_wco_part_view2 as
+  select * from uv_fpo_wco_part where lower(valid_at) < '2000-02-01'
+  with check option;
+delete from uv_fpo_wco_part_view2
+  for portion of valid_at from '2000-03-01' to '2000-07-01'
+  where lower(valid_at) < '2000-06-01';
+-- The base table is unchanged:
+select tableoid::regclass, * from uv_fpo_wco_part order by valid_at;
+drop view uv_fpo_wco_part_view;
+drop view uv_fpo_wco_part_view2;
+drop table uv_fpo_wco_part;
+
 -- Test whole-row references to the view
 create table uv_iocu_tab (a int unique, b text);
 create view uv_iocu_view as

@@ -1099,6 +1099,39 @@ explain (costs off) select * from mc2p where b is null;
    Filter: (b IS NULL)
 (2 rows)
 
+create table mc2ap (a int, b int) partition by range (a, b);
+create table mc2ap1 partition of mc2ap for values from (1, 4) to (1, 7);
+create table mc2ap2 partition of mc2ap for values from (1, 7) to (3, 8);
+create table mc2ap3 partition of mc2ap for values from (4, 8) to (6, 9);
+create table mc2ap_def partition of mc2ap default;
+-- Ensure we scan all partitions apart from mc2ap3
+explain (costs off) select count(*) from mc2ap where a <= 1;
+                QUERY PLAN                 
+-------------------------------------------
+ Aggregate
+   ->  Append
+         ->  Seq Scan on mc2ap1 mc2ap_1
+               Filter: (a <= 1)
+         ->  Seq Scan on mc2ap2 mc2ap_2
+               Filter: (a <= 1)
+         ->  Seq Scan on mc2ap_def mc2ap_3
+               Filter: (a <= 1)
+(8 rows)
+
+drop table mc2ap;
+create table mc2bp (c1 int, c2 int) partition by range (c1, c2);
+create table mc2bp1 partition of mc2bp for values from (7, 2) to (7, 7);
+create table mc2bp_def partition of mc2bp default;
+-- Ensure mc2bp1 is pruned and we only scan mc2bp_def
+explain (costs off) select count(*) from mc2bp where c1 > 7;
+            QUERY PLAN             
+-----------------------------------
+ Aggregate
+   ->  Seq Scan on mc2bp_def mc2bp
+         Filter: (c1 > 7)
+(3 rows)
+
+drop table mc2bp;
 -- boolean partitioning
 create table boolpart (a bool) partition by list (a);
 create table boolpart_default partition of boolpart default;
@@ -1967,15 +2000,15 @@ where asptab.id > ss.b::int;
    ->  Seq Scan on int4_tbl touter
    ->  Append
          ->  Index Only Scan using asptab0_pkey on asptab0 asptab_1
-               Index Cond: (id > (EXISTS(SubPlan exists_3))::integer)
-               SubPlan exists_4
+               Index Cond: (id > (EXISTS(SubPlan exists_2))::integer)
+               SubPlan exists_to_any_2
                  ->  Seq Scan on int4_tbl tinner_2
          ->  Index Only Scan using asptab1_pkey on asptab1 asptab_2
-               Index Cond: (id > (EXISTS(SubPlan exists_3))::integer)
-         SubPlan exists_3
+               Index Cond: (id > (EXISTS(SubPlan exists_2))::integer)
+         SubPlan exists_2
            ->  Seq Scan on int4_tbl tinner_1
                  Filter: (f1 = touter.f1)
-   SubPlan exists_2
+   SubPlan exists_to_any_1
      ->  Seq Scan on int4_tbl tinner
 (14 rows)
 

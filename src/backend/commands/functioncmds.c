@@ -92,11 +92,32 @@ compute_return_type(TypeName *returnType, Oid languageOid,
 	Oid			rettype;
 	Type		typtup;
 	AclResult	aclresult;
+	bool		attempt_shell_creation;
+
+	/*
+	 * If this looks like it could be an input function, and the type doesn't
+	 * exist, we'll create it as a shell type.
+	 *
+	 * If the type name contains any modifiers like %TYPE, type[] array
+	 * syntax, or typmod decoration, it's not an input function, or at least
+	 * not one for which we'd want to automatically create a shell type.
+	 *
+	 * Only C-coded functions can be I/O functions.  We enforce this
+	 * restriction here mainly to prevent littering the catalogs with shell
+	 * types due to simple typos in user-defined function definitions.
+	 */
+	attempt_shell_creation =
+		!returnType->pct_type && returnType->arrayBounds == NULL &&
+		returnType->typmods == NIL &&
+		(languageOid == INTERNALlanguageId || languageOid == ClanguageId);
 
 	typtup = LookupTypeName(NULL, returnType, NULL, false);
-
 	if (typtup)
 	{
+		/*
+		 * Found an existing type with the given name.  Check if it's a shell
+		 * type.
+		 */
 		if (!((Form_pg_type) GETSTRUCT(typtup))->typisdefined)
 		{
 			if (languageOid == SQLlanguageId)
@@ -113,37 +134,27 @@ compute_return_type(TypeName *returnType, Oid languageOid,
 		rettype = typeTypeId(typtup);
 		ReleaseSysCache(typtup);
 	}
+	else if (!attempt_shell_creation)
+	{
+		/* Type not found and we don't want to create a shell type */
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("type \"%s\" does not exist",
+						TypeNameToString(returnType))));
+	}
 	else
 	{
-		char	   *typnam = TypeNameToString(returnType);
+		/* Make a shell type */
 		Oid			namespaceId;
 		char	   *typname;
 		ObjectAddress address;
 
-		/*
-		 * Only C-coded functions can be I/O functions.  We enforce this
-		 * restriction here mainly to prevent littering the catalogs with
-		 * shell types due to simple typos in user-defined function
-		 * definitions.
-		 */
-		if (languageOid != INTERNALlanguageId &&
-			languageOid != ClanguageId)
-			ereport(ERROR,
-					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("type \"%s\" does not exist", typnam)));
-
-		/* Reject if there's typmod decoration, too */
-		if (returnType->typmods != NIL)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("type modifier cannot be specified for shell type \"%s\"",
-							typnam)));
-
-		/* Otherwise, go ahead and make a shell type */
 		ereport(NOTICE,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("type \"%s\" is not yet defined", typnam),
+				 errmsg("type \"%s\" is not yet defined",
+						TypeNameToString(returnType)),
 				 errdetail("Creating a shell type definition.")));
+
 		namespaceId = QualifiedNameGetCreationNamespace(returnType->names,
 														&typname);
 		aclresult = object_aclcheck(NamespaceRelationId, namespaceId, GetUserId(),
@@ -151,6 +162,7 @@ compute_return_type(TypeName *returnType, Oid languageOid,
 		if (aclresult != ACLCHECK_OK)
 			aclcheck_error(aclresult, OBJECT_SCHEMA,
 						   get_namespace_name(namespaceId));
+
 		address = TypeShellMake(typname, namespaceId, GetUserId());
 		rettype = address.objectId;
 		Assert(OidIsValid(rettype));
@@ -213,10 +225,10 @@ interpret_function_parameter_list(ParseState *pstate,
 	*variadicArgType = InvalidOid;	/* default result */
 	*requiredResultType = InvalidOid;	/* default result */
 
-	inTypes = (Oid *) palloc(parameterCount * sizeof(Oid));
-	allTypes = (Datum *) palloc(parameterCount * sizeof(Datum));
-	paramModes = (Datum *) palloc(parameterCount * sizeof(Datum));
-	paramNames = (Datum *) palloc0(parameterCount * sizeof(Datum));
+	inTypes = palloc_array(Oid, parameterCount);
+	allTypes = palloc_array(Datum, parameterCount);
+	paramModes = palloc_array(Datum, parameterCount);
+	paramNames = palloc0_array(Datum, parameterCount);
 	*parameterDefaults = NIL;
 
 	/* Scan the list and extract data into work arrays */
@@ -918,8 +930,8 @@ interpret_AS_clause(Oid languageOid, const char *languageName,
 
 		pinfo->fname = funcname;
 		pinfo->nargs = list_length(parameterTypes);
-		pinfo->argtypes = (Oid *) palloc(pinfo->nargs * sizeof(Oid));
-		pinfo->argnames = (char **) palloc(pinfo->nargs * sizeof(char *));
+		pinfo->argtypes = palloc_array(Oid, pinfo->nargs);
+		pinfo->argnames = palloc_array(char *, pinfo->nargs);
 		for (int i = 0; i < list_length(parameterTypes); i++)
 		{
 			char	   *s = strVal(list_nth(inParameterNames, i));
@@ -1227,7 +1239,7 @@ CreateFunction(ParseState *pstate, CreateFunctionStmt *stmt)
 		Datum	   *arr;
 		int			i;
 
-		arr = palloc(list_length(trftypes_list) * sizeof(Datum));
+		arr = palloc_array(Datum, list_length(trftypes_list));
 		i = 0;
 		foreach(lc, trftypes_list)
 			arr[i++] = ObjectIdGetDatum(lfirst_oid(lc));

@@ -12,24 +12,41 @@
 #ifndef _PG_LOCALE_
 #define _PG_LOCALE_
 
+#include "common/unicode_limits.h"
 #include "mb/pg_wchar.h"
 
 /* use for libc locale names */
 #define LOCALE_NAME_BUFLEN 128
 
 /*
- * Maximum number of bytes needed to map a single codepoint. Useful for
- * mapping and processing a single input codepoint at a time with a
- * statically-allocated buffer.
+ * Expansion factor of string length, not including terminating NUL.  That is,
+ * the upper bound of the number of multibyte characters in the result string
+ * per multibyte character in the input string.
  *
- * With full case mapping, an input codepoint may be mapped to as many as
- * three output codepoints. See Unicode 16.0.0, section 5.18.2, "Change in
- * Length":
- *
- * https://www.unicode.org/versions/Unicode16.0.0/core-spec/chapter-5/#G29675
+ * NB: assumes no provider exceeds the Unicode-defined maximum.
  */
-#define UNICODE_CASEMAP_LEN		3
-#define UNICODE_CASEMAP_BUFSZ	(UNICODE_CASEMAP_LEN * MAX_MULTIBYTE_CHAR_LEN)
+#define PG_MAX_CASEMAP_MBCHARS		UNICODE_MAX_CASEMAP_CODEPOINTS
+
+/*
+ * Expansion factor of a string in bytes, not including terminating NUL.
+ *
+ * This is a conservative upper bound, assuming that each character in the
+ * input string is a 1-byte character that maps to PG_MAX_CASEMAP_MBCHARS
+ * other characters, all requiring MAX_MULTIBYTE_CHAR_LEN bytes.
+ */
+#define PG_MAX_CASEMAP_EXPANSION	(PG_MAX_CASEMAP_MBCHARS * \
+									 MAX_MULTIBYTE_CHAR_LEN)
+
+/*
+ * The maximum number of bytes needed to store the result of case mapping a
+ * single multibyte character, including terminating NUL.
+ *
+ * This is a conservative upper bound, assuming that a single multibyte
+ * character can expand into PG_MAX_CASEMAP_MBCHARS other multibyte
+ * characters, each requiring MAX_MULTIBYTE_CHAR_LEN bytes.
+ */
+#define PG_CASEMAP_BUFSZ			((PG_MAX_CASEMAP_MBCHARS * \
+									  MAX_MULTIBYTE_CHAR_LEN) + 1)
 
 /* GUC settings */
 extern PGDLLIMPORT char *locale_messages;
@@ -59,7 +76,9 @@ extern void cache_locale_time(void);
 struct pg_locale_struct;
 typedef struct pg_locale_struct *pg_locale_t;
 
-/* methods that define collation behavior */
+/*
+ * Collation behavior: string ordering.
+ */
 struct collate_methods
 {
 	/* required */
@@ -88,16 +107,19 @@ struct collate_methods
 
 	/*
 	 * If the strnxfrm method is not trusted to return the correct results,
-	 * set strxfrm_is_safe to false. It set to false, the method will not be
+	 * set strxfrm_is_safe to false. If set to false, the method will not be
 	 * used in most cases, but the planner still expects it to be there for
 	 * estimation purposes (where incorrect results are acceptable).
 	 */
 	bool		strxfrm_is_safe;
 };
 
+/*
+ * Character behavior: casing semantics and pattern matching.
+ */
 struct ctype_methods
 {
-	/* case mapping: LOWER()/INITCAP()/UPPER() */
+	/* required */
 	size_t		(*strlower) (char *dest, size_t destsize,
 							 const char *src, size_t srclen,
 							 pg_locale_t locale);
@@ -110,6 +132,8 @@ struct ctype_methods
 	size_t		(*strfold) (char *dest, size_t destsize,
 							const char *src, size_t srclen,
 							pg_locale_t locale);
+
+	/* optional */
 	size_t		(*downcase_ident) (char *dest, size_t destsize,
 								   const char *src, size_t srclen,
 								   pg_locale_t locale);

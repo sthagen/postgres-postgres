@@ -3458,7 +3458,7 @@ acl      | {postgres=arwdDxtm/postgres,foo=r/postgres}
 
       <row>
        <entry><structfield>next_multi_offset</structfield></entry>
-       <entry><type>xid</type></entry>
+       <entry><type>bigint</type></entry>
       </row>
 
       <row>
@@ -3494,6 +3494,11 @@ acl      | {postgres=arwdDxtm/postgres,foo=r/postgres}
       <row>
        <entry><structfield>newest_commit_ts_xid</structfield></entry>
        <entry><type>xid</type></entry>
+      </row>
+
+      <row>
+       <entry><structfield>data_page_checksum_version</structfield></entry>
+       <entry><type>integer</type></entry>
       </row>
 
       <row>

@@ -897,8 +897,15 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 	{
 		ListCell   *le;
 		char	   *args;
-		int16		nargs = list_length(stmt->args);
+		int			nargs = list_length(stmt->args);
 		int			len = 0;
+
+		Assert(nargs >= 0);
+		if (nargs > PG_INT16_MAX)
+			ereport(ERROR,
+					errcode(ERRCODE_TOO_MANY_ARGUMENTS),
+					errmsg("triggers cannot have more than %d arguments",
+						   PG_INT16_MAX));
 
 		foreach(le, stmt->args)
 		{
@@ -946,7 +953,7 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 		ListCell   *cell;
 		int			i = 0;
 
-		columns = (int16 *) palloc(ncolumns * sizeof(int16));
+		columns = palloc_array(int16, ncolumns);
 		foreach(cell, stmt->columns)
 		{
 			char	   *name = strVal(lfirst(cell));
@@ -1908,7 +1915,7 @@ RelationBuildTriggers(Relation relation)
 	 * necessary)
 	 */
 	maxtrigs = 16;
-	triggers = (Trigger *) palloc(maxtrigs * sizeof(Trigger));
+	triggers = palloc_array(Trigger, maxtrigs);
 	numtrigs = 0;
 
 	/*
@@ -1936,7 +1943,7 @@ RelationBuildTriggers(Relation relation)
 		if (numtrigs >= maxtrigs)
 		{
 			maxtrigs *= 2;
-			triggers = (Trigger *) repalloc(triggers, maxtrigs * sizeof(Trigger));
+			triggers = repalloc_array(triggers, Trigger, maxtrigs);
 		}
 		build = &(triggers[numtrigs]);
 
@@ -1958,7 +1965,7 @@ RelationBuildTriggers(Relation relation)
 		build->tgnattr = pg_trigger->tgattr.dim1;
 		if (build->tgnattr > 0)
 		{
-			build->tgattr = (int16 *) palloc(build->tgnattr * sizeof(int16));
+			build->tgattr = palloc_array(int16, build->tgnattr);
 			memcpy(build->tgattr, &(pg_trigger->tgattr.values),
 				   build->tgnattr * sizeof(int16));
 		}
@@ -1976,7 +1983,7 @@ RelationBuildTriggers(Relation relation)
 				elog(ERROR, "tgargs is null in trigger for relation \"%s\"",
 					 RelationGetRelationName(relation));
 			p = (char *) VARDATA_ANY(val);
-			build->tgargs = (char **) palloc(build->tgnargs * sizeof(char *));
+			build->tgargs = palloc_array(char *, build->tgnargs);
 			for (i = 0; i < build->tgnargs; i++)
 			{
 				build->tgargs[i] = pstrdup(p);
@@ -2131,7 +2138,7 @@ CopyTriggerDesc(TriggerDesc *trigdesc)
 	newdesc = palloc_object(TriggerDesc);
 	memcpy(newdesc, trigdesc, sizeof(TriggerDesc));
 
-	trigger = (Trigger *) palloc(trigdesc->numtriggers * sizeof(Trigger));
+	trigger = palloc_array(Trigger, trigdesc->numtriggers);
 	memcpy(trigger, trigdesc->triggers,
 		   trigdesc->numtriggers * sizeof(Trigger));
 	newdesc->triggers = trigger;
@@ -2143,7 +2150,7 @@ CopyTriggerDesc(TriggerDesc *trigdesc)
 		{
 			int16	   *newattr;
 
-			newattr = (int16 *) palloc(trigger->tgnattr * sizeof(int16));
+			newattr = palloc_array(int16, trigger->tgnattr);
 			memcpy(newattr, trigger->tgattr,
 				   trigger->tgnattr * sizeof(int16));
 			trigger->tgattr = newattr;
@@ -2153,7 +2160,7 @@ CopyTriggerDesc(TriggerDesc *trigdesc)
 			char	  **newargs;
 			int16		j;
 
-			newargs = (char **) palloc(trigger->tgnargs * sizeof(char *));
+			newargs = palloc_array(char *, trigger->tgnargs);
 			for (j = 0; j < trigger->tgnargs; j++)
 				newargs[j] = pstrdup(trigger->tgargs[j]);
 			trigger->tgargs = newargs;
@@ -3951,6 +3958,8 @@ struct AfterTriggersTransData
 	SetConstraintState state;	/* saved S C state, or NULL if not yet saved */
 	AfterTriggerEventList events;	/* saved list pointer */
 	int			query_depth;	/* saved query_depth */
+	int			firing_depth;	/* saved firing_depth */
+	bool		firing_batch_callbacks; /* saved firing_batch_callbacks */
 	CommandId	firing_counter; /* saved firing_counter */
 };
 
@@ -5507,9 +5516,8 @@ AfterTriggerBeginSubXact(void)
 			/* repalloc will keep the stack in the same context */
 			int			new_alloc = afterTriggers.maxtransdepth * 2;
 
-			afterTriggers.trans_stack = (AfterTriggersTransData *)
-				repalloc(afterTriggers.trans_stack,
-						 new_alloc * sizeof(AfterTriggersTransData));
+			afterTriggers.trans_stack = repalloc_array(afterTriggers.trans_stack,
+													   AfterTriggersTransData, new_alloc);
 			afterTriggers.maxtransdepth = new_alloc;
 		}
 	}
@@ -5522,6 +5530,9 @@ AfterTriggerBeginSubXact(void)
 	afterTriggers.trans_stack[my_level].state = NULL;
 	afterTriggers.trans_stack[my_level].events = afterTriggers.events;
 	afterTriggers.trans_stack[my_level].query_depth = afterTriggers.query_depth;
+	afterTriggers.trans_stack[my_level].firing_depth = afterTriggers.firing_depth;
+	afterTriggers.trans_stack[my_level].firing_batch_callbacks =
+		afterTriggers.firing_batch_callbacks;
 	afterTriggers.trans_stack[my_level].firing_counter = afterTriggers.firing_counter;
 }
 
@@ -5622,8 +5633,28 @@ AfterTriggerEndSubXact(bool isCommit)
 		}
 	}
 
-	/* Reset in case a callback threw an error while firing. */
-	afterTriggers.firing_batch_callbacks = false;
+	/*
+	 * Restore firing_depth and firing_batch_callbacks to their values at
+	 * subtransaction start.  The matching decrement of firing_depth in
+	 * AfterTriggerEndQuery()/AfterTriggerFireDeferred(), and the clearing of
+	 * firing_batch_callbacks in FireAfterTriggerBatchCallbacks(), run after
+	 * their loops and are not protected by PG_FINALLY.  A trigger or batch
+	 * callback error caught by this subtransaction can therefore leave either
+	 * one set; restoring the saved values unwinds only this subtransaction's
+	 * firing.
+	 *
+	 * Restoring (rather than zeroing/clearing) matters because a
+	 * subtransaction can begin and end while an outer query's triggers are
+	 * firing -- for instance a batch callback whose user-supplied cast or
+	 * equality function runs DML in a BEGIN ... EXCEPTION block.  There
+	 * firing_depth is positive and firing_batch_callbacks is true; forcing
+	 * them to 0/false would corrupt the outer firing
+	 * (FireAfterTriggerBatchCallbacks() asserts firing_depth > 0, and
+	 * clearing the guard would defeat its re-entrancy check).
+	 */
+	afterTriggers.firing_depth = afterTriggers.trans_stack[my_level].firing_depth;
+	afterTriggers.firing_batch_callbacks =
+		afterTriggers.trans_stack[my_level].firing_batch_callbacks;
 }
 
 /*
@@ -5762,9 +5793,8 @@ AfterTriggerEnlargeQueryState(void)
 		int			new_alloc = Max(afterTriggers.query_depth + 1,
 									old_alloc * 2);
 
-		afterTriggers.query_stack = (AfterTriggersQueryData *)
-			repalloc(afterTriggers.query_stack,
-					 new_alloc * sizeof(AfterTriggersQueryData));
+		afterTriggers.query_stack = repalloc_array(afterTriggers.query_stack,
+												   AfterTriggersQueryData, new_alloc);
 		afterTriggers.maxquerydepth = new_alloc;
 	}
 
@@ -6891,7 +6921,7 @@ RegisterAfterTriggerBatchCallback(AfterTriggerBatchCallback callback,
 	Assert(afterTriggers.firing_depth > 0);
 	Assert(!afterTriggers.firing_batch_callbacks);
 	oldcxt = MemoryContextSwitchTo(TopTransactionContext);
-	item = palloc(sizeof(AfterTriggerCallbackItem));
+	item = palloc_object(AfterTriggerCallbackItem);
 	item->callback = callback;
 	item->arg = arg;
 	if (afterTriggers.query_depth >= 0)
@@ -6943,4 +6973,18 @@ bool
 AfterTriggerIsActive(void)
 {
 	return afterTriggers.firing_depth > 0;
+}
+
+/*
+ * AfterTriggerCurrentQueryDepth
+ *		Return the current after-trigger query nesting depth.
+ *
+ * Lets a batch-callback registrant (e.g. the RI fast path) associate cached
+ * state with the firing cycle that created it, so a nested cycle's callback
+ * acts only on its own entries.  Returns -1 outside any query level.
+ */
+int
+AfterTriggerCurrentQueryDepth(void)
+{
+	return afterTriggers.query_depth;
 }

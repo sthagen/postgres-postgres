@@ -13,9 +13,9 @@ PG_MODULE_MAGIC_EXT(
 /* Linkage to functions in hstore module */
 typedef HStore *(*hstoreUpgrade_t) (Datum orig);
 static hstoreUpgrade_t hstoreUpgrade_p;
-typedef int (*hstoreUniquePairs_t) (Pairs *a, int32 l, int32 *buflen);
+typedef int (*hstoreUniquePairs_t) (Pairs *a, int32 l, Size *buflen);
 static hstoreUniquePairs_t hstoreUniquePairs_p;
-typedef HStore *(*hstorePairs_t) (Pairs *pairs, int32 pcount, int32 buflen);
+typedef HStore *(*hstorePairs_t) (Pairs *pairs, int32 pcount, Size buflen);
 static hstorePairs_t hstorePairs_p;
 typedef size_t (*hstoreCheckKeyLen_t) (size_t len);
 static hstoreCheckKeyLen_t hstoreCheckKeyLen_p;
@@ -104,14 +104,15 @@ plperl_to_hstore(PG_FUNCTION_ARGS)
 	SV		   *in = (SV *) PG_GETARG_POINTER(0);
 	HV		   *hv;
 	HE		   *he;
-	int32		buflen;
+	Size		buflen;
 	int32		i;
 	int32		pcount;
 	HStore	   *out;
 	Pairs	   *pairs;
 
 	/* Dereference references recursively. */
-	while (SvROK(in))
+	plperl_materialize_sv(in);
+	while (in && SvROK(in))
 	{
 		/*
 		 * It's possible for circular references to make this an infinite
@@ -120,10 +121,11 @@ plperl_to_hstore(PG_FUNCTION_ARGS)
 		 */
 		CHECK_FOR_INTERRUPTS();
 		in = SvRV(in);
+		plperl_materialize_sv(in);
 	}
 
 	/* Now we must have a hash. */
-	if (SvTYPE(in) != SVt_PVHV)
+	if (!in || SvTYPE(in) != SVt_PVHV)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot transform non-hash Perl value to hstore")));
@@ -137,8 +139,10 @@ plperl_to_hstore(PG_FUNCTION_ARGS)
 	i = 0;
 	while ((he = hv_iternext(hv)))
 	{
-		char	   *key = sv2cstr(HeSVKEY_force(he));
-		SV		   *value = HeVAL(he);
+		char	   *key = hek2cstr(he);
+		SV		   *value = hv_iterval(hv, he);
+
+		plperl_materialize_sv(value);
 
 		if (i >= pcount)
 		{
@@ -146,11 +150,11 @@ plperl_to_hstore(PG_FUNCTION_ARGS)
 			pairs = repalloc_array(pairs, Pairs, pcount);
 		}
 
-		pairs[i].key = pstrdup(key);
+		pairs[i].key = key;
 		pairs[i].keylen = hstoreCheckKeyLen(strlen(pairs[i].key));
 		pairs[i].needfree = true;
 
-		if (!SvOK(value))
+		if (!value || !SvOK(value))
 		{
 			pairs[i].val = NULL;
 			pairs[i].vallen = 0;
@@ -158,7 +162,7 @@ plperl_to_hstore(PG_FUNCTION_ARGS)
 		}
 		else
 		{
-			pairs[i].val = pstrdup(sv2cstr(value));
+			pairs[i].val = sv2cstr(value);
 			pairs[i].vallen = hstoreCheckValLen(strlen(pairs[i].val));
 			pairs[i].isnull = false;
 		}

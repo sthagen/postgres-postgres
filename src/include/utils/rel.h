@@ -252,7 +252,7 @@ typedef struct RelationData
 
 	bool		pgstat_enabled; /* should relation stats be counted */
 	/* use "struct" here to avoid needing to include pgstat.h: */
-	struct PgStat_TableStatus *pgstat_info; /* statistics collection area */
+	struct PgStat_RelationStatus *pgstat_info;	/* statistics collection area */
 } RelationData;
 
 
@@ -310,7 +310,7 @@ typedef struct ForeignKeyCacheInfo
  /* autovacuum-related reloptions. */
 typedef struct AutoVacOpts
 {
-	bool		enabled;
+	pg_ternary	enabled;
 
 	int			autovacuum_parallel_workers;
 	int			vacuum_threshold;
@@ -338,6 +338,7 @@ typedef enum StdRdOptIndexCleanup
 	STDRD_OPTION_VACUUM_INDEX_CLEANUP_AUTO = 0,
 	STDRD_OPTION_VACUUM_INDEX_CLEANUP_OFF,
 	STDRD_OPTION_VACUUM_INDEX_CLEANUP_ON,
+	STDRD_OPTION_VACUUM_INDEX_CLEANUP_NOT_SET,
 } StdRdOptIndexCleanup;
 
 typedef struct StdRdOptions

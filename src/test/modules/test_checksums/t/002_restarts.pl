@@ -30,6 +30,11 @@ $node->safe_psql('postgres',
 # Ensure that checksums are disabled
 test_checksum_state($node, 'off');
 
+# Make sure pg_control_init reports the initial disabled state
+$result = $node->safe_psql('postgres',
+	'SELECT data_page_checksum_version FROM pg_control_init();');
+is($result, '0', 'ensure pg_control_init reports disabled state');
+
 SKIP:
 {
 	skip 'Data checksum delay tests not enabled in PG_TEST_EXTRA', 6
@@ -93,18 +98,63 @@ SKIP:
 	test_checksum_state($node, 'off');
 }
 
+# Test interrupting the processing with SIGINT to make sure the launcher and
+# worker are cancelled.  Create a barrier for checksum enablement to block on
+# using the same technique as earlier with a temporary table.
+my $block_session = $node->background_psql('postgres');
+$block_session->query_safe('CREATE TEMPORARY TABLE tt (a integer);');
+
+# In another session, make sure we can see the blocking temp table but
+# start processing anyways and check that we are blocked with a proper
+# wait event.
+$result = $node->safe_psql('postgres',
+	"SELECT relpersistence FROM pg_catalog.pg_class WHERE relname = 'tt';");
+is($result, 't', 'ensure we can see the temporary table');
+
+# Ensure that we reach inprogress-on and the worker is launched and waiting for
+# the temporary table to disappear before we try to interrupt the processing.
+enable_data_checksums($node, wait => 'inprogress-on');
+$result = $node->poll_query_until(
+	'postgres',
+	"SELECT wait_event FROM pg_catalog.pg_stat_activity "
+	  . "WHERE backend_type = 'datachecksums worker';",
+	'ChecksumEnableTemptableWait');
+is($result, '1', 'ensure the correct wait condition is set');
+
+# Terminate launcher and worker with SIGINT
+my $pid = $node->safe_psql('postgres',
+	"SELECT pid FROM pg_catalog.pg_stat_activity WHERE backend_type = 'datachecksums launcher';"
+);
+is(PostgreSQL::Test::Utils::system_log('pg_ctl', 'kill', 'INT', $pid),
+	0, "datachecksums launcher process signalled with INT");
+
+# Wait for all processes to exit and make sure that the data_checksum state
+# was reverted back to off since we didn't finish
+$result = $node->poll_query_until(
+	'postgres',
+	"SELECT count(*) FROM pg_catalog.pg_stat_activity WHERE backend_type LIKE 'datachecksums%';",
+	'0');
+is($result, 1, 'await datachecksums worker/launcher termination');
+wait_for_checksum_state($node, "off");
+$block_session->quit;
+
+# Finish test suite by enabling checksums and make sure all data can be read
+# back, no processes are left over and the initial state is still correctly
+# reported
 enable_data_checksums($node, wait => 'on');
+
+$result = $node->safe_psql('postgres',
+	'SELECT data_page_checksum_version FROM pg_control_init();');
+is($result, '0', 'ensure pg_control_init still reports disabled state');
 
 $result = $node->safe_psql('postgres', "SELECT count(*) FROM t WHERE a > 1");
 is($result, '9999', 'ensure checksummed pages can be read back');
 
 $result = $node->poll_query_until(
 	'postgres',
-	"SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'datachecksums%';",
+	"SELECT count(*) FROM pg_catalog.pg_stat_activity WHERE backend_type LIKE 'datachecksums%';",
 	'0');
 is($result, 1, 'await datachecksums worker/launcher termination');
-
-disable_data_checksums($node, wait => 1);
 
 $node->stop;
 done_testing();

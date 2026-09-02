@@ -11,7 +11,9 @@
  *	  src/backend/tcop/fastpath.c
  *
  * NOTES
- *	  This cruft is the server side of PQfn.
+ *	  This cruft is the server side of PQfn.  libpq's PQfn() was retired in
+ *	  v20 and now always errors, but the server code is retained for the
+ *	  benefit of older clients and the frontend LO interface.
  *
  *-------------------------------------------------------------------------
  */
@@ -339,7 +341,7 @@ parse_fcall_arguments(StringInfo msgBuf, struct fp_info *fip,
 	numAFormats = pq_getmsgint(msgBuf, 2);
 	if (numAFormats > 0)
 	{
-		aformats = (int16 *) palloc(numAFormats * sizeof(int16));
+		aformats = palloc_array(int16, numAFormats);
 		for (i = 0; i < numAFormats; i++)
 			aformats[i] = pq_getmsgint(msgBuf, 2);
 	}

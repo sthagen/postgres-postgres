@@ -3454,10 +3454,10 @@ retcomposite(PG_FUNCTION_ARGS)
          * This should be an array of C strings which will
          * be processed later by the type input functions.
          */
-        values = (char **) palloc(3 * sizeof(char *));
-        values[0] = (char *) palloc(16 * sizeof(char));
-        values[1] = (char *) palloc(16 * sizeof(char));
-        values[2] = (char *) palloc(16 * sizeof(char));
+        values = palloc_array(char *, 3);
+        values[0] = palloc_array(char, 16);
+        values[1] = palloc_array(char, 16);
+        values[2] = palloc_array(char, 16);
 
         snprintf(values[0], 16, "%d", 1 * PG_GETARG_INT32(1));
         snprintf(values[1], 16, "%d", 2 * PG_GETARG_INT32(1));
@@ -3740,7 +3740,10 @@ my_shmem_init(void *arg)
       on whether the requested memory areas were already initialized by
       another backend. The callbacks will be called while holding an internal
       lock (ShmemIndexLock), which prevents the race condition of two backends
-      trying to initialize the memory area at the same time.
+      trying to initialize the memory area at the same time.  If the
+      allocation or initialization fails for any reason, the shared memory
+      areas are left in an abandoned state and any attempt to attach or
+      re-initialize them will fail until the server is restarted.
      </para>
     </sect3>
 
@@ -4167,7 +4170,7 @@ extern PgStat_Kind pgstat_register_kind(PgStat_Kind kind,
 
    <para>
     It is also possible to attach a <firstterm>planner support
-    function</firstterm> to an SQL-callable function (called
+    function</firstterm> to an SQL-callable function or aggregate (called
     its <firstterm>target function</firstterm>), and thereby provide
     knowledge about the target function that is too complex to be
     represented declaratively.  Planner support functions have to be
@@ -4239,6 +4242,22 @@ supportfn(internal) returns internal
     As with <literal>SupportRequestSimplify</literal>, it is the support
     function's responsibility that the replacement Query be equivalent to
     normal execution of the target function.
+   </para>
+
+   <para>
+    Aggregate function calls can also be simplified during planning.  For
+    example, <literal>COUNT(<replaceable>x</replaceable>)</literal> can be
+    replaced by <literal>COUNT(*)</literal>
+    when <replaceable>x</replaceable> is known to not be null.  This can be
+    done by a support function that implements
+    the <literal>SupportRequestSimplifyAggref</literal> request type.  The
+    support function will be called for each instance of its target aggregate
+    found in a query parse tree.  If it finds that the particular call can be
+    replaced, it can build and return a new node, usually another aggregate
+    call, leaving the node it was given unmodified.  As with
+    <literal>SupportRequestSimplify</literal>, it is the support function's
+    responsibility that the replacement be equivalent to normal execution of
+    the target aggregate.
    </para>
 
    <para>

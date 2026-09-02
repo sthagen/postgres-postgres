@@ -326,63 +326,13 @@ performDeletion(const ObjectAddress *object,
 }
 
 /*
- * performDeletionCheck: Check whether a specific object can be safely deleted.
- * This function does not perform any deletion; instead, it raises an error
- * if the object cannot be deleted due to existing dependencies.
- *
- * It can be useful when you need to delete some objects later.  See comments
- * in performDeletion too.
- * The behavior must be specified as DROP_RESTRICT.
- */
-void
-performDeletionCheck(const ObjectAddress *object,
-					 DropBehavior behavior, int flags)
-{
-	Relation	depRel;
-	ObjectAddresses *targetObjects;
-
-	Assert(behavior == DROP_RESTRICT);
-
-	depRel = table_open(DependRelationId, RowExclusiveLock);
-
-	AcquireDeletionLock(object, 0);
-
-	/*
-	 * Construct a list of objects we want to delete later (ie, the given
-	 * object plus everything directly or indirectly dependent on it).
-	 */
-	targetObjects = new_object_addresses();
-
-	findDependentObjects(object,
-						 DEPFLAG_ORIGINAL,
-						 flags,
-						 NULL,	/* empty stack */
-						 targetObjects,
-						 NULL,	/* no pendingObjects */
-						 &depRel);
-
-	/*
-	 * Check if deletion is allowed.
-	 */
-	reportDependentObjects(targetObjects,
-						   behavior,
-						   flags,
-						   object);
-
-	/* And clean up */
-	free_object_addresses(targetObjects);
-
-	table_close(depRel, RowExclusiveLock);
-}
-
-/*
- * performMultipleDeletions: Similar to performDeletion, but acts on multiple
+ * performMultipleDeletions: Similar to performDeletion, but act on multiple
  * objects at once.
  *
  * The main difference from issuing multiple performDeletion calls is that the
  * list of objects that would be implicitly dropped, for each object to be
  * dropped, is the union of the implicit-object list for all objects.  This
- * makes each check more relaxed.
+ * makes each check be more relaxed.
  */
 void
 performMultipleDeletions(const ObjectAddresses *objects,
@@ -971,9 +921,9 @@ findDependentObjects(const ObjectAddress *object,
 		{
 			/* enlarge array if needed */
 			maxDependentObjects *= 2;
-			dependentObjects = (ObjectAddressAndFlags *)
-				repalloc(dependentObjects,
-						 maxDependentObjects * sizeof(ObjectAddressAndFlags));
+			dependentObjects = repalloc_array(dependentObjects,
+											  ObjectAddressAndFlags,
+											  maxDependentObjects);
 		}
 
 		dependentObjects[numDependentObjects].obj = otherObject;
@@ -2813,8 +2763,7 @@ add_object_address(Oid classId, Oid objectId, int32 subId,
 	if (addrs->numrefs >= addrs->maxrefs)
 	{
 		addrs->maxrefs *= 2;
-		addrs->refs = (ObjectAddress *)
-			repalloc(addrs->refs, addrs->maxrefs * sizeof(ObjectAddress));
+		addrs->refs = repalloc_array(addrs->refs, ObjectAddress, addrs->maxrefs);
 		Assert(!addrs->extras);
 	}
 	/* record this item */
@@ -2840,8 +2789,7 @@ add_exact_object_address(const ObjectAddress *object,
 	if (addrs->numrefs >= addrs->maxrefs)
 	{
 		addrs->maxrefs *= 2;
-		addrs->refs = (ObjectAddress *)
-			repalloc(addrs->refs, addrs->maxrefs * sizeof(ObjectAddress));
+		addrs->refs = repalloc_array(addrs->refs, ObjectAddress, addrs->maxrefs);
 		Assert(!addrs->extras);
 	}
 	/* record this item */
@@ -2865,17 +2813,14 @@ add_exact_object_address_extra(const ObjectAddress *object,
 
 	/* allocate extra space if first time */
 	if (!addrs->extras)
-		addrs->extras = (ObjectAddressExtra *)
-			palloc(addrs->maxrefs * sizeof(ObjectAddressExtra));
+		addrs->extras = palloc_array(ObjectAddressExtra, addrs->maxrefs);
 
 	/* enlarge array if needed */
 	if (addrs->numrefs >= addrs->maxrefs)
 	{
 		addrs->maxrefs *= 2;
-		addrs->refs = (ObjectAddress *)
-			repalloc(addrs->refs, addrs->maxrefs * sizeof(ObjectAddress));
-		addrs->extras = (ObjectAddressExtra *)
-			repalloc(addrs->extras, addrs->maxrefs * sizeof(ObjectAddressExtra));
+		addrs->refs = repalloc_array(addrs->refs, ObjectAddress, addrs->maxrefs);
+		addrs->extras = repalloc_array(addrs->extras, ObjectAddressExtra, addrs->maxrefs);
 	}
 	/* record this item */
 	item = addrs->refs + addrs->numrefs;

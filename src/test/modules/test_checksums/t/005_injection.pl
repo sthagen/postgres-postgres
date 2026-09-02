@@ -48,7 +48,7 @@ $node->safe_psql('postgres',
 	"SELECT injection_points_detach('datachecksumsworker-fail-db-result');");
 
 # Make sure that disabling after a failure works
-disable_data_checksums($node);
+disable_data_checksums($node, wait => 1);
 test_checksum_state($node, 'off');
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ my $dropdb_log_offset = -s $node->logfile;
 enable_data_checksums($node);
 $node->poll_query_until(
 	'postgres', qq[
-	SELECT count(*) > 0 FROM pg_stat_activity
+	SELECT count(*) > 0 FROM pg_catalog.pg_stat_activity
 	WHERE backend_type = 'datachecksums worker' AND datname = 'postgres'
 	  AND query LIKE 'Waiting for % temp tables to be removed']
 ) or die "timed out waiting for worker to wait for temporary tables";
@@ -125,7 +125,8 @@ $node->safe_psql('postgres',
 	"SELECT injection_points_detach('dropdb-after-invalid-marker');");
 
 my $invalid_state = $node->safe_psql('postgres',
-	"SELECT datconnlimit FROM pg_database WHERE datname = 'invalid_dropdb';");
+	"SELECT datconnlimit FROM pg_catalog.pg_database WHERE datname = 'invalid_dropdb';"
+);
 is($invalid_state, '-2', 'interrupted DROP left an invalid database row');
 
 # Let checksum processing continue.  The invalid database must be treated as
