@@ -93,8 +93,6 @@ AlterOpFamilyStmt
 AlterOperatorStmt
 AlterOwnerStmt
 AlterPolicyStmt
-AlterPropGraphElementKind
-AlterPropGraphStmt
 AlterPublicationAction
 AlterPublicationStmt
 AlterReplicationSlotCmd
@@ -185,7 +183,6 @@ AttrMissing
 AttrNumber
 AttrResultArgMap
 AttributeOpts
-AttributeStatsValues
 AuthRequest
 AuthToken
 AutoPrewarmReadStreamData
@@ -585,12 +582,12 @@ CreateOpClassStmt
 CreateOpFamilyStmt
 CreatePLangStmt
 CreatePolicyStmt
-CreatePropGraphStmt
 CreatePublicationStmt
 CreateRangeStmt
 CreateReplicationSlotCmd
 CreateRoleStmt
 CreateSchemaStmt
+CreateSchemaStmtContext
 CreateSeqStmt
 CreateStatsStmt
 CreateStmt
@@ -846,7 +843,6 @@ FSMPageData
 FakeRelCacheEntry
 FakeRelCacheEntryData
 FastPathMeta
-FastPathStrongRelationLockData
 FdwInfo
 FdwRoutine
 FetchDirection
@@ -936,11 +932,6 @@ FormData_pg_opfamily
 FormData_pg_partitioned_table
 FormData_pg_policy
 FormData_pg_proc
-FormData_pg_propgraph_element
-FormData_pg_propgraph_element_label
-FormData_pg_propgraph_label
-FormData_pg_propgraph_label_property
-FormData_pg_propgraph_property
 FormData_pg_publication
 FormData_pg_publication_namespace
 FormData_pg_publication_rel
@@ -1001,11 +992,6 @@ Form_pg_opfamily
 Form_pg_partitioned_table
 Form_pg_policy
 Form_pg_proc
-Form_pg_propgraph_element
-Form_pg_propgraph_element_label
-Form_pg_propgraph_label
-Form_pg_propgraph_label_property
-Form_pg_propgraph_property
 Form_pg_publication
 Form_pg_publication_namespace
 Form_pg_publication_rel
@@ -1169,12 +1155,6 @@ GrantRoleOptions
 GrantRoleStmt
 GrantStmt
 GrantTargetType
-GraphElementPattern
-GraphElementPatternKind
-GraphLabelRef
-GraphPattern
-GraphPropertyRef
-GraphTableParseState
 Group
 GroupByColInfo
 GroupByOrdering
@@ -2370,6 +2350,7 @@ PgStat_StatTabEntry
 PgStat_StatsFileOp
 PgStat_SubXactStatus
 PgStat_TableCounts
+PgStat_TableCountsXact
 PgStat_TableXactStatus
 PgStat_WalCounters
 PgStat_WalStats
@@ -2451,10 +2432,6 @@ ProjectSetState
 ProjectionInfo
 ProjectionPath
 PromptInterruptContext
-PropGraphEdge
-PropGraphLabelAndProperties
-PropGraphProperties
-PropGraphVertex
 ProtocolVersion
 PrsStorage
 PruneFreezeParams
@@ -2529,6 +2506,7 @@ RI_CompareKey
 RI_ConstraintInfo
 RI_FastPathEntry
 RI_FastPathKey
+RI_FastPathState
 RI_QueryHashEntry
 RI_QueryKey
 RTEKind
@@ -2541,7 +2519,6 @@ Range
 RangeBound
 RangeBox
 RangeFunction
-RangeGraphTable
 RangeIOData
 RangeQueryClause
 RangeSubselect
@@ -2623,7 +2600,6 @@ Relation
 RelationData
 RelationInfo
 RelationPtr
-RelationStatsValues
 RelationSyncEntry
 RelcacheCallbackFunction
 ReleaseMatchCB
@@ -3026,6 +3002,7 @@ StatsElem
 StatsExtInfo
 StdAnalyzeData
 StdRdOptIndexCleanup
+StdRdOptToastValueType
 StdRdOptions
 Step
 StopList
@@ -4438,7 +4415,7 @@ va_list
 vacuumingOptions
 validate_string_relopt
 varatt_expanded
-varatt_external
+varatt_external_oid
 varatt_indirect
 varattrib_1b
 varattrib_1b_e

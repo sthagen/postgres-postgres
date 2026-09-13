@@ -640,6 +640,12 @@ static int	UsableBytesInSegment;
 static XLogwrtResult LogwrtResult = {0, 0};
 
 /*
+ * True if this process has published primary-flush progress that has not yet
+ * been reported to primary-flush waiters.
+ */
+static bool primaryFlushWakeupPending = false;
+
+/*
  * Update local copy of shared XLogCtl->log{Write,Flush}Result
  *
  * It's critical that Flush always trails Write, so the order of the reads is
@@ -651,6 +657,23 @@ static XLogwrtResult LogwrtResult = {0, 0};
 		pg_read_barrier(); \
 		_target.Write = pg_atomic_read_u64(&XLogCtl->logWriteResult); \
 	} while (0)
+
+/*
+ * Process a primary-flush wakeup requested by XLogWrite().  The caller must
+ * not hold WALWriteLock or any WAL insertion lock.
+ */
+static void
+PrimaryFlushWakeupProcessRequests(void)
+{
+	if (unlikely(primaryFlushWakeupPending))
+	{
+		/* Clear the process-local request before satisfying it. */
+		primaryFlushWakeupPending = false;
+
+		/* XLogWrite() published this frontier before setting the request. */
+		WaitLSNWakeup(WAIT_LSN_TYPE_PRIMARY_FLUSH, LogwrtResult.Flush);
+	}
+}
 
 /*
  * openLogFile is -1 or a kernel FD for an open log file segment.
@@ -672,7 +695,6 @@ static TimeLineID openLogTLI = 0;
  * Those values are kept consistent as long as crash recovery runs.
  */
 static XLogRecPtr LocalMinRecoveryPoint;
-static TimeLineID LocalMinRecoveryPointTLI;
 static bool updateMinRecoveryPoint = true;
 
 /*
@@ -1047,6 +1069,9 @@ XLogInsertRecord(XLogRecData *rdata,
 			}
 		}
 	}
+
+	/* Process any flush progress published while making room for the record. */
+	PrimaryFlushWakeupProcessRequests();
 
 #ifdef WAL_DEBUG
 	if (XLOG_DEBUG)
@@ -2335,6 +2360,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	bool		ispartialpage;
 	bool		last_iteration;
 	bool		finishing_seg;
+	XLogRecPtr	oldFlush;
 	int			curridx;
 	int			npages;
 	int			startidx;
@@ -2347,6 +2373,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	 * Update local LogwrtResult (caller probably did this already, but...)
 	 */
 	RefreshXLogWriteResult(LogwrtResult);
+	oldFlush = LogwrtResult.Flush;
 
 	/*
 	 * Since successive pages in the xlog cache are consecutively allocated,
@@ -2608,6 +2635,10 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	pg_write_barrier();
 	pg_atomic_write_u64(&XLogCtl->logFlushResult, LogwrtResult.Flush);
 
+	/* Defer notification until the caller has released its WAL locks. */
+	if (LogwrtResult.Flush > oldFlush)
+		primaryFlushWakeupPending = true;
+
 #ifdef USE_ASSERT_CHECKING
 	{
 		XLogRecPtr	Flush;
@@ -2752,7 +2783,6 @@ UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force)
 
 	/* update local copy */
 	LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-	LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 
 	if (!XLogRecPtrIsValid(LocalMinRecoveryPoint))
 		updateMinRecoveryPoint = false;
@@ -2787,7 +2817,6 @@ UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force)
 			ControlFile->minRecoveryPointTLI = newMinRecoveryPointTLI;
 			UpdateControlFile();
 			LocalMinRecoveryPoint = newMinRecoveryPoint;
-			LocalMinRecoveryPointTLI = newMinRecoveryPointTLI;
 
 			ereport(DEBUG2,
 					errmsg_internal("updated min recovery point to %X/%08X on timeline %u",
@@ -2946,6 +2975,7 @@ XLogFlush(XLogRecPtr record)
 	 * Wake up processes waiting for primary flush LSN to reach current flush
 	 * position.
 	 */
+	primaryFlushWakeupPending = false;
 	WaitLSNWakeup(WAIT_LSN_TYPE_PRIMARY_FLUSH, LogwrtResult.Flush);
 
 	/*
@@ -3134,6 +3164,7 @@ XLogBackgroundFlush(void)
 	 * Wake up processes waiting for primary flush LSN to reach current flush
 	 * position.
 	 */
+	primaryFlushWakeupPending = false;
 	WaitLSNWakeup(WAIT_LSN_TYPE_PRIMARY_FLUSH, LogwrtResult.Flush);
 
 	/*
@@ -3201,7 +3232,6 @@ XLogNeedsFlush(XLogRecPtr record)
 		if (!LWLockConditionalAcquire(ControlFileLock, LW_SHARED))
 			return true;
 		LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-		LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 		LWLockRelease(ControlFileLock);
 
 		/*
@@ -4324,7 +4354,7 @@ WriteControlFile(void)
 	ControlFile->nameDataLen = NAMEDATALEN;
 	ControlFile->indexMaxKeys = INDEX_MAX_KEYS;
 
-	ControlFile->toast_max_chunk_size = TOAST_MAX_CHUNK_SIZE;
+	ControlFile->toast_max_chunk_size = TOAST_OID_MAX_CHUNK_SIZE;
 	ControlFile->loblksize = LOBLKSIZE;
 
 	ControlFile->float8ByVal = true;	/* vestigial */
@@ -4577,15 +4607,15 @@ ReadControlFile(void)
 						   "INDEX_MAX_KEYS", ControlFile->indexMaxKeys,
 						   "INDEX_MAX_KEYS", INDEX_MAX_KEYS),
 				 errhint("It looks like you need to recompile or initdb.")));
-	if (ControlFile->toast_max_chunk_size != TOAST_MAX_CHUNK_SIZE)
+	if (ControlFile->toast_max_chunk_size != TOAST_OID_MAX_CHUNK_SIZE)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("database files are incompatible with server"),
 		/* translator: %s is a variable name and %d is its value */
 				 errdetail("The database cluster was initialized with %s %d,"
 						   " but the server was compiled with %s %d.",
-						   "TOAST_MAX_CHUNK_SIZE", ControlFile->toast_max_chunk_size,
-						   "TOAST_MAX_CHUNK_SIZE", (int) TOAST_MAX_CHUNK_SIZE),
+						   "TOAST_OID_MAX_CHUNK_SIZE", ControlFile->toast_max_chunk_size,
+						   "TOAST_OID_MAX_CHUNK_SIZE", (int) TOAST_OID_MAX_CHUNK_SIZE),
 				 errhint("It looks like you need to recompile or initdb.")));
 	if (ControlFile->loblksize != LOBLKSIZE)
 		ereport(FATAL,
@@ -6207,12 +6237,10 @@ StartupXLOG(void)
 		if (InArchiveRecovery)
 		{
 			LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-			LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 		}
 		else
 		{
 			LocalMinRecoveryPoint = InvalidXLogRecPtr;
-			LocalMinRecoveryPointTLI = 0;
 		}
 
 		/* Check that the GUCs used to generate the WAL allow recovery */
@@ -6749,7 +6777,6 @@ SwitchIntoArchiveRecovery(XLogRecPtr EndRecPtr, TimeLineID replayTLI)
 	}
 	/* update local copy */
 	LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-	LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 
 	/*
 	 * The startup process can update its local copy of minRecoveryPoint from
@@ -8316,7 +8343,6 @@ CreateRestartPoint(int flags)
 
 				/* update local copy */
 				LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-				LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 			}
 			if (flags & CHECKPOINT_IS_SHUTDOWN)
 				ControlFile->state = DB_SHUTDOWNED_IN_RECOVERY;
@@ -8604,10 +8630,10 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
  * Write a NEXTOID log record
  */
 void
-XLogPutNextOid(Oid nextOid)
+XLogPutNextOid(Oid8 nextOid)
 {
 	XLogBeginInsert();
-	XLogRegisterData(&nextOid, sizeof(Oid));
+	XLogRegisterData(&nextOid, sizeof(Oid8));
 	(void) XLogInsert(RM_XLOG_ID, XLOG_NEXTOID);
 
 	/*
@@ -8873,16 +8899,17 @@ xlog_redo(XLogReaderState *record)
 
 	if (info == XLOG_NEXTOID)
 	{
-		Oid			nextOid;
+		Oid8		nextOid;
 
 		/*
 		 * We used to try to take the maximum of TransamVariables->nextOid and
-		 * the recorded nextOid, but that fails if the OID counter wraps
-		 * around.  Since no OID allocation should be happening during replay
-		 * anyway, better to just believe the record exactly.  We still take
-		 * OidGenLock while setting the variable, just in case.
+		 * the recorded nextOid, but that failed back when the counter was 4
+		 * bytes wide and could wrap around.  Since no OID allocation should
+		 * be happening during replay anyway, better to just believe the
+		 * record exactly.  We still take OidGenLock while setting the
+		 * variable, just in case.
 		 */
-		memcpy(&nextOid, XLogRecGetData(record), sizeof(Oid));
+		memcpy(&nextOid, XLogRecGetData(record), sizeof(Oid8));
 		LWLockAcquire(OidGenLock, LW_EXCLUSIVE);
 		TransamVariables->nextOid = nextOid;
 		TransamVariables->oidCount = 0;
@@ -9010,11 +9037,10 @@ xlog_redo(XLogReaderState *record)
 		 * to track OID assignment through XLOG_NEXTOID records.  The nextOid
 		 * counter is from the start of the checkpoint and might well be stale
 		 * compared to later XLOG_NEXTOID records.  We could try to take the
-		 * maximum of the nextOid counter and our latest value, but since
-		 * there's no particular guarantee about the speed with which the OID
-		 * counter wraps around, that's a risky thing to do.  In any case,
-		 * users of the nextOid counter are required to avoid assignment of
-		 * duplicates, so that a somewhat out-of-date value should be safe.
+		 * maximum of the nextOid counter and our latest value, but there is
+		 * no point in doing so: an online checkpoint records nextOid plus
+		 * oidCount, which is never ahead of the last XLOG_NEXTOID record that
+		 * replay has applied.
 		 */
 
 		/* Handle multixact */
@@ -9161,7 +9187,6 @@ xlog_redo(XLogReaderState *record)
 		if (InArchiveRecovery)
 		{
 			LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-			LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 		}
 		if (XLogRecPtrIsValid(LocalMinRecoveryPoint) && LocalMinRecoveryPoint < lsn)
 		{
@@ -9307,7 +9332,6 @@ xlog2_redo(XLogReaderState *record)
 		if (InArchiveRecovery)
 		{
 			LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-			LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 		}
 		if (XLogRecPtrIsValid(LocalMinRecoveryPoint) && LocalMinRecoveryPoint < lsn)
 		{

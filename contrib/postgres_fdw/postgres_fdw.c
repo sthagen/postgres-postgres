@@ -355,6 +355,7 @@ enum RelStatsColumns
 	RELSTATS_RELPAGES = 0,
 	RELSTATS_RELTUPLES,
 	RELSTATS_RELKIND,
+	RELSTATS_RELHASSUBCLASS,
 	RELSTATS_NUM_FIELDS,
 };
 
@@ -378,14 +379,14 @@ enum AttStatsColumns
 	ATTSTATS_NUM_FIELDS,
 };
 
-/* Result sets that are returned from a foreign statistics scan */
+/* Results that are returned from a foreign statistics scan */
 typedef struct
 {
+	int			version;		/* version of remote server */
+	BlockNumber relpages;		/* # of pages in remote table */
+	double		reltuples;		/* # of tuples in remote table */
 	PGresult   *rel;			/* result for relation stats query */
 	PGresult   *att;			/* result for attribute stats query */
-	double		livetuples;		/* livetuples estimates, for pgstat report */
-	double		deadtuples;		/* deadtuples estimates, for pgstat report */
-	int			version;		/* version of remote server */
 } RemoteStatsResults;
 
 /* Pairs of remote columns with local columns */
@@ -2001,7 +2002,7 @@ postgresPlanForeignModify(PlannerInfo *root,
 {
 	CmdType		operation = plan->operation;
 	RangeTblEntry *rte = planner_rt_fetch(resultRelation, root);
-	Relation	rel;
+	Relation	targetrel;
 	StringInfoData sql;
 	List	   *targetAttrs = NIL;
 	List	   *withCheckOptionList = NIL;
@@ -2016,7 +2017,7 @@ postgresPlanForeignModify(PlannerInfo *root,
 	 * Core code already has some lock on each rel being planned, so we can
 	 * use NoLock here.
 	 */
-	rel = table_open(rte->relid, NoLock);
+	targetrel = table_open(rte->relid, NoLock);
 
 	/*
 	 * In an INSERT, we transmit all columns that are defined in the foreign
@@ -2031,10 +2032,10 @@ postgresPlanForeignModify(PlannerInfo *root,
 	 */
 	if (operation == CMD_INSERT ||
 		(operation == CMD_UPDATE &&
-		 rel->trigdesc &&
-		 rel->trigdesc->trig_update_before_row))
+		 targetrel->trigdesc &&
+		 targetrel->trigdesc->trig_update_before_row))
 	{
-		TupleDesc	tupdesc = RelationGetDescr(rel);
+		TupleDesc	tupdesc = RelationGetDescr(targetrel);
 		int			attnum;
 
 		for (attnum = 1; attnum <= tupdesc->natts; attnum++)
@@ -2048,8 +2049,8 @@ postgresPlanForeignModify(PlannerInfo *root,
 	else if (operation == CMD_UPDATE)
 	{
 		int			col;
-		RelOptInfo *rel = find_base_rel(root, resultRelation);
-		Bitmapset  *allUpdatedCols = get_rel_all_updated_cols(root, rel);
+		RelOptInfo *baserel = find_base_rel(root, resultRelation);
+		Bitmapset  *allUpdatedCols = get_rel_all_updated_cols(root, baserel);
 
 		col = -1;
 		while ((col = bms_next_member(allUpdatedCols, col)) >= 0)
@@ -2094,19 +2095,19 @@ postgresPlanForeignModify(PlannerInfo *root,
 	switch (operation)
 	{
 		case CMD_INSERT:
-			deparseInsertSql(&sql, rte, resultRelation, rel,
+			deparseInsertSql(&sql, rte, resultRelation, targetrel,
 							 targetAttrs, doNothing,
 							 withCheckOptionList, returningList,
 							 &retrieved_attrs, &values_end_len);
 			break;
 		case CMD_UPDATE:
-			deparseUpdateSql(&sql, rte, resultRelation, rel,
+			deparseUpdateSql(&sql, rte, resultRelation, targetrel,
 							 targetAttrs,
 							 withCheckOptionList, returningList,
 							 &retrieved_attrs);
 			break;
 		case CMD_DELETE:
-			deparseDeleteSql(&sql, rte, resultRelation, rel,
+			deparseDeleteSql(&sql, rte, resultRelation, targetrel,
 							 returningList,
 							 &retrieved_attrs);
 			break;
@@ -2115,7 +2116,7 @@ postgresPlanForeignModify(PlannerInfo *root,
 			break;
 	}
 
-	table_close(rel, NoLock);
+	table_close(targetrel, NoLock);
 
 	/*
 	 * Build the fdw_private list that will be available to the executor.
@@ -5294,7 +5295,7 @@ postgresGetAnalyzeInfoForForeignTable(Relation relation, bool *can_tablesample)
 
 	if (PQntuples(res) != 1 || PQnfields(res) != RELSTATS_NUM_FIELDS)
 		elog(ERROR, "unexpected result from deparseAnalyzeInfoSql query");
-	/* We don't use relpages here */
+	/* We don't use relpages/relhassubclass here */
 	reltuples = strtod(PQgetvalue(res, 0, RELSTATS_RELTUPLES), NULL);
 	relkind = *(PQgetvalue(res, 0, RELSTATS_RELKIND));
 	PQclear(res);
@@ -5771,8 +5772,7 @@ postgresImportForeignStatistics(Relation relation, List *va_cols, int elevel)
 
 	if (ok)
 	{
-		pgstat_report_analyze(relation,
-							  remstats.livetuples, remstats.deadtuples,
+		pgstat_report_analyze(relation, remstats.reltuples, 0,
 							  (va_cols == NIL), starttime);
 
 		ereport(elevel,
@@ -5867,6 +5867,23 @@ fetch_remote_statistics(Relation relation,
 	}
 
 	/*
+	 * For now, we don't support the case where the remote table is (or was
+	 * once) inherited; fallback to sampling in that case.  XXX FIXME: for the
+	 * case where it is inherited, we could also support it by fetching and
+	 * adding the relation stats for child tables as well.
+	 */
+	if ((relkind == RELKIND_RELATION || relkind == RELKIND_FOREIGN_TABLE) &&
+		strcmp(PQgetvalue(relstats, 0, RELSTATS_RELHASSUBCLASS), "t") == 0)
+	{
+		ereport(WARNING,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("could not import statistics for foreign table \"%s.%s\" --- remote table \"%s.%s\" is (or was once) inherited",
+					   local_schemaname, local_relname,
+					   remote_schemaname, remote_relname));
+		goto fetch_cleanup;
+	}
+
+	/*
 	 * If the reltuples value > 0, then we can expect to find attribute stats
 	 * for the remote table.
 	 *
@@ -5879,7 +5896,8 @@ fetch_remote_statistics(Relation relation,
 	 * that the table had never been analyzed, or that it was empty.  Assuming
 	 * the former, fallback to sampling.
 	 */
-	reltuples = strtod(PQgetvalue(relstats, 0, RELSTATS_RELTUPLES), NULL);
+	remstats->reltuples = reltuples =
+		strtod(PQgetvalue(relstats, 0, RELSTATS_RELTUPLES), NULL);
 	if (reltuples > 0)
 	{
 		RemoteAttributeMapping *remattrmap;
@@ -5919,9 +5937,15 @@ fetch_remote_statistics(Relation relation,
 		goto fetch_cleanup;
 	}
 
-	/* We assume that we have no dead tuple. */
-	remstats->deadtuples = 0.0;
-	remstats->livetuples = reltuples;
+	/*
+	 * If the remote table is partitioned, import relpages = 0, to match the
+	 * sampling case.
+	 */
+	if (relkind == RELKIND_PARTITIONED_TABLE)
+		remstats->relpages = 0;
+	else
+		remstats->relpages =
+			strtoul(PQgetvalue(relstats, 0, RELSTATS_RELPAGES), NULL, 10);
 
 	ok = true;
 
@@ -6005,7 +6029,13 @@ fetch_attstats(PGconn *conn, int server_version_num,
 					 " AND attname = ANY(%s)",
 					 column_list);
 
-	/* inherited is supported since Postgres 9.0 */
+	/*
+	 * inherited is supported since Postgres 9.0
+	 *
+	 * Note that this is okay because for now, we support the case where the
+	 * remote table is partitioned, but not the case where it is inherited
+	 * (see fetch_remote_statistics()).
+	 */
 	if (server_version_num >= 90000)
 		appendStringInfoString(&sql,
 							   " ORDER BY attname COLLATE \"C\", inherited DESC");
@@ -6055,7 +6085,10 @@ build_remattrmap(Relation relation, List *va_cols,
 		if (!attribute_is_analyzable(relation, attnum, attr, NULL))
 			continue;
 
-		/* If the column_name option is not specified, go with attname. */
+		/*
+		 * Assume the remote column names are the same as the local name
+		 * unless the foreign column's options tell us otherwise.
+		 */
 		colname = attname;
 		fc_options = GetForeignColumnOptions(RelationGetRelid(relation), attnum);
 		foreach(lc, fc_options)
@@ -6150,7 +6183,7 @@ remattrmap_cmp(const void *v1, const void *v2)
  * As the result set consists of the attribute stats for some/all of distinct
  * mapped remote columns in the RemoteAttributeMapping, every entry in it
  * should have at most one match in the result set; which is also ordered by
- * attname, so we find such pairs by doing a merge join.
+ * remote_attname, so we find such pairs by doing a merge join.
  *
  * Returns true if every entry in it has a match, and false if not.
  */
@@ -6252,22 +6285,21 @@ import_fetched_statistics(Relation relation,
 						  const RemoteAttributeMapping *remattrmap,
 						  int attrcnt)
 {
-	PGresult   *res;
-	NullableDatum version;
-	RelationStatsValues relvalues;
+	NullableDatum args[ATTSTATS_NUM_FIELDS];
 
-	/* Set the 'version' value, which is common to both statistics. */
-	version.value = Int32GetDatum(remstats->version);
-	version.isnull = false;
+	/* Set the 'version' parameter, which is common to both statistics. */
+	args[0].value = Int32GetDatum(remstats->version);
+	args[0].isnull = false;
 
 	/*
 	 * We import attribute statistics first, if any, because those are more
 	 * prone to errors.  This avoids making a modification of pg_class that
 	 * will just get rolled back by a failed attribute import.
 	 */
-	res = remstats->att;
-	if (res != NULL)
+	if (remstats->att != NULL)
 	{
+		PGresult   *res = remstats->att;
+
 		Assert(PQnfields(res) == ATTSTATS_NUM_FIELDS);
 		Assert(PQntuples(res) >= 1);
 
@@ -6275,7 +6307,6 @@ import_fetched_statistics(Relation relation,
 		{
 			int			row = remattrmap[mapidx].res_index;
 			AttrNumber	attnum = remattrmap[mapidx].local_attnum;
-			AttributeStatsValues attvalues;
 
 			/* All mappings should have been assigned a result set row. */
 			Assert(row >= 0);
@@ -6286,38 +6317,41 @@ import_fetched_statistics(Relation relation,
 			/* Clear existing attribute statistics. */
 			delete_attribute_statistics(relation, attnum, false);
 
-			/* Set the remaining values. */
-			attvalues.version = version;
-			set_float_arg(&attvalues.null_frac,
+			/* Set the remaining parameters. */
+			set_float_arg(&args[1],
 						  get_opt_value(res, row, ATTSTATS_NULL_FRAC));
-			set_int32_arg(&attvalues.avg_width,
+			set_int32_arg(&args[2],
 						  get_opt_value(res, row, ATTSTATS_AVG_WIDTH));
-			set_float_arg(&attvalues.n_distinct,
+			set_float_arg(&args[3],
 						  get_opt_value(res, row, ATTSTATS_N_DISTINCT));
-			set_text_arg(&attvalues.most_common_vals,
+			set_text_arg(&args[4],
 						 get_opt_value(res, row, ATTSTATS_MOST_COMMON_VALS));
-			set_floatarr_arg(&attvalues.most_common_freqs,
+			set_floatarr_arg(&args[5],
 							 get_opt_value(res, row, ATTSTATS_MOST_COMMON_FREQS));
-			set_text_arg(&attvalues.histogram_bounds,
+			set_text_arg(&args[6],
 						 get_opt_value(res, row, ATTSTATS_HISTOGRAM_BOUNDS));
-			set_float_arg(&attvalues.correlation,
+			set_float_arg(&args[7],
 						  get_opt_value(res, row, ATTSTATS_CORRELATION));
-			set_text_arg(&attvalues.most_common_elems,
+			set_text_arg(&args[8],
 						 get_opt_value(res, row, ATTSTATS_MOST_COMMON_ELEMS));
-			set_floatarr_arg(&attvalues.most_common_elem_freqs,
+			set_floatarr_arg(&args[9],
 							 get_opt_value(res, row, ATTSTATS_MOST_COMMON_ELEM_FREQS));
-			set_floatarr_arg(&attvalues.elem_count_histogram,
+			set_floatarr_arg(&args[10],
 							 get_opt_value(res, row, ATTSTATS_ELEM_COUNT_HISTOGRAM));
-			set_text_arg(&attvalues.range_length_histogram,
+			set_text_arg(&args[11],
 						 get_opt_value(res, row, ATTSTATS_RANGE_LENGTH_HISTOGRAM));
-			set_float_arg(&attvalues.range_empty_frac,
+			set_float_arg(&args[12],
 						  get_opt_value(res, row, ATTSTATS_RANGE_EMPTY_FRAC));
-			set_text_arg(&attvalues.range_bounds_histogram,
+			set_text_arg(&args[13],
 						 get_opt_value(res, row, ATTSTATS_RANGE_BOUNDS_HISTOGRAM));
 
 			/* Try to import the statistics. */
 			if (!import_attribute_statistics(relation, attnum, false,
-											 &attvalues))
+											 &args[0], &args[1], &args[2],
+											 &args[3], &args[4], &args[5],
+											 &args[6], &args[7], &args[8],
+											 &args[9], &args[10], &args[11],
+											 &args[12], &args[13]))
 			{
 				ereport(WARNING,
 						errmsg("could not import statistics for foreign table \"%s.%s\" --- attribute statistics import failed for column \"%s\" of this foreign table",
@@ -6331,27 +6365,21 @@ import_fetched_statistics(Relation relation,
 	/*
 	 * Import relation statistics.
 	 */
-	res = remstats->rel;
-	Assert(res != NULL);
-	Assert(PQnfields(res) == RELSTATS_NUM_FIELDS);
-	Assert(PQntuples(res) == 1);
 
-	/* Set the remaining values. */
-	relvalues.version = version;
-	set_int32_arg(&relvalues.relpages,
-				  get_opt_value(res, 0, RELSTATS_RELPAGES));
-	Assert(!relvalues.relpages.isnull);
-	set_float_arg(&relvalues.reltuples,
-				  get_opt_value(res, 0, RELSTATS_RELTUPLES));
-	Assert(!relvalues.reltuples.isnull);
+	/* Set the remaining parameters. */
+	args[1].value = Int32GetDatum(remstats->relpages);
+	args[1].isnull = false;
+	args[2].value = Float4GetDatum(remstats->reltuples);
+	args[2].isnull = false;
 	/* We don't import relallvisible/relallfrozen. */
-	relvalues.relallvisible.value = (Datum) 0;
-	relvalues.relallvisible.isnull = true;
-	relvalues.relallfrozen.value = (Datum) 0;
-	relvalues.relallfrozen.isnull = true;
+	args[3].value = (Datum) 0;
+	args[3].isnull = true;
+	args[4].value = (Datum) 0;
+	args[4].isnull = true;
 
 	/* Try to import the statistics. */
-	if (!import_relation_statistics(relation, &relvalues))
+	if (!import_relation_statistics(relation, &args[0], &args[1],
+									&args[2], &args[3], &args[4]))
 	{
 		ereport(WARNING,
 				errmsg("could not import statistics for foreign table \"%s.%s\" --- relation statistics import failed for this foreign table",
@@ -6912,8 +6940,9 @@ init_func_stub_fpinfo(const PgFdwRelationInfo *fpinfo_foreign,
 
 	stub->pushdown_safe = true;
 
-	/* Server-level options, inherited from the foreign side. */
+	/* Connection information and options, inherited from the foreign side */
 	stub->server = fpinfo_foreign->server;
+	stub->user = fpinfo_foreign->user;
 	stub->shippable_extensions = fpinfo_foreign->shippable_extensions;
 	stub->fdw_startup_cost = fpinfo_foreign->fdw_startup_cost;
 	stub->fdw_tuple_cost = fpinfo_foreign->fdw_tuple_cost;

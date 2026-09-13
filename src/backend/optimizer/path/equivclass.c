@@ -740,7 +740,7 @@ get_eclass_for_sort_expr(PlannerInfo *root,
 						 Oid opcintype,
 						 Oid collation,
 						 Index sortref,
-						 Relids rel,
+						 Relids relids,
 						 bool create_it)
 {
 	JoinDomain *jdomain;
@@ -783,14 +783,14 @@ get_eclass_for_sort_expr(PlannerInfo *root,
 		if (!equal(opfamilies, cur_ec->ec_opfamilies))
 			continue;
 
-		setup_eclass_member_iterator(&it, cur_ec, rel);
+		setup_eclass_member_iterator(&it, cur_ec, relids);
 		while ((cur_em = eclass_member_iterator_next(&it)) != NULL)
 		{
 			/*
 			 * Ignore child members unless they match the request.
 			 */
 			if (cur_em->em_is_child &&
-				!bms_equal(cur_em->em_relids, rel))
+				!bms_equal(cur_em->em_relids, relids))
 				continue;
 
 			/*
@@ -2039,6 +2039,21 @@ create_join_clause(PlannerInfo *root,
 	/* If it's a child clause, copy the parent's rinfo_serial */
 	if (parent_rinfo)
 		rinfo->rinfo_serial = parent_rinfo->rinfo_serial;
+	else
+	{
+		RestrictInfo *counterpart;
+
+		/*
+		 * If a clause comparing the same two EMs already exists with the
+		 * opposite parent_ec marking, adopt its rinfo_serial: the two clauses
+		 * enforce the same condition, and they must share a serial number
+		 * lest we enforce that condition more than once in a plan.
+		 */
+		counterpart = ec_search_clause_for_ems(root, ec, leftem, rightem,
+											   parent_ec ? NULL : ec);
+		if (counterpart)
+			rinfo->rinfo_serial = counterpart->rinfo_serial;
+	}
 
 	/* Mark the clause as redundant, or not */
 	rinfo->parent_ec = parent_ec;

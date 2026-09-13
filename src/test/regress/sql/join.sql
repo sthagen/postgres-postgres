@@ -2383,6 +2383,94 @@ select ss2.* from
 where ss1.c2 = 0;
 
 --
+-- check that a join is disallowed when a lateral reference to an outer-join
+-- output would have to be passed down into that outer join's own input
+--
+
+explain (costs off)
+select count(*) from int4_tbl t1 left join
+  (select b.q1 as bx, 1 as one from int4_tbl a left join int8_tbl b on a.f1 = b.q2) t2
+    on true
+  left join lateral
+    (select c.f1 as cnt from int4_tbl c where c.f1 = t2.one offset 0) t3
+    on t2.bx = t3.cnt;
+
+select count(*) from int4_tbl t1 left join
+  (select b.q1 as bx, 1 as one from int4_tbl a left join int8_tbl b on a.f1 = b.q2) t2
+    on true
+  left join lateral
+    (select c.f1 as cnt from int4_tbl c where c.f1 = t2.one offset 0) t3
+    on t2.bx = t3.cnt;
+
+--
+-- check that a cloned outer-join qual is not enforced multiple times when
+-- it is moved into a parameterized join
+--
+
+explain (costs off)
+select count(*) from int4_tbl t1 left join
+  (select b.q1 as bx, 1 as one from int4_tbl a left join int8_tbl b on a.f1 = b.q2) t2
+    on true
+  left join
+    (lateral (select c.f1 as cnt from int4_tbl c where c.f1 = t2.one offset 0) t3
+     join int4_tbl t4 on t3.cnt = t4.f1)
+    on t2.bx = t3.cnt + t4.f1;
+
+select count(*) from int4_tbl t1 left join
+  (select b.q1 as bx, 1 as one from int4_tbl a left join int8_tbl b on a.f1 = b.q2) t2
+    on true
+  left join
+    (lateral (select c.f1 as cnt from int4_tbl c where c.f1 = t2.one offset 0) t3
+     join int4_tbl t4 on t3.cnt = t4.f1)
+    on t2.bx = t3.cnt + t4.f1;
+
+--
+-- check that identical clone variants of an outer-join qual are not
+-- enforced multiple times in a parameterized path
+--
+
+explain (costs off)
+select * from onek t1
+    left join onek t2 on t1.unique1 = t2.unique1
+    left join onek t3 on t2.unique1 = t3.unique1
+    left join onek t4 on t3.unique1 = t4.unique1 and t3.ten = t4.ten + 0
+                     and t2.unique2 = t4.unique2 + 0
+where t1.unique1 < 1;
+
+explain (costs off)
+select * from onek t1
+    left join onek t2 on t1.unique1 = t2.unique1
+    left join onek t3 on t2.unique1 = t3.unique1
+    left join (onek t4 join onek t5 on t4.ten = t5.ten)
+      on t3.unique1 = t5.unique1 and t3.hundred = t4.unique1 + t5.two
+         and t2.unique2 = t4.unique2
+where t1.unique1 < 1;
+
+--
+-- check that an EC-derived condition is not enforced twice, both within a
+-- parameterized path and at the join above it
+--
+
+begin;
+
+set local from_collapse_limit to 1;
+
+explain (costs off)
+select count(*) from int4_tbl t1,
+  lateral (select * from tenk1 t2,
+           lateral (select t2.ten as x offset 0) s0
+           join tenk1 t3 on t3.unique2 = t1.f1
+           where t3.unique1 = t2.hundred + s0.x) ss1;
+
+select count(*) from int4_tbl t1,
+  lateral (select * from tenk1 t2,
+           lateral (select t2.ten as x offset 0) s0
+           join tenk1 t3 on t3.unique2 = t1.f1
+           where t3.unique1 = t2.hundred + s0.x) ss1;
+
+rollback;
+
+--
 -- test successful handling of full join underneath left join (bug #14105)
 --
 
